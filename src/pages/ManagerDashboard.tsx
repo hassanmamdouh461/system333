@@ -1222,40 +1222,7 @@ export default function ManagerDashboard() {
 
       </div>
 
-      {/* ── Loyalty & Customers Central Overview ───────────────────────────────────────── */}
-      <div className="bg-white p-4 md:p-6 rounded-2xl shadow-sm border border-gray-150/60 space-y-4">
-        <div>
-          <h2 className="text-base md:text-lg font-extrabold text-gray-900 leading-none">{t('Loyalty & Customers')}</h2>
-          <p className="text-xs text-gray-400 mt-1">
-            {language === 'ar' 
-              ? `إحصائيات عملاء الولاء المسجلين لدى (${activeBranchLabel})`
-              : `Registered loyalty members details scoped to (${activeBranchLabel})`}
-          </p>
-        </div>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
-          <StatCard
-            label={t('Total Registered')}
-            value={processedData.loyaltyCount.toLocaleString()}
-            icon={UserCheck}
-            trend={t('Loyalty members')}
-            color="blue"
-          />
-          <StatCard
-            label={t('Total Points Distributed')}
-            value={processedData.loyaltyPoints.toLocaleString()}
-            icon={Award}
-            trend={t('Loyalty points')}
-            color="orange"
-          />
-          <StatCard
-            label={t('Points Value')}
-            value={`${processedData.loyaltyValue.toFixed(2)} ${currencyStr}`}
-            icon={Coins}
-            trend={t('Redemption value')}
-            color="green"
-          />
-        </div>
-      </div>
+
 
       </>)}
 
