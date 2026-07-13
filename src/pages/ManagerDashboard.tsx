@@ -287,21 +287,47 @@ export default function ManagerDashboard() {
 
   const taxRate = getTaxRate();
 
-  // ── Fetch orders and customers from Appwrite REST API (via Electron Node main process) ──
+  // ── Fetch orders and customers from Appwrite ──
+  // Uses Electron IPC when running as desktop app, direct REST fetch when in browser
+  const APPWRITE_ENDPOINT = 'https://fra.cloud.appwrite.io/v1';
+  const APPWRITE_PROJECT = '698232950032f12e7895';
+  const APPWRITE_DB = 'restaurant_db';
+
   const fetchOrders = async () => {
     setLoading(true);
     setErrorInfo(null);
     try {
-      if (window.electronAPI) {
-        const ordersList = await window.electronAPI.getManagerOrders();
-        const customersList = await window.electronAPI.getManagerCustomers();
-        
-        setOrders(ordersList);
-        setCustomers(customersList);
-        setIsDemoMode(false);
+      let ordersList: any[];
+      let customersList: any[];
+
+      if (window.electronAPI?.getManagerOrders) {
+        // Desktop Electron app — fetch via Node main process (bypasses CORS)
+        ordersList = await window.electronAPI.getManagerOrders();
+        customersList = await window.electronAPI.getManagerCustomers();
       } else {
-        throw new Error("Electron context bridge not available");
+        // Browser — direct REST API call (same approach as system-2)
+        const headers = { 'X-Appwrite-Project': APPWRITE_PROJECT };
+
+        const [ordersRes, customersRes] = await Promise.all([
+          fetch(`${APPWRITE_ENDPOINT}/databases/${APPWRITE_DB}/collections/orders/documents?limit=1000`, { headers }),
+          fetch(`${APPWRITE_ENDPOINT}/databases/${APPWRITE_DB}/collections/customers/documents?limit=1000`, { headers })
+        ]);
+
+        if (!ordersRes.ok) throw new Error(`Orders fetch failed: ${ordersRes.status}`);
+        const ordersData = await ordersRes.json();
+        ordersList = ordersData.documents || [];
+
+        if (customersRes.ok) {
+          const customersData = await customersRes.json();
+          customersList = customersData.documents || [];
+        } else {
+          customersList = [];
+        }
       }
+
+      setOrders(ordersList);
+      setCustomers(customersList);
+      setIsDemoMode(false);
     } catch (err: any) {
       console.warn("Appwrite central database fetch failed. Switching to demo fallback mode.", err);
       setErrorInfo(err.message || "Network Timeout");
