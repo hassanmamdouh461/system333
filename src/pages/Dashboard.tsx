@@ -13,7 +13,8 @@ import {
   Settings,
   Languages,
   Coffee,
-  Building2
+  Building2,
+  Package
 } from 'lucide-react';
 
 const descMap: Record<string, { en: string, ar: string }> = {
@@ -22,6 +23,7 @@ const descMap: Record<string, { en: string, ar: string }> = {
   payment: { en: 'Process checkouts and billings.', ar: 'تسوية الحسابات وتحصيل الفواتير.' },
   menu: { en: 'Customize items, prices and categories.', ar: 'تعديل وتخصيص أصناف القائمة والأسعار.' },
   customers: { en: 'Manage loyalty points and phone directory.', ar: 'إدارة نقاط الولاء وسجل هواتف العملاء.' },
+  inventory: { en: 'Manage raw materials, stock levels and recipes.', ar: 'إدارة المواد الخام ومستويات المخزون والوصفات.' },
   reports: { en: 'Analyze sales statistics and revenue reports.', ar: 'تحليل أرقام المبيعات وتقارير الإيرادات.' },
   settings: { en: 'Configure system settings and database.', ar: 'ضبط إعدادات النظام وقاعدة البيانات.' }
 };
@@ -63,6 +65,14 @@ export default function Dashboard() {
       icon: Users, 
       color: 'from-sky-500 to-blue-600', 
       glow: 'hover:shadow-sky-500/20'
+    },
+    { 
+      key: 'inventory',
+      label: t('Inventory'), 
+      to: '/inventory', 
+      icon: Package, 
+      color: 'from-indigo-500 to-purple-600', 
+      glow: 'hover:shadow-indigo-500/20'
     },
     { 
       key: 'reports',
