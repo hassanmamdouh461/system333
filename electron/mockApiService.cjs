@@ -7,6 +7,75 @@ const ENDPOINT = "https://fra.cloud.appwrite.io/v1";
 const PROJECT_ID = "69879ae70002444f3f38";
 const DATABASE_ID = "6a545eb00016d126bc82";
 const COLLECTION_ID = "orders";
+const database = require('./database.cjs');
+const https = require('https');
+const dns = require('dns');
+
+// Force DNS servers to Google & Cloudflare
+dns.setServers(['8.8.8.8', '1.1.1.1']);
+
+function customLookup(hostname, options, callback) {
+  dns.resolve4(hostname, (err, addresses) => {
+    if (err || !addresses || addresses.length === 0) {
+      dns.lookup(hostname, options, callback);
+      return;
+    }
+    const family = 4;
+    if (options.all) {
+      const results = addresses.map(addr => ({ address: addr, family }));
+      callback(null, results);
+    } else {
+      callback(null, addresses[0], family);
+    }
+  });
+}
+
+function customFetch(url, options = {}) {
+  return new Promise((resolve, reject) => {
+    const parsedUrl = new URL(url);
+    const reqOptions = {
+      hostname: parsedUrl.hostname,
+      port: parsedUrl.port || 443,
+      path: parsedUrl.pathname + parsedUrl.search,
+      method: options.method || 'GET',
+      headers: options.headers || {},
+      timeout: 30000, // 30 seconds timeout
+      lookup: customLookup // Custom DNS resolver override
+    };
+
+    const req = https.request(reqOptions, (res) => {
+      let data = '';
+      res.on('data', (chunk) => data += chunk);
+      res.on('end', () => {
+        resolve({
+          ok: res.statusCode >= 200 && res.statusCode < 300,
+          status: res.statusCode,
+          text: () => Promise.resolve(data),
+          json: () => {
+            try {
+              return Promise.resolve(JSON.parse(data));
+            } catch (err) {
+              return Promise.reject(new Error(`Failed to parse JSON: ${data}`));
+            }
+          }
+        });
+      });
+    });
+
+    req.on('error', (err) => reject(err));
+    req.on('timeout', () => {
+      req.destroy();
+      reject(new Error('Connection timed out'));
+    });
+
+    if (options.body) {
+      req.write(options.body);
+    }
+    req.end();
+  });
+}
+
+const fetch = customFetch;
 
 async function pushMenuItems(items) {
   if (items.length === 0) return { success: true };
@@ -84,8 +153,10 @@ async function pushOrders(orders) {
       status: order.status || "New",
       paymentStatus: order.paymentStatus || "Unpaid",
       totalAmount: Number(order.totalAmount) || 0,
+      total_amount: Number(order.totalAmount) || 0,
       items: typeof order.items === 'string' ? order.items : JSON.stringify(order.items),
-      createdAt: order.createdAt || new Date().toISOString()
+      branch_id: order.branchId || database.getBranchId() || "branch_1",
+      payment_method: order.paymentMethod || "Cash"
     };
 
     // Try to update (PATCH) first
