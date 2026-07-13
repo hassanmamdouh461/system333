@@ -3,16 +3,64 @@
  * Replaces the mock simulation with real HTTP requests to the Appwrite REST API.
  */
 
-const ENDPOINT = "https://cloud.appwrite.io/v1";
-const PROJECT_ID = "69879ae70002444f3f38";
-const DATABASE_ID = "6a545eb00016d126bc82";
+const ENDPOINT = "https://fra.cloud.appwrite.io/v1";
+const PROJECT_ID = "698232950032f12e7895";
+const DATABASE_ID = "restaurant_db";
 const COLLECTION_ID = "orders";
 
 async function pushMenuItems(items) {
-  // Mocked as success for now since menu collection is not yet configured on Appwrite
-  if (items.length > 0) {
-    console.log(`[mockApi] (Mock) Pushing ${items.length} menu items to central server...`);
+  if (items.length === 0) return { success: true };
+  
+  console.log(`[mockApi] Pushing ${items.length} menu items to Appwrite...`);
+  
+  for (const item of items) {
+    const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/menu_items/documents`;
+    const docUrl = `${url}/${encodeURIComponent(item.id)}`;
+    
+    const dataPayload = {
+      name: item.name,
+      price: Number(item.price),
+      category: item.category,
+      description: item.description || "",
+      image: item.image || "",
+      available: Boolean(item.available)
+    };
+
+    // Try to update (PATCH) first
+    let res = await fetch(docUrl, {
+      method: 'PATCH',
+      headers: {
+        'X-Appwrite-Project': PROJECT_ID,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ data: dataPayload })
+    });
+
+    if (res.status === 404) {
+      // If 404, create it (POST)
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'X-Appwrite-Project': PROJECT_ID,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          documentId: item.id,
+          data: dataPayload
+        })
+      });
+    }
+
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error(`[mockApi] Appwrite request failed for menu item ${item.id} with status ${res.status}:`, errorText);
+      throw new Error(`Appwrite error ${res.status}: ${errorText}`);
+    }
+
+    const resData = await res.json();
+    console.log(`[mockApi] Successfully synced menu item ${item.id} to Appwrite.`);
   }
+
   return { success: true };
 }
 
@@ -23,35 +71,50 @@ async function pushOrders(orders) {
   
   for (const order of orders) {
     const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/${COLLECTION_ID}/documents`;
+    const docUrl = `${url}/${encodeURIComponent(order.id)}`;
     
-    // Build payload according to Appwrite Document Create API
-    const payload = {
-      documentId: order.id,
-      data: {
-        branch_id: order.branchId || "default",
-        total_amount: Number(order.totalAmount) || 0,
-        payment_method: order.paymentMethod || "Cash",
-        items: JSON.stringify(order.items)
-      }
+    const dataPayload = {
+      orderNumber: order.orderNumber || "",
+      tableId: order.tableId || "",
+      status: order.status || "New",
+      paymentStatus: order.paymentStatus || "Unpaid",
+      totalAmount: Number(order.totalAmount) || 0,
+      items: typeof order.items === 'string' ? order.items : JSON.stringify(order.items),
+      createdAt: order.createdAt || new Date().toISOString()
     };
 
-    const response = await fetch(url, {
-      method: 'POST',
+    // Try to update (PATCH) first
+    let res = await fetch(docUrl, {
+      method: 'PATCH',
       headers: {
         'X-Appwrite-Project': PROJECT_ID,
         'Content-Type': 'application/json'
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify({ data: dataPayload })
     });
 
-    if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[mockApi] Appwrite request failed for order ${order.id} with status ${response.status}:`, errorText);
-      // Throw error to trigger retry mechanism in sync engine
-      throw new Error(`Appwrite error ${response.status}: ${errorText}`);
+    if (res.status === 404) {
+      // If 404, create it (POST)
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'X-Appwrite-Project': PROJECT_ID,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          documentId: order.id,
+          data: dataPayload
+        })
+      });
     }
 
-    const resData = await response.json();
+    if (!res.ok) {
+      const errorText = await res.text();
+      console.error(`[mockApi] Appwrite request failed for order ${order.id} with status ${res.status}:`, errorText);
+      throw new Error(`Appwrite error ${res.status}: ${errorText}`);
+    }
+
+    const resData = await res.json();
     console.log(`[mockApi] Successfully synced order ${order.id} to Appwrite. Document ID: ${resData.$id}`);
   }
 
@@ -59,7 +122,7 @@ async function pushOrders(orders) {
 }
 
 async function pushCustomers(customers) {
-  // Mocked as success for now since customers collection is not yet configured on Appwrite
+  // Mocked as success for now since customers collection is not configured on Appwrite
   if (customers.length > 0) {
     console.log(`[mockApi] (Mock) Pushing ${customers.length} customers to central server...`);
   }
