@@ -30,11 +30,11 @@ export function DatabaseStatus() {
       // Running on Web: Check Appwrite Cloud Database connection
       try {
         const response = await fetch(
-          'https://cloud.appwrite.io/v1/databases/6a545eb00016d126bc82/collections/orders/documents?limit=1',
+          'https://fra.cloud.appwrite.io/v1/databases/restaurant_db/collections/orders/documents?limit=1',
           {
             method: 'GET',
             headers: {
-              'X-Appwrite-Project': '69879ae70002444f3f38',
+              'X-Appwrite-Project': '698232950032f12e7895',
               'Content-Type': 'application/json'
             }
           }
@@ -139,7 +139,7 @@ export function DatabaseStatus() {
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-semibold text-gray-700">{isElectron ? (language === 'ar' ? 'مسار التخزين:' : 'File Storage:') : (language === 'ar' ? 'رابط الاتصال:' : 'Endpoint:')}</span>
-                <span className="font-mono">{isElectron ? 'brewmaster.db' : 'https://cloud.appwrite.io'}</span>
+                <span className="font-mono">{isElectron ? 'brewmaster.db' : 'https://fra.cloud.appwrite.io'}</span>
               </div>
               {lastChecked && (
                 <div className="flex items-center gap-2">
