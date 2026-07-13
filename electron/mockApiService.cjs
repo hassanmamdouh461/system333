@@ -337,12 +337,100 @@ async function getManagerCustomers() {
   return data.documents || [];
 }
 
+async function pushInventory(items) {
+  if (items.length === 0) return { success: true };
+  
+  console.log(`[mockApi] Pushing ${items.length} inventory items to Appwrite...`);
+  
+  for (const item of items) {
+    const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/inventory/documents`;
+    const docUrl = `${url}/${encodeURIComponent(item.id)}`;
+    
+    const dataPayload = {
+      name: item.name,
+      unit: item.unit,
+      stock: Number(item.stock) || 0,
+      minStock: Number(item.minStock) || 0,
+      costPerUnit: Number(item.costPerUnit) || 0,
+      branch_id: item.branch_id || "branch_1",
+      created_at: item.created_at || new Date().toISOString(),
+      updated_at: item.updated_at || new Date().toISOString()
+    };
+
+    // Try to update (PATCH) first
+    let res = await fetch(docUrl, {
+      method: 'PATCH',
+      headers: {
+        'X-Appwrite-Project': PROJECT_ID,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ data: dataPayload })
+    });
+
+    if (res.status === 404) {
+      // If 404, create it (POST)
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'X-Appwrite-Project': PROJECT_ID,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          documentId: item.id,
+          data: dataPayload,
+          permissions: ["read(\"any\")", "write(\"any\")"]
+        })
+      });
+    }
+
+    if (!res.ok) {
+      if (res.status === 409) {
+        console.warn(`[mockApi] Inventory item ${item.id} already exists on Appwrite. Skipping to prevent block.`);
+        continue;
+      }
+      const errorText = await res.text();
+      console.error(`[mockApi] Appwrite request failed for inventory item ${item.id} with status ${res.status}:`, errorText);
+      throw new Error(`Appwrite error ${res.status}: ${errorText}`);
+    }
+
+    console.log(`[mockApi] Successfully synced inventory item ${item.id} to Appwrite.`);
+  }
+
+  return { success: true };
+}
+
+async function getManagerInventory() {
+  console.log('[mockApi] Manager fetching all inventory from Appwrite...');
+  const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/inventory/documents?limit=1000`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'X-Appwrite-Project': PROJECT_ID
+    }
+  });
+
+  if (!response.ok) {
+    if (response.status === 404) {
+      console.warn('[mockApi] Appwrite manager inventory fetch failed because collection is missing.');
+      return [];
+    }
+    const errorText = await response.text();
+    console.error('[mockApi] Appwrite manager inventory fetch failed:', errorText);
+    throw new Error(`Appwrite error ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  return data.documents || [];
+}
+
 module.exports = {
   pushMenuItems,
   pushOrders,
   pushCustomers,
+  pushInventory,
   pullOrders,
   deleteMenuItem,
   getManagerOrders,
-  getManagerCustomers
+  getManagerCustomers,
+  getManagerInventory
 };

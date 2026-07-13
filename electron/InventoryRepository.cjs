@@ -331,6 +331,34 @@ class InventoryRepository {
       }
     })();
   }
+
+  getUnsyncedInventory() {
+    const sqlite = this.getDb();
+    const rows = sqlite.prepare('SELECT * FROM inventory WHERE is_synced = 0').all();
+    return rows.map(row => ({
+      id: row.id,
+      name: row.name,
+      unit: row.unit,
+      stock: row.stock,
+      minStock: row.minStock,
+      costPerUnit: row.costPerUnit,
+      branch_id: row.branch_id || 'branch_1',
+      is_synced: row.is_synced,
+      created_at: row.created_at,
+      updated_at: row.updated_at
+    }));
+  }
+
+  markInventorySynced(ids) {
+    if (ids.length === 0) return;
+    const sqlite = this.getDb();
+    const stmt = sqlite.prepare('UPDATE inventory SET is_synced = 1 WHERE id = ?');
+    sqlite.transaction(() => {
+      for (const id of ids) {
+        stmt.run(id);
+      }
+    })();
+  }
 }
 
 module.exports = new InventoryRepository();

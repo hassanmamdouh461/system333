@@ -592,15 +592,17 @@ function getSyncStats() {
     const menuCount = sqlite.prepare('SELECT COUNT(*) as count FROM menu WHERE is_synced = 0').get().count;
     const ordersCount = sqlite.prepare('SELECT COUNT(*) as count FROM orders WHERE is_synced = 0').get().count;
     const customersCount = sqlite.prepare('SELECT COUNT(*) as count FROM customers WHERE is_synced = 0').get().count;
+    const inventoryCount = sqlite.prepare('SELECT COUNT(*) as count FROM inventory WHERE is_synced = 0').get().count;
     return {
       pendingMenu: menuCount,
       pendingOrders: ordersCount,
       pendingCustomers: customersCount,
-      totalPending: menuCount + ordersCount + customersCount
+      pendingInventory: inventoryCount,
+      totalPending: menuCount + ordersCount + customersCount + inventoryCount
     };
   } catch (e) {
     console.error('[database] Failed to get sync stats:', e);
-    return { pendingMenu: 0, pendingOrders: 0, pendingCustomers: 0, totalPending: 0 };
+    return { pendingMenu: 0, pendingOrders: 0, pendingCustomers: 0, pendingInventory: 0, totalPending: 0 };
   }
 }
 

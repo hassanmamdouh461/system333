@@ -189,6 +189,20 @@ class SyncEngine {
         console.log(`[syncEngine] Marked ${orderIds.length} orders as synced in local DB.`);
       }
 
+      // Sync Inventory (gracefully wrapped in try-catch to allow graceful bypass if collection is not created yet)
+      try {
+        const inventoryRepository = require('./InventoryRepository.cjs');
+        const unsyncedInventory = inventoryRepository.getUnsyncedInventory();
+        if (unsyncedInventory.length > 0) {
+          await mockApi.pushInventory(unsyncedInventory);
+          const inventoryIds = unsyncedInventory.map(inv => inv.id);
+          inventoryRepository.markInventorySynced(inventoryIds);
+          console.log(`[syncEngine] Marked ${inventoryIds.length} inventory items as synced in local DB.`);
+        }
+      } catch (invError) {
+        console.warn('[syncEngine] Inventory sync bypassed (please create "inventory" collection in Appwrite console):', invError.message);
+      }
+
       // 6. Update success status
       this.status.state = 'synced';
       this.status.lastError = null;

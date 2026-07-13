@@ -360,9 +360,10 @@ export default function ManagerDashboard() {
         // Browser — direct REST API call (same approach as system-2)
         const headers = { 'X-Appwrite-Project': APPWRITE_PROJECT };
 
-        const [ordersRes, customersRes] = await Promise.all([
+        const [ordersRes, customersRes, inventoryRes] = await Promise.all([
           fetch(`${APPWRITE_ENDPOINT}/databases/${APPWRITE_DB}/collections/orders/documents?limit=1000`, { headers }),
-          fetch(`${APPWRITE_ENDPOINT}/databases/${APPWRITE_DB}/collections/customers/documents?limit=1000`, { headers })
+          fetch(`${APPWRITE_ENDPOINT}/databases/${APPWRITE_DB}/collections/customers/documents?limit=1000`, { headers }),
+          fetch(`${APPWRITE_ENDPOINT}/databases/${APPWRITE_DB}/collections/inventory/documents?limit=1000`, { headers }).catch(() => null)
         ]);
 
         if (!ordersRes.ok) throw new Error(`Orders fetch failed: ${ordersRes.status}`);
@@ -374,6 +375,13 @@ export default function ManagerDashboard() {
           customersList = customersData.documents || [];
         } else {
           customersList = [];
+        }
+
+        if (inventoryRes && inventoryRes.ok) {
+          const inventoryData = await inventoryRes.json();
+          invList = inventoryData.documents || [];
+        } else {
+          invList = [];
         }
       }
 
