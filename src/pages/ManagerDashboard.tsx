@@ -267,6 +267,39 @@ function StatCard({ label, value, icon: Icon, trend, color }: StatCardProps) {
   );
 }
 
+const INITIAL_STOCKS: Record<string, number> = {
+  'inv-beans': 50.0,
+  'inv-milk': 100.0,
+  'inv-sugar': 50.0,
+  'inv-caramel': 20.0,
+  'inv-vanilla': 20.0,
+  'inv-cups': 1000.0,
+  'inv-beef': 200.0,
+  'inv-buns': 200.0,
+  'inv-cheese': 300.0,
+  'inv-fries': 100.0,
+  'inv-chicken': 80.0,
+  'inv-bread': 500.0,
+  'inv-lettuce': 30.0,
+  'inv-tomato': 40.0,
+  'inv-mayo': 15.0,
+  'inv-croissant': 150.0,
+  'inv-turkey': 200.0,
+  'inv-mozzarella': 25.0,
+  'inv-flour': 50.0,
+  'inv-chocolate': 30.0,
+  'inv-tea': 15.0,
+  'inv-peach': 10.0,
+  'inv-mint': 5.0,
+  'inv-lemon': 500.0,
+  'inv-soda': 120.0,
+  'inv-passion': 10.0,
+  'inv-oreo': 800.0,
+  'inv-strawberry': 20.0,
+  'inv-mango': 25.0,
+  'inv-icecream': 40.0,
+};
+
 // ─── Main Component ───────────────────────────────────────────────────────────
 export default function ManagerDashboard() {
   const { t, isRtl, language, toggleLanguage } = useLanguage();
@@ -290,6 +323,8 @@ export default function ManagerDashboard() {
   // Data Fetching State
   const [orders, setOrders] = useState<AppwriteOrderDoc[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
+  const [dbInventory, setDbInventory] = useState<any[]>([]);
+  const [dbRecipes, setDbRecipes] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [errorInfo, setErrorInfo] = useState<string | null>(null);
@@ -308,11 +343,19 @@ export default function ManagerDashboard() {
     try {
       let ordersList: any[];
       let customersList: any[];
+      let invList: any[] = [];
+      let recList: any[] = [];
 
       if (window.electronAPI?.getManagerOrders) {
         // Desktop Electron app — fetch via Node main process (bypasses CORS)
         ordersList = await window.electronAPI.getManagerOrders();
         customersList = await window.electronAPI.getManagerCustomers();
+        if (window.electronAPI?.getInventory) {
+          invList = await window.electronAPI.getInventory();
+        }
+        if (window.electronAPI?.getMenuRecipes) {
+          recList = await window.electronAPI.getMenuRecipes();
+        }
       } else {
         // Browser — direct REST API call (same approach as system-2)
         const headers = { 'X-Appwrite-Project': APPWRITE_PROJECT };
@@ -336,6 +379,8 @@ export default function ManagerDashboard() {
 
       setOrders(ordersList);
       setCustomers(customersList);
+      setDbInventory(invList);
+      setDbRecipes(recList);
       setIsDemoMode(false);
     } catch (err: any) {
       console.warn("Appwrite central database fetch failed. Switching to demo fallback mode.", err);
@@ -345,6 +390,8 @@ export default function ManagerDashboard() {
       const fallbackOrders = generateMockOrders();
       setOrders(fallbackOrders);
       setCustomers([]);
+      setDbInventory([]);
+      setDbRecipes([]);
       setIsDemoMode(true);
     } finally {
       setLoading(false);
@@ -503,33 +550,66 @@ export default function ManagerDashboard() {
   }, [orders, selectedBranch, dateRange, language, taxRate]);
 
   // ── Inventory Data (Starting Stock & Recipes for consumption calc) ──────────
-  const INVENTORY_ITEMS = useMemo(() => [
-    { id: 'coffee_beans', nameAr: 'حبوب القهوة', nameEn: 'Coffee Beans', unit: 'kg', unitAr: 'كجم', costPerUnit: 120, startingStock: { branch_1: 25, branch_2: 30, branch_3: 20 }, minStock: 5 },
-    { id: 'milk', nameAr: 'حليب طازج', nameEn: 'Fresh Milk', unit: 'L', unitAr: 'لتر', costPerUnit: 18, startingStock: { branch_1: 50, branch_2: 60, branch_3: 45 }, minStock: 10 },
-    { id: 'sugar', nameAr: 'سكر', nameEn: 'Sugar', unit: 'kg', unitAr: 'كجم', costPerUnit: 15, startingStock: { branch_1: 15, branch_2: 18, branch_3: 12 }, minStock: 3 },
-    { id: 'cups_sm', nameAr: 'أكواب صغيرة', nameEn: 'Small Cups', unit: 'pcs', unitAr: 'قطعة', costPerUnit: 0.5, startingStock: { branch_1: 500, branch_2: 600, branch_3: 400 }, minStock: 100 },
-    { id: 'cups_lg', nameAr: 'أكواب كبيرة', nameEn: 'Large Cups', unit: 'pcs', unitAr: 'قطعة', costPerUnit: 0.8, startingStock: { branch_1: 400, branch_2: 500, branch_3: 350 }, minStock: 80 },
-    { id: 'chocolate', nameAr: 'شوكولاتة', nameEn: 'Chocolate Powder', unit: 'kg', unitAr: 'كجم', costPerUnit: 85, startingStock: { branch_1: 8, branch_2: 10, branch_3: 7 }, minStock: 2 },
-    { id: 'caramel', nameAr: 'صوص كراميل', nameEn: 'Caramel Syrup', unit: 'L', unitAr: 'لتر', costPerUnit: 45, startingStock: { branch_1: 6, branch_2: 8, branch_3: 5 }, minStock: 1.5 },
-    { id: 'vanilla', nameAr: 'فانيليا', nameEn: 'Vanilla Syrup', unit: 'L', unitAr: 'لتر', costPerUnit: 42, startingStock: { branch_1: 5, branch_2: 6, branch_3: 4 }, minStock: 1 },
-    { id: 'napkins', nameAr: 'مناديل', nameEn: 'Napkins', unit: 'pcs', unitAr: 'قطعة', costPerUnit: 0.1, startingStock: { branch_1: 2000, branch_2: 2500, branch_3: 1800 }, minStock: 500 },
-    { id: 'lids', nameAr: 'أغطية أكواب', nameEn: 'Cup Lids', unit: 'pcs', unitAr: 'قطعة', costPerUnit: 0.3, startingStock: { branch_1: 800, branch_2: 1000, branch_3: 700 }, minStock: 150 },
-  ], []);
+  const INVENTORY_ITEMS = useMemo(() => {
+    if (dbInventory && dbInventory.length > 0) {
+      return dbInventory.map(item => {
+        const startVal = INITIAL_STOCKS[item.id] || item.stock * 1.5 || 100;
+        return {
+          id: item.id,
+          nameAr: item.name,
+          nameEn: item.name,
+          unit: item.unit,
+          unitAr: item.unit,
+          costPerUnit: item.costPerUnit,
+          startingStock: {
+            branch_1: item.branch_id === 'branch_1' ? startVal : 0,
+            branch_2: item.branch_id === 'branch_2' ? startVal : 0,
+            branch_3: item.branch_id === 'branch_3' ? startVal : 0,
+          },
+          minStock: item.minStock,
+        };
+      });
+    }
+    return [
+      { id: 'coffee_beans', nameAr: 'حبوب القهوة', nameEn: 'Coffee Beans', unit: 'kg', unitAr: 'كجم', costPerUnit: 120, startingStock: { branch_1: 25, branch_2: 30, branch_3: 20 }, minStock: 5 },
+      { id: 'milk', nameAr: 'حليب طازج', nameEn: 'Fresh Milk', unit: 'L', unitAr: 'لتر', costPerUnit: 18, startingStock: { branch_1: 50, branch_2: 60, branch_3: 45 }, minStock: 10 },
+      { id: 'sugar', nameAr: 'سكر', nameEn: 'Sugar', unit: 'kg', unitAr: 'كجم', costPerUnit: 15, startingStock: { branch_1: 15, branch_2: 18, branch_3: 12 }, minStock: 3 },
+      { id: 'cups_sm', nameAr: 'أكواب صغيرة', nameEn: 'Small Cups', unit: 'pcs', unitAr: 'قطعة', costPerUnit: 0.5, startingStock: { branch_1: 500, branch_2: 600, branch_3: 400 }, minStock: 100 },
+      { id: 'cups_lg', nameAr: 'أكواب كبيرة', nameEn: 'Large Cups', unit: 'pcs', unitAr: 'قطعة', costPerUnit: 0.8, startingStock: { branch_1: 400, branch_2: 500, branch_3: 350 }, minStock: 80 },
+      { id: 'chocolate', nameAr: 'شوكولاتة', nameEn: 'Chocolate Powder', unit: 'kg', unitAr: 'كجم', costPerUnit: 85, startingStock: { branch_1: 8, branch_2: 10, branch_3: 7 }, minStock: 2 },
+      { id: 'caramel', nameAr: 'صوص كراميل', nameEn: 'Caramel Syrup', unit: 'L', unitAr: 'لتر', costPerUnit: 45, startingStock: { branch_1: 6, branch_2: 8, branch_3: 5 }, minStock: 1.5 },
+      { id: 'vanilla', nameAr: 'فانيليا', nameEn: 'Vanilla Syrup', unit: 'L', unitAr: 'لتر', costPerUnit: 42, startingStock: { branch_1: 5, branch_2: 6, branch_3: 4 }, minStock: 1 },
+      { id: 'napkins', nameAr: 'مناديل', nameEn: 'Napkins', unit: 'pcs', unitAr: 'قطعة', costPerUnit: 0.1, startingStock: { branch_1: 2000, branch_2: 2500, branch_3: 1800 }, minStock: 500 },
+      { id: 'lids', nameAr: 'أغطية أكواب', nameEn: 'Cup Lids', unit: 'pcs', unitAr: 'قطعة', costPerUnit: 0.3, startingStock: { branch_1: 800, branch_2: 1000, branch_3: 700 }, minStock: 150 },
+    ];
+  }, [dbInventory]);
 
   // Recipe: how much raw material each menu product consumes
-  const ITEM_RECIPES: Record<string, Record<string, number>> = useMemo(() => ({
-    'Spanish Latte':       { coffee_beans: 0.025, milk: 0.25, sugar: 0.01, cups_lg: 1, lids: 1, napkins: 2 },
-    'Cortado':             { coffee_beans: 0.03, milk: 0.1, sugar: 0.005, cups_sm: 1, lids: 1, napkins: 1 },
-    'Iced Caramel Macchiato': { coffee_beans: 0.025, milk: 0.2, caramel: 0.03, sugar: 0.01, cups_lg: 1, lids: 1, napkins: 2 },
-    'Americano':           { coffee_beans: 0.02, sugar: 0.01, cups_sm: 1, lids: 1, napkins: 1 },
-    'Cappuccino':          { coffee_beans: 0.025, milk: 0.2, sugar: 0.01, cups_sm: 1, lids: 1, napkins: 1 },
-    'Mocha Frappe':        { coffee_beans: 0.025, milk: 0.25, chocolate: 0.02, sugar: 0.015, cups_lg: 1, lids: 1, napkins: 2 },
-    'Espresso Shot':       { coffee_beans: 0.02, cups_sm: 1, napkins: 1 },
-    'Turkish Coffee':      { coffee_beans: 0.015, sugar: 0.01, cups_sm: 1, napkins: 1 },
-    'Oreo Milkshake':      { milk: 0.3, chocolate: 0.02, sugar: 0.02, vanilla: 0.01, cups_lg: 1, lids: 1, napkins: 2 },
-    'Mint Lemonade':       { sugar: 0.02, cups_lg: 1, lids: 1, napkins: 2 },
-    'Peach Iced Tea':      { sugar: 0.015, cups_lg: 1, lids: 1, napkins: 2 },
-  }), []);
+  const ITEM_RECIPES: Record<string, Record<string, number>> = useMemo(() => {
+    if (dbRecipes && dbRecipes.length > 0) {
+      const mapped: Record<string, Record<string, number>> = {};
+      dbRecipes.forEach(rec => {
+        if (!mapped[rec.menuItemId]) {
+          mapped[rec.menuItemId] = {};
+        }
+        mapped[rec.menuItemId][rec.inventoryItemId] = rec.quantity;
+      });
+      return mapped;
+    }
+    return {
+      'Spanish Latte':       { coffee_beans: 0.025, milk: 0.25, sugar: 0.01, cups_lg: 1, lids: 1, napkins: 2 },
+      'Cortado':             { coffee_beans: 0.03, milk: 0.1, sugar: 0.005, cups_sm: 1, lids: 1, napkins: 1 },
+      'Iced Caramel Macchiato': { coffee_beans: 0.025, milk: 0.2, caramel: 0.03, sugar: 0.01, cups_lg: 1, lids: 1, napkins: 2 },
+      'Americano':           { coffee_beans: 0.02, sugar: 0.01, cups_sm: 1, lids: 1, napkins: 1 },
+      'Cappuccino':          { coffee_beans: 0.025, milk: 0.2, sugar: 0.01, cups_sm: 1, lids: 1, napkins: 1 },
+      'Mocha Frappe':        { coffee_beans: 0.025, milk: 0.25, chocolate: 0.02, sugar: 0.015, cups_lg: 1, lids: 1, napkins: 2 },
+      'Espresso Shot':       { coffee_beans: 0.02, cups_sm: 1, napkins: 1 },
+      'Turkish Coffee':      { coffee_beans: 0.015, sugar: 0.01, cups_sm: 1, napkins: 1 },
+      'Oreo Milkshake':      { milk: 0.3, chocolate: 0.02, sugar: 0.02, vanilla: 0.01, cups_lg: 1, lids: 1, napkins: 2 },
+      'Mint Lemonade':       { sugar: 0.02, cups_lg: 1, lids: 1, napkins: 2 },
+      'Peach Iced Tea':      { sugar: 0.015, cups_lg: 1, lids: 1, napkins: 2 },
+    };
+  }, [dbRecipes]);
 
   // Compute per-branch consumed quantities from synced orders
   const inventoryData = useMemo(() => {
@@ -545,7 +625,8 @@ export default function ManagerDashboard() {
         const items: OrderItem[] = JSON.parse(order.items);
         if (!Array.isArray(items)) return;
         items.forEach(item => {
-          const recipe = ITEM_RECIPES[item.name];
+          // Try lookup by id first, then name
+          const recipe = ITEM_RECIPES[item.id] || ITEM_RECIPES[item.menuItemId || ''] || ITEM_RECIPES[item.name];
           if (!recipe) return;
           Object.entries(recipe).forEach(([matId, qty]) => {
             consumption[bId][matId] = (consumption[bId][matId] || 0) + qty * item.quantity;
@@ -558,21 +639,32 @@ export default function ManagerDashboard() {
     return INVENTORY_ITEMS.map(inv => {
       const branchData: Record<string, { remaining: number; consumed: number; startStock: number; percentage: number; isLow: boolean }> = {};
       branchIds.forEach(bId => {
-        const start = inv.startingStock[bId] || 0;
+        // Find starting stock
+        const start = INITIAL_STOCKS[inv.id] || (inv.startingStock && inv.startingStock[bId]) || 100;
         const consumed = consumption[bId]?.[inv.id] || 0;
-        const remaining = Math.max(start - consumed, 0);
+        let remaining = Math.max(start - consumed, 0);
+
+        // Crucial override: if this is the active branch and we have real SQLite database data for this item,
+        // use the actual remaining stock from SQLite instead of calculated consumption!
+        if (dbInventory && dbInventory.length > 0) {
+          const dbItem = dbInventory.find(item => item.id === inv.id && item.branch_id === bId);
+          if (dbItem) {
+            remaining = dbItem.stock;
+          }
+        }
+
         const percentage = start > 0 ? (remaining / start) * 100 : 0;
         branchData[bId] = {
           remaining: Math.round(remaining * 100) / 100,
           consumed: Math.round(consumed * 100) / 100,
           startStock: start,
-          percentage: Math.round(percentage),
+          percentage: Math.min(Math.round(percentage), 100),
           isLow: remaining <= inv.minStock,
         };
       });
       return { ...inv, branches: branchData };
     });
-  }, [orders, INVENTORY_ITEMS, ITEM_RECIPES]);
+  }, [orders, INVENTORY_ITEMS, ITEM_RECIPES, dbInventory]);
 
   // Inventory summary stats
   const inventorySummary = useMemo(() => {
