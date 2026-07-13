@@ -23,7 +23,7 @@ const descMap: Record<string, { en: string, ar: string }> = {
   payment: { en: 'Process checkouts and billings.', ar: 'تسوية الحسابات وتحصيل الفواتير.' },
   menu: { en: 'Customize items, prices and categories.', ar: 'تعديل وتخصيص أصناف القائمة والأسعار.' },
   customers: { en: 'Manage loyalty points and phone directory.', ar: 'إدارة نقاط الولاء وسجل هواتف العملاء.' },
-  inventory: { en: 'Manage raw materials, stock levels and recipes.', ar: 'إدارة المواد الخام ومستويات المخزون والوصفات.' },
+  inventory: { en: 'Manage raw materials, stock levels and recipes.', ar: 'إدارة المواد الخام ومستويات المخزون والمكونات.' },
   reports: { en: 'Analyze sales statistics and revenue reports.', ar: 'تحليل أرقام المبيعات وتقارير الإيرادات.' },
   settings: { en: 'Configure system settings and database.', ar: 'ضبط إعدادات النظام وقاعدة البيانات.' }
 };
@@ -71,7 +71,7 @@ export default function Dashboard() {
       label: t('Inventory'), 
       to: '/inventory', 
       icon: Package, 
-      color: 'from-indigo-500 to-purple-600', 
+      color: 'from-indigo-500 to-violet-600', 
       glow: 'hover:shadow-indigo-500/20'
     },
     { 
@@ -124,9 +124,9 @@ export default function Dashboard() {
         </div>
       </div>
 
-      {/* Grid of 7 Pages */}
+      {/* Grid of Pages */}
       <div className="flex-1 flex items-center justify-center">
-        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-3 gap-4 md:gap-6 w-full max-w-4xl">
+        <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6 w-full max-w-5xl">
           {navItems.map((item, index) => {
             const Icon = item.icon;
             const desc = descMap[item.key][language as 'en' | 'ar'];
