@@ -5,11 +5,12 @@ import {
   Coffee, Calendar, Download,
   CheckCircle2, Clock, XCircle, AlertCircle, Utensils,
   UserCheck, Award, Coins, Building2, ChevronDown, RefreshCw,
-  Signal, SignalHigh, WifiOff, Package, AlertTriangle, BarChart3, Languages, Users, Search
+  Signal, SignalHigh, WifiOff, Package, AlertTriangle, BarChart3, Languages, Users, Search, Settings
 } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { getTaxRate } from '../utils/settingsConfig';
 import { useMenu } from '../hooks/useMenu';
+import SettingsPage from './Settings';
 
 // ─── Interfaces ──────────────────────────────────────────────────────────────
 interface OrderItem {
@@ -317,7 +318,7 @@ export default function ManagerDashboard() {
     return 'This Week';
   });
   const [isBranchDropdownOpen, setIsBranchDropdownOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'analytics' | 'inventory' | 'customers'>('analytics');
+  const [activeTab, setActiveTab] = useState<'analytics' | 'inventory' | 'customers' | 'settings'>('analytics');
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
 
   // Data Fetching State
@@ -998,6 +999,17 @@ export default function ManagerDashboard() {
           <Users size={16} />
           {language === 'ar' ? 'العملاء والولاء' : 'Customers & Loyalty'}
         </button>
+        <button
+          onClick={() => setActiveTab('settings')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs md:text-sm font-bold transition-all relative ${
+            activeTab === 'settings'
+              ? 'bg-gray-900 text-white shadow-md'
+              : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+          }`}
+        >
+          <Settings size={16} />
+          {language === 'ar' ? 'الإعدادات' : 'Settings'}
+        </button>
       </div>
 
       {/* ── Error Banner for Demo Fallback Mode ────────────────────────────────────── */}
@@ -1671,6 +1683,12 @@ export default function ManagerDashboard() {
               </table>
             </div>
           </div>
+        </div>
+      )}
+      {/* ── SETTINGS TAB ───────────────────────────────────────────────────────── */}
+      {activeTab === 'settings' && (
+        <div className="bg-white p-4 md:p-6 rounded-2xl border border-gray-150 shadow-sm">
+          <SettingsPage />
         </div>
       )}
 
