@@ -6,7 +6,7 @@ export class SqliteMenuRepository implements IMenuRepository {
     const items = await window.electronAPI.getMenu();
     if (!branchId) return items;
     // Auto-filter by branch_id
-    return items.filter(item => item.branchId === branchId);
+    return items.filter(item => !item.branchId || item.branchId === branchId || item.branchId === 'default');
   }
 
   async create(item: Omit<MenuItem, 'id'>, branchId?: string): Promise<MenuItem> {
