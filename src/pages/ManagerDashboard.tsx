@@ -287,62 +287,20 @@ export default function ManagerDashboard() {
 
   const taxRate = getTaxRate();
 
-  // ── Fetch orders and customers from Appwrite REST API ────────────────────────
+  // ── Fetch orders and customers from Appwrite REST API (via Electron Node main process) ──
   const fetchOrders = async () => {
     setLoading(true);
     setErrorInfo(null);
     try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
-
-      // Fetch Orders
-      const ordersRes = await fetch(
-        'https://fra.cloud.appwrite.io/v1/databases/restaurant_db/collections/orders/documents?limit=1000',
-        {
-          method: 'GET',
-          headers: {
-            'X-Appwrite-Project': '698232950032f12e7895',
-            'Content-Type': 'application/json'
-          },
-          signal: controller.signal
-        }
-      );
-
-      if (!ordersRes.ok) {
-        throw new Error(`Orders fetch failed: ${ordersRes.status}`);
-      }
-      const ordersData = await ordersRes.json();
-
-      // Fetch Customers
-      let customersList: any[] = [];
-      try {
-        const customersRes = await fetch(
-          'https://fra.cloud.appwrite.io/v1/databases/restaurant_db/collections/customers/documents?limit=1000',
-          {
-            method: 'GET',
-            headers: {
-              'X-Appwrite-Project': '698232950032f12e7895',
-              'Content-Type': 'application/json'
-            },
-            signal: controller.signal
-          }
-        );
-        if (customersRes.ok) {
-          const customersData = await customersRes.json();
-          customersList = customersData.documents || [];
-        }
-      } catch (custErr) {
-        console.warn("Failed to fetch customers from Appwrite:", custErr);
-      }
-
-      clearTimeout(timeoutId);
-
-      if (ordersData && Array.isArray(ordersData.documents)) {
-        setOrders(ordersData.documents);
+      if (window.electronAPI) {
+        const ordersList = await window.electronAPI.getManagerOrders();
+        const customersList = await window.electronAPI.getManagerCustomers();
+        
+        setOrders(ordersList);
         setCustomers(customersList);
         setIsDemoMode(false);
       } else {
-        throw new Error("Invalid database payload structure");
+        throw new Error("Electron context bridge not available");
       }
     } catch (err: any) {
       console.warn("Appwrite central database fetch failed. Switching to demo fallback mode.", err);

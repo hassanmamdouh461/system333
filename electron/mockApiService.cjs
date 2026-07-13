@@ -226,10 +226,52 @@ async function deleteMenuItem(id) {
   }
 }
 
+async function getManagerOrders() {
+  console.log('[mockApi] Manager fetching all orders from Appwrite...');
+  const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/orders/documents?limit=1000`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'X-Appwrite-Project': PROJECT_ID
+    }
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('[mockApi] Appwrite manager orders fetch failed:', errorText);
+    throw new Error(`Appwrite error ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  return data.documents || [];
+}
+
+async function getManagerCustomers() {
+  console.log('[mockApi] Manager fetching all customers from Appwrite...');
+  const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/customers/documents?limit=1000`;
+  const response = await fetch(url, {
+    method: 'GET',
+    headers: {
+      'X-Appwrite-Project': PROJECT_ID
+    }
+  });
+
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('[mockApi] Appwrite manager customers fetch failed:', errorText);
+    throw new Error(`Appwrite error ${response.status}: ${errorText}`);
+  }
+
+  const data = await response.json();
+  return data.documents || [];
+}
+
 module.exports = {
   pushMenuItems,
   pushOrders,
   pushCustomers,
   pullOrders,
-  deleteMenuItem
+  deleteMenuItem,
+  getManagerOrders,
+  getManagerCustomers
 };

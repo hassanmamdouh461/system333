@@ -6,6 +6,7 @@ const orderRepository = require('./OrderRepository.cjs');
 const menuRepository = require('./MenuRepository.cjs');
 const customerRepository = require('./CustomerRepository.cjs');
 const inventoryRepository = require('./InventoryRepository.cjs');
+const mockApi = require('./mockApiService.cjs');
 
 let mainWindow;
 let syncEngine;
@@ -73,6 +74,10 @@ app.whenReady().then(() => {
   ipcMain.handle('db:get-customer-by-phone', (event, phone) => customerRepository.getCustomerByPhone(phone));
   ipcMain.handle('db:save-customer', (event, customer) => customerRepository.saveCustomer(customer));
   ipcMain.handle('db:delete-customer', (event, id) => customerRepository.deleteCustomer(id));
+  
+  // Manager Dashboard cloud fetch handlers
+  ipcMain.handle('db:get-manager-orders', () => mockApi.getManagerOrders());
+  ipcMain.handle('db:get-manager-customers', () => mockApi.getManagerCustomers());
 
   ipcMain.handle('db:get-settings', () => db.getSettings());
   ipcMain.handle('db:save-setting', (event, key, value) => db.saveSetting(key, value));

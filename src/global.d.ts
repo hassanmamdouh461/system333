@@ -143,6 +143,9 @@ declare global {
         pendingCount: number;
         lastError: string | null;
       }) => void) => () => void;
+      
+      getManagerOrders: () => Promise<any[]>;
+      getManagerCustomers: () => Promise<any[]>;
     };
   }
 }
