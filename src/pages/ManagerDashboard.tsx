@@ -290,8 +290,8 @@ export default function ManagerDashboard() {
   // ── Fetch orders and customers from Appwrite ──
   // Uses Electron IPC when running as desktop app, direct REST fetch when in browser
   const APPWRITE_ENDPOINT = 'https://fra.cloud.appwrite.io/v1';
-  const APPWRITE_PROJECT = '698232950032f12e7895';
-  const APPWRITE_DB = 'restaurant_db';
+  const APPWRITE_PROJECT = '69879ae70002444f3f38';
+  const APPWRITE_DB = '6a545eb00016d126bc82';
 
   const fetchOrders = async () => {
     setLoading(true);

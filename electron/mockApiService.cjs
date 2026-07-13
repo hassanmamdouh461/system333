@@ -4,8 +4,8 @@
  */
 
 const ENDPOINT = "https://fra.cloud.appwrite.io/v1";
-const PROJECT_ID = "698232950032f12e7895";
-const DATABASE_ID = "restaurant_db";
+const PROJECT_ID = "69879ae70002444f3f38";
+const DATABASE_ID = "6a545eb00016d126bc82";
 const COLLECTION_ID = "orders";
 
 async function pushMenuItems(items) {
