@@ -5,7 +5,7 @@ import {
   Coffee, Calendar, Download,
   CheckCircle2, Clock, XCircle, AlertCircle, Utensils,
   UserCheck, Award, Coins, Building2, ChevronDown, RefreshCw,
-  Signal, SignalHigh, WifiOff, Package, AlertTriangle, BarChart3, Languages
+  Signal, SignalHigh, WifiOff, Package, AlertTriangle, BarChart3, Languages, Users, Search
 } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { getTaxRate } from '../utils/settingsConfig';
@@ -284,7 +284,8 @@ export default function ManagerDashboard() {
     return 'This Week';
   });
   const [isBranchDropdownOpen, setIsBranchDropdownOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'analytics' | 'inventory'>('analytics');
+  const [activeTab, setActiveTab] = useState<'analytics' | 'inventory' | 'customers'>('analytics');
+  const [customerSearchTerm, setCustomerSearchTerm] = useState('');
 
   // Data Fetching State
   const [orders, setOrders] = useState<AppwriteOrderDoc[]>([]);
@@ -645,6 +646,20 @@ export default function ManagerDashboard() {
     },
   ];
 
+  const filteredCustomers = useMemo(() => {
+    return customers.filter(c => {
+      // Branch filter
+      if (selectedBranch !== 'all' && c.branchId !== selectedBranch) return false;
+      // Search filter
+      const query = customerSearchTerm.trim().toLowerCase();
+      if (!query) return true;
+      return (
+        (c.name && c.name.toLowerCase().includes(query)) ||
+        (c.phone && c.phone.includes(query))
+      );
+    });
+  }, [customers, selectedBranch, customerSearchTerm]);
+
   if (loading) {
     return (
       <div className="flex flex-col items-center justify-center min-h-[500px] text-gray-700 space-y-4">
@@ -822,6 +837,17 @@ export default function ManagerDashboard() {
               {inventorySummary.lowStockCount}
             </span>
           )}
+        </button>
+        <button
+          onClick={() => setActiveTab('customers')}
+          className={`flex items-center gap-2 px-4 py-2.5 rounded-lg text-xs md:text-sm font-bold transition-all relative ${
+            activeTab === 'customers'
+              ? 'bg-gray-900 text-white shadow-md'
+              : 'text-gray-500 hover:text-gray-700 hover:bg-gray-100'
+          }`}
+        >
+          <Users size={16} />
+          {language === 'ar' ? 'العملاء والولاء' : 'Customers & Loyalty'}
         </button>
       </div>
 
@@ -1423,6 +1449,112 @@ export default function ManagerDashboard() {
             </div>
           )}
 
+        </div>
+      )}
+
+      {/* ── CUSTOMERS TAB ──────────────────────────────────────────────────────── */}
+      {activeTab === 'customers' && (
+        <div className="space-y-6">
+          {/* Customers Summary Stat Cards */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
+            <StatCard
+              label={language === 'ar' ? 'إجمالي العملاء المسجلين' : 'Total Customers'}
+              value={filteredCustomers.length.toLocaleString()}
+              icon={UserCheck}
+              trend={language === 'ar' ? `عملاء (${activeBranchLabel})` : `Members (${activeBranchLabel})`}
+              color="blue"
+            />
+            <StatCard
+              label={language === 'ar' ? 'إجمالي نقاط الولاء الموزعة' : 'Total Points Distributed'}
+              value={filteredCustomers.reduce((sum, c) => sum + (Number(c.points) || 0), 0).toLocaleString()}
+              icon={Award}
+              trend={language === 'ar' ? 'مجموع نقاط الولاء' : 'Total loyalty points'}
+              color="orange"
+            />
+            <StatCard
+              label={language === 'ar' ? 'قيمة استرداد النقاط' : 'Redemption Value'}
+              value={`${filteredCustomers.reduce((sum, c) => sum + (Number(c.points) || 0), 0).toLocaleString()} ${currencyStr}`}
+              icon={Coins}
+              trend={language === 'ar' ? '1 نقطة = 1 ج.م' : '1 point = 1 EGP'}
+              color="green"
+            />
+          </div>
+
+          {/* Table / Search panel */}
+          <div className="bg-white p-4 md:p-6 rounded-2xl border border-gray-150 shadow-sm space-y-4">
+            {/* Search and Title */}
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-base md:text-lg font-extrabold text-gray-900 leading-none">
+                  {language === 'ar' ? `قائمة عملاء ${activeBranchLabel}` : `${activeBranchLabel} Customer List`}
+                </h2>
+                <p className="text-xs text-gray-400 mt-1">
+                  {language === 'ar' ? 'عرض نقاط ولاء العملاء وتفاصيل تسجيلهم للفروع المحددة' : 'View customer loyalty points and branch registration details'}
+                </p>
+              </div>
+
+              {/* Search Box */}
+              <div className="relative w-full md:w-80">
+                <Search className={`absolute top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 ${isRtl ? 'right-3' : 'left-3'}`} />
+                <input
+                  type="text"
+                  placeholder={language === 'ar' ? 'البحث بالاسم أو الهاتف...' : 'Search by name or phone...'}
+                  value={customerSearchTerm}
+                  onChange={(e) => setCustomerSearchTerm(e.target.value)}
+                  className={`w-full py-2 bg-gray-50 border border-gray-250 rounded-xl focus:outline-none focus:ring-2 focus:ring-caramel text-xs md:text-sm ${isRtl ? 'pr-9 pl-4' : 'pl-9 pr-4'}`}
+                />
+              </div>
+            </div>
+
+            {/* Customers Table */}
+            <div className="overflow-x-auto rounded-xl border border-gray-150">
+              <table className="w-full text-left border-collapse">
+                <thead>
+                  <tr className="bg-gray-50 border-b border-gray-150 text-[10px] md:text-xs font-extrabold text-gray-500 uppercase tracking-wider">
+                    <th className="px-4 py-3 text-left">{language === 'ar' ? 'اسم العميل' : 'Customer Name'}</th>
+                    <th className="px-4 py-3 text-left">{language === 'ar' ? 'رقم الهاتف' : 'Phone Number'}</th>
+                    <th className="px-4 py-3 text-left">{language === 'ar' ? 'نقاط الولاء' : 'Loyalty Points'}</th>
+                    <th className="px-4 py-3 text-left">{language === 'ar' ? 'الفرع' : 'Branch'}</th>
+                    <th className="px-4 py-3 text-left">{language === 'ar' ? 'تاريخ التسجيل' : 'Registration Date'}</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100 text-xs md:text-sm text-gray-700">
+                  {filteredCustomers.length === 0 ? (
+                    <tr>
+                      <td colSpan={5} className="text-center py-8 text-gray-400 font-bold">
+                        {language === 'ar' ? 'لا يوجد نتائج' : 'No records found'}
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredCustomers.map((c) => {
+                      const branchLabel = BRANCHES.find(b => b.id === c.branchId);
+                      const bLabel = language === 'ar' ? branchLabel?.labelAr : branchLabel?.labelEn;
+                      return (
+                        <tr key={c.$id} className="hover:bg-gray-50/50 transition-colors">
+                          <td className="px-4 py-3.5 font-bold text-gray-900">{c.name || 'Customer'}</td>
+                          <td className="px-4 py-3.5 font-mono text-gray-650">{c.phone}</td>
+                          <td className="px-4 py-3.5">
+                            <span className="inline-flex items-center gap-1 bg-mocha-50 text-mocha-800 font-bold px-2 py-0.5 rounded-full text-[11px]">
+                              <Award size={12} className="text-mocha-600" />
+                              {c.points || 0}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3.5">
+                            <span className="inline-block text-[11px] text-mocha-600 font-bold bg-mocha-50 border border-mocha-100 px-1.5 py-0.5 rounded">
+                              {bLabel || 'default'}
+                            </span>
+                          </td>
+                          <td className="px-4 py-3.5 text-gray-400">
+                            {c.createdAt ? new Date(c.createdAt).toLocaleDateString(language === 'ar' ? 'ar-EG' : 'en-US') : ''}
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
         </div>
       )}
 
