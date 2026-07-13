@@ -12,9 +12,7 @@ export function QrMenuModal({ isOpen, onClose }: QrMenuModalProps) {
   const { t } = useLanguage();
   const [copied, setCopied] = useState(false);
   
-  const publicMenuUrl = typeof window !== 'undefined'
-    ? `${window.location.origin}/#/public-menu`
-    : 'https://manger-dashboard.appwrite.network/#/public-menu';
+  const publicMenuUrl = 'https://cafeflow.appwrite.network/public-menu';
   const qrCodeImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=${encodeURIComponent(publicMenuUrl)}`;
 
   const handleCopyLink = async () => {
