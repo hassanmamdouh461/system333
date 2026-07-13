@@ -141,12 +141,13 @@ function initDatabase() {
     )
   `).run();
 
-  // Seed default inventory items if count is less than 120 (30 items * 4 branches)
+  // Seed default inventory items if count is less than 30
   try {
     const invCount = db.prepare('SELECT COUNT(*) as count FROM inventory').get().count;
-    if (invCount < 120) {
-      console.log('[database] Seeding/Updating default inventory items for all branches...');
+    if (invCount < 30) {
+      console.log('[database] Seeding/Updating default inventory items for active branch...');
       const now = new Date().toISOString();
+      const branchId = getBranchId();
       db.prepare('DELETE FROM inventory').run();
       
       const insertInv = db.prepare(`
@@ -187,16 +188,12 @@ function initDatabase() {
         { id: 'inv-icecream', name: 'Vanilla Ice Cream', unit: 'kg', stock: 40.0, minStock: 5.0, cost: 6.00 }
       ];
 
-      const branches = ['default', 'branch_1', 'branch_2', 'branch_3'];
-      
       db.transaction(() => {
-        for (const branch of branches) {
-          for (const item of seedInventory) {
-            insertInv.run(item.id, item.name, item.unit, item.stock, item.minStock, item.cost, branch, now, now);
-          }
+        for (const item of seedInventory) {
+          insertInv.run(item.id, item.name, item.unit, item.stock, item.minStock, item.cost, branchId, now, now);
         }
       })();
-      console.log('[database] Seeded default inventory items for all branches successfully.');
+      console.log('[database] Seeded default inventory items for active branch successfully.');
     }
   } catch (err) {
     console.error('[database] Seeding default inventory items failed:', err);
