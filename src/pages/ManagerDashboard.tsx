@@ -273,8 +273,16 @@ export default function ManagerDashboard() {
   const { items: localMenuItems } = useMenu();
 
   // Filters State
-  const [selectedBranch, setSelectedBranch] = useState<string>('all');
-  const [dateRange, setDateRange] = useState<AnalyticsPeriod>('This Week');
+  const [selectedBranch, setSelectedBranch] = useState<string>(() => {
+    return localStorage.getItem('manager_selected_branch') || 'all';
+  });
+  const [dateRange, setDateRange] = useState<AnalyticsPeriod>(() => {
+    const saved = localStorage.getItem('manager_date_range');
+    if (saved === 'Today' || saved === 'This Week' || saved === 'This Month' || saved === 'This Year') {
+      return saved as AnalyticsPeriod;
+    }
+    return 'This Week';
+  });
   const [isBranchDropdownOpen, setIsBranchDropdownOpen] = useState(false);
   const [activeTab, setActiveTab] = useState<'analytics' | 'inventory'>('analytics');
 
@@ -656,7 +664,7 @@ export default function ManagerDashboard() {
     <div className="space-y-4 md:space-y-8 text-gray-900 pb-16">
       
       {/* ── Header Area with Live Status & Filters ─────────────────────────────────── */}
-      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 bg-white/50 backdrop-blur-md p-4 rounded-2xl border border-gray-200/40 shadow-sm">
+      <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 bg-white/50 backdrop-blur-md p-4 rounded-2xl border border-gray-200/40 shadow-sm relative z-30">
         
         {/* Title and Appwrite Sync Connection Badge */}
         <div className="space-y-1.5 flex-1 min-w-0">
@@ -737,7 +745,10 @@ export default function ManagerDashboard() {
                   {BRANCHES.map(branch => (
                     <button
                       key={branch.id}
-                      onClick={() => setSelectedBranch(branch.id)}
+                      onClick={() => {
+                        setSelectedBranch(branch.id);
+                        localStorage.setItem('manager_selected_branch', branch.id);
+                      }}
                       className={`w-full text-left px-4 py-2 text-xs md:text-sm font-semibold hover:bg-mocha-50 transition-colors flex items-center gap-2 ${
                         selectedBranch === branch.id ? 'text-mocha-700 bg-mocha-50/50' : 'text-gray-600'
                       }`}
@@ -756,7 +767,11 @@ export default function ManagerDashboard() {
             <Calendar className="text-gray-400 w-4 h-4 ml-2 mr-2" />
             <select
               value={dateRange}
-              onChange={e => setDateRange(e.target.value as AnalyticsPeriod)}
+              onChange={e => {
+                const val = e.target.value as AnalyticsPeriod;
+                setDateRange(val);
+                localStorage.setItem('manager_date_range', val);
+              }}
               className="py-2.5 bg-transparent border-0 outline-none text-xs md:text-sm font-bold text-gray-700 cursor-pointer pr-8"
             >
               <option value="Today">{t('Today')}</option>
