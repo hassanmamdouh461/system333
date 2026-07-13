@@ -1,18 +1,48 @@
 import { MenuItem } from '../types/menu';
 
+const APPWRITE_ENDPOINT = 'https://fra.cloud.appwrite.io/v1';
+const APPWRITE_PROJECT = '69879ae70002444f3f38';
+const APPWRITE_DB = '6a545eb00016d126bc82';
+
 /**
  * Menu Service - Handle all CRUD operations for Menu Items using SQLite via Electron IPC
  */
 export const menuService = {
   /**
-   * Fetch all menu items from local SQLite DB
+   * Fetch all menu items from local SQLite DB or Appwrite fallback
    */
   async getAll(): Promise<MenuItem[]> {
-    try {
-      return await window.electronAPI.getMenu();
-    } catch (error) {
-      console.error('[menuService] Error fetching menu items:', error);
-      throw new Error('Failed to fetch menu items');
+    const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
+    if (isElectron) {
+      try {
+        return await window.electronAPI.getMenu();
+      } catch (error) {
+        console.error('[menuService] Error fetching menu items from SQLite:', error);
+        throw new Error('Failed to fetch menu items');
+      }
+    } else {
+      // Browser/Web fallback — fetch from central Appwrite database
+      try {
+        const headers = { 'X-Appwrite-Project': APPWRITE_PROJECT };
+        const url = `${APPWRITE_ENDPOINT}/databases/${APPWRITE_DB}/collections/menu_items/documents?limit=1000`;
+        const res = await fetch(url, { headers });
+        if (!res.ok) throw new Error(`Appwrite menu fetch failed: ${res.status}`);
+        const data = await res.json();
+        const docs = data.documents || [];
+        return docs.map((doc: any) => ({
+          id: doc.$id || doc.id,
+          name: doc.name,
+          price: doc.price,
+          category: doc.category,
+          description: doc.description || "",
+          image: doc.image || "",
+          available: doc.available !== undefined ? doc.available : true,
+          isSynced: true
+        }));
+      } catch (error) {
+        console.error('[menuService] Error fetching menu items from Appwrite:', error);
+        throw new Error('Failed to fetch menu items');
+      }
     }
   },
 
