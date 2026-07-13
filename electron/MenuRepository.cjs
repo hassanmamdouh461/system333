@@ -101,6 +101,16 @@ class MenuRepository {
   deleteMenuItem(id) {
     const sqlite = this.getDb();
     sqlite.prepare('DELETE FROM menu WHERE id = ?').run(id);
+    
+    // Try to delete from Appwrite database immediately
+    try {
+      const mockApi = require('./mockApiService.cjs');
+      mockApi.deleteMenuItem(id).catch(err => {
+        console.warn('[MenuRepository] Async delete from Appwrite failed:', err.message);
+      });
+    } catch (e) {
+      console.warn('[MenuRepository] Failed to initiate Appwrite delete:', e.message);
+    }
   }
 
   resetMenu(defaults) {

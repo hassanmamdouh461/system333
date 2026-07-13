@@ -149,9 +149,26 @@ async function pullOrders() {
   return data.documents || [];
 }
 
+async function deleteMenuItem(id) {
+  const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/menu_items/documents/${encodeURIComponent(id)}`;
+  const response = await fetch(url, {
+    method: 'DELETE',
+    headers: {
+      'X-Appwrite-Project': PROJECT_ID
+    }
+  });
+  if (!response.ok && response.status !== 404) {
+    const errorText = await response.text();
+    console.error(`[mockApi] Appwrite delete failed for menu item ${id}:`, errorText);
+  } else {
+    console.log(`[mockApi] Successfully deleted menu item ${id} from Appwrite.`);
+  }
+}
+
 module.exports = {
   pushMenuItems,
   pushOrders,
   pushCustomers,
-  pullOrders
+  pullOrders,
+  deleteMenuItem
 };
