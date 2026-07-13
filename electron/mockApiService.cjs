@@ -46,12 +46,17 @@ async function pushMenuItems(items) {
         },
         body: JSON.stringify({
           documentId: item.id,
-          data: dataPayload
+          data: dataPayload,
+          permissions: ["read(\"any\")", "write(\"any\")"]
         })
       });
     }
 
     if (!res.ok) {
+      if (res.status === 409) {
+        console.warn(`[mockApi] Menu item ${item.id} already exists on Appwrite. Skipping to prevent block.`);
+        continue;
+      }
       const errorText = await res.text();
       console.error(`[mockApi] Appwrite request failed for menu item ${item.id} with status ${res.status}:`, errorText);
       throw new Error(`Appwrite error ${res.status}: ${errorText}`);
@@ -103,12 +108,17 @@ async function pushOrders(orders) {
         },
         body: JSON.stringify({
           documentId: order.id,
-          data: dataPayload
+          data: dataPayload,
+          permissions: ["read(\"any\")", "write(\"any\")"]
         })
       });
     }
 
     if (!res.ok) {
+      if (res.status === 409) {
+        console.warn(`[mockApi] Order ${order.id} already exists on Appwrite. Skipping to prevent block.`);
+        continue;
+      }
       const errorText = await res.text();
       console.error(`[mockApi] Appwrite request failed for order ${order.id} with status ${res.status}:`, errorText);
       throw new Error(`Appwrite error ${res.status}: ${errorText}`);
