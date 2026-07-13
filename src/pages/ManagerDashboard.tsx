@@ -280,41 +280,66 @@ export default function ManagerDashboard() {
 
   // Data Fetching State
   const [orders, setOrders] = useState<AppwriteOrderDoc[]>([]);
+  const [customers, setCustomers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [isDemoMode, setIsDemoMode] = useState(false);
   const [errorInfo, setErrorInfo] = useState<string | null>(null);
 
   const taxRate = getTaxRate();
 
-  // ── Fetch orders from Appwrite REST API ──────────────────────────────────────
+  // ── Fetch orders and customers from Appwrite REST API ────────────────────────
   const fetchOrders = async () => {
     setLoading(true);
     setErrorInfo(null);
     try {
-      // Abort controller to enforce 8 second timeout
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 8000);
 
-      const response = await fetch(
-        'https://cloud.appwrite.io/v1/databases/6a545eb00016d126bc82/collections/orders/documents?limit=100',
+      // Fetch Orders
+      const ordersRes = await fetch(
+        'https://fra.cloud.appwrite.io/v1/databases/restaurant_db/collections/orders/documents?limit=1000',
         {
           method: 'GET',
           headers: {
-            'X-Appwrite-Project': '69879ae70002444f3f38',
+            'X-Appwrite-Project': '698232950032f12e7895',
             'Content-Type': 'application/json'
           },
           signal: controller.signal
         }
       );
-      clearTimeout(timeoutId);
 
-      if (!response.ok) {
-        throw new Error(`Server returned status code ${response.status}`);
+      if (!ordersRes.ok) {
+        throw new Error(`Orders fetch failed: ${ordersRes.status}`);
+      }
+      const ordersData = await ordersRes.json();
+
+      // Fetch Customers
+      let customersList: any[] = [];
+      try {
+        const customersRes = await fetch(
+          'https://fra.cloud.appwrite.io/v1/databases/restaurant_db/collections/customers/documents?limit=1000',
+          {
+            method: 'GET',
+            headers: {
+              'X-Appwrite-Project': '698232950032f12e7895',
+              'Content-Type': 'application/json'
+            },
+            signal: controller.signal
+          }
+        );
+        if (customersRes.ok) {
+          const customersData = await customersRes.json();
+          customersList = customersData.documents || [];
+        }
+      } catch (custErr) {
+        console.warn("Failed to fetch customers from Appwrite:", custErr);
       }
 
-      const resData = await response.json();
-      if (resData && Array.isArray(resData.documents)) {
-        setOrders(resData.documents);
+      clearTimeout(timeoutId);
+
+      if (ordersData && Array.isArray(ordersData.documents)) {
+        setOrders(ordersData.documents);
+        setCustomers(customersList);
         setIsDemoMode(false);
       } else {
         throw new Error("Invalid database payload structure");
@@ -326,6 +351,7 @@ export default function ManagerDashboard() {
       // Load Dynamic Fallback orders
       const fallbackOrders = generateMockOrders();
       setOrders(fallbackOrders);
+      setCustomers([]);
       setIsDemoMode(true);
     } finally {
       setLoading(false);
@@ -448,14 +474,16 @@ export default function ManagerDashboard() {
       .sort((a, b) => new Date(b.$createdAt).getTime() - new Date(a.$createdAt).getTime())
       .slice(0, 5);
 
-    // 11. Mock Loyalty values per branch
-    const loyaltyStats = {
-      all: { count: 105, points: 3600 },
-      branch_1: { count: 28, points: 840 },
-      branch_2: { count: 42, points: 1560 },
-      branch_3: { count: 35, points: 1200 }
+    // 11. Real Loyalty values from Appwrite database
+    const branchCustomers = customers.filter(c => {
+      if (selectedBranch === 'all') return true;
+      return c.branchId === selectedBranch;
+    });
+    const totalPoints = branchCustomers.reduce((sum, c) => sum + (Number(c.points) || 0), 0);
+    const activeLoyalty = {
+      count: branchCustomers.length,
+      points: totalPoints
     };
-    const activeLoyalty = loyaltyStats[selectedBranch as keyof typeof loyaltyStats] || loyaltyStats.all;
 
     return {
       totalRevenue: realRevenue,

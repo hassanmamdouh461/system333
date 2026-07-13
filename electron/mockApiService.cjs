@@ -132,10 +132,61 @@ async function pushOrders(orders) {
 }
 
 async function pushCustomers(customers) {
-  // Mocked as success for now since customers collection is not configured on Appwrite
-  if (customers.length > 0) {
-    console.log(`[mockApi] (Mock) Pushing ${customers.length} customers to central server...`);
+  if (customers.length === 0) return { success: true };
+  
+  console.log(`[mockApi] Pushing ${customers.length} customers to Appwrite...`);
+  
+  for (const customer of customers) {
+    const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/customers/documents`;
+    const docUrl = `${url}/${encodeURIComponent(customer.id)}`;
+    
+    const dataPayload = {
+      name: customer.name || "Customer",
+      phone: customer.phone,
+      points: Number(customer.points) || 0,
+      createdAt: customer.createdAt || new Date().toISOString(),
+      branchId: customer.branchId || "default"
+    };
+
+    // Try to update (PATCH) first
+    let res = await fetch(docUrl, {
+      method: 'PATCH',
+      headers: {
+        'X-Appwrite-Project': PROJECT_ID,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({ data: dataPayload })
+    });
+
+    if (res.status === 404) {
+      // If 404, create it (POST)
+      res = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'X-Appwrite-Project': PROJECT_ID,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          documentId: customer.id,
+          data: dataPayload,
+          permissions: ["read(\"any\")", "write(\"any\")"]
+        })
+      });
+    }
+
+    if (!res.ok) {
+      if (res.status === 409) {
+        console.warn(`[mockApi] Customer ${customer.id} already exists on Appwrite. Skipping to prevent block.`);
+        continue;
+      }
+      const errorText = await res.text();
+      console.error(`[mockApi] Appwrite request failed for customer ${customer.id} with status ${res.status}:`, errorText);
+      throw new Error(`Appwrite error ${res.status}: ${errorText}`);
+    }
+
+    console.log(`[mockApi] Successfully synced customer ${customer.id} to Appwrite.`);
   }
+
   return { success: true };
 }
 
