@@ -81,3 +81,40 @@ export function setBranchConfig(config: Partial<BranchConfig>): void {
   // Also persist branch_id as a standalone key for database.cjs getBranchId()
   localStorage.setItem('branch_id', updated.branchId);
 }
+
+// ─── Telegram Config ────────────────────────────────────────────────────────
+export interface TelegramConfig {
+  botToken: string;
+  chatId: string;
+  reportTime: string; // e.g., "23:00"
+  enabled: boolean;
+}
+
+const DEFAULT_TELEGRAM_CONFIG: TelegramConfig = {
+  botToken: '',
+  chatId: '',
+  reportTime: '23:00',
+  enabled: false,
+};
+
+const LS_TELEGRAM_CONFIG_KEY = 'brewmaster_telegram_config';
+
+export function getTelegramConfig(): TelegramConfig {
+  const saved = localStorage.getItem(LS_TELEGRAM_CONFIG_KEY);
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      return { ...DEFAULT_TELEGRAM_CONFIG, ...parsed };
+    } catch {
+      // JSON parse error, fallback
+    }
+  }
+  return { ...DEFAULT_TELEGRAM_CONFIG };
+}
+
+export function setTelegramConfig(config: Partial<TelegramConfig>): void {
+  const current = getTelegramConfig();
+  const updated = { ...current, ...config };
+  localStorage.setItem(LS_TELEGRAM_CONFIG_KEY, JSON.stringify(updated));
+}
+

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { User, Store, Lock, HelpCircle, LogOut, QrCode, Building2 } from 'lucide-react';
+import { User, Store, Lock, HelpCircle, LogOut, QrCode, Building2, Send } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 import { QrMenuModal } from '../components/settings/QrMenuModal';
@@ -7,6 +7,7 @@ import { PinSetupModal } from '../components/settings/PinSetupModal';
 import { ProfileSettingsModal } from '../components/settings/ProfileSettingsModal';
 import { StoreConfigModal } from '../components/settings/StoreConfigModal';
 import { BranchConfigModal } from '../components/settings/BranchConfigModal';
+import { TelegramConfigModal } from '../components/settings/TelegramConfigModal';
 import { useLanguage } from '../context/LanguageContext';
 import { DatabaseStatus } from '../components/ui/DatabaseStatus';
 import { SyncStatus } from '../components/ui/SyncStatus';
@@ -18,6 +19,7 @@ export default function Settings() {
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isStoreModalOpen, setIsStoreModalOpen] = useState(false);
   const [isBranchModalOpen, setIsBranchModalOpen] = useState(false);
+  const [isTelegramModalOpen, setIsTelegramModalOpen] = useState(false);
   const { logout } = useAuth();
 
   const sections = [
@@ -53,6 +55,14 @@ export default function Settings() {
       bgColor: 'bg-orange-50',
       description: 'Configure branch identity and credentials',
     },
+    {
+      id: 'telegram',
+      title: 'Telegram Reports',
+      icon: Send,
+      color: 'text-sky-600',
+      bgColor: 'bg-sky-50',
+      description: 'Configure daily Telegram sales reports',
+    },
   ];
 
   const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
@@ -82,6 +92,7 @@ export default function Settings() {
                   if (section.id === 'profile') setIsProfileModalOpen(true);
                   if (section.id === 'store') setIsStoreModalOpen(true);
                   if (section.id === 'branch') setIsBranchModalOpen(true);
+                  if (section.id === 'telegram') setIsTelegramModalOpen(true);
                 }}
                 className="bg-white p-5 rounded-2xl border border-gray-100 flex items-start gap-4 hover:shadow-md transition-shadow group cursor-pointer"
               >
@@ -179,6 +190,7 @@ export default function Settings() {
       <ProfileSettingsModal isOpen={isProfileModalOpen} onClose={() => setIsProfileModalOpen(false)} />
       <StoreConfigModal isOpen={isStoreModalOpen} onClose={() => setIsStoreModalOpen(false)} />
       <BranchConfigModal isOpen={isBranchModalOpen} onClose={() => setIsBranchModalOpen(false)} />
+      <TelegramConfigModal isOpen={isTelegramModalOpen} onClose={() => setIsTelegramModalOpen(false)} />
     </div>
   );
 }

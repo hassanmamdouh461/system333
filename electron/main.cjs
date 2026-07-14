@@ -10,6 +10,7 @@ const menuRepository = require('./MenuRepository.cjs');
 const customerRepository = require('./CustomerRepository.cjs');
 const inventoryRepository = require('./InventoryRepository.cjs');
 const mockApi = require('./mockApiService.cjs');
+const telegramService = require('./telegramService.cjs');
 
 let mainWindow;
 let syncEngine;
@@ -103,6 +104,10 @@ app.whenReady().then(() => {
   // Sync IPC Handlers
   ipcMain.handle('sync:get-status', () => syncEngine.getStatus());
   ipcMain.handle('sync:trigger-now', () => syncEngine.syncNow());
+
+  // Telegram IPC Handlers
+  ipcMain.handle('db:get-daily-report-stats', () => orderRepository.getDailyReportStats());
+  ipcMain.handle('telegram:send-daily-report', () => telegramService.sendDailyReport());
 
   createWindow();
 

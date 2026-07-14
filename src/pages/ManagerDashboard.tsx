@@ -5,7 +5,7 @@ import {
   Coffee, Calendar, Download,
   CheckCircle2, Clock, XCircle, AlertCircle, Utensils,
   UserCheck, Award, Coins, Building2, ChevronDown, RefreshCw,
-  Signal, SignalHigh, WifiOff, Package, AlertTriangle, BarChart3, Languages, Users, Search, Settings
+  Signal, SignalHigh, WifiOff, Package, AlertTriangle, BarChart3, Languages, Users, Search, Settings, Send
 } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { getTaxRate } from '../utils/settingsConfig';
@@ -410,6 +410,119 @@ export default function ManagerDashboard() {
   useEffect(() => {
     fetchOrders();
   }, []);
+
+  const sendConsolidatedTelegramReport = async () => {
+    // 1. Get config
+    const configRaw = localStorage.getItem('brewmaster_telegram_config');
+    if (!configRaw) {
+      alert(language === 'ar' ? 'يرجى إعداد التليجرام أولاً من صفحة الإعدادات!' : 'Please configure Telegram first in Settings!');
+      return;
+    }
+    let config;
+    try {
+      config = JSON.parse(configRaw);
+    } catch(e) {}
+    if (!config || !config.botToken || !config.chatId) {
+      alert(language === 'ar' ? 'يرجى إدخال التوكن ومعرف المحادثة في الإعدادات أولاً!' : 'Please enter Bot Token and Chat ID in Settings!');
+      return;
+    }
+
+    const { botToken, chatId } = config;
+
+    // 2. Filter orders for today
+    const todayOrders = orders.filter(order => {
+      const d = new Date(order.$createdAt);
+      const now = new Date();
+      return d.toDateString() === now.toDateString();
+    });
+
+    if (todayOrders.length === 0) {
+      alert(language === 'ar' ? 'لا توجد مبيعات مسجلة اليوم لإرسالها!' : 'No orders recorded today to send!');
+      return;
+    }
+
+    // 3. Group by branch
+    const branchStats: Record<string, { totalOrders: number; totalRevenue: number; totalUnpaid: number; cash: number; card: number }> = {};
+    
+    // Initialize stats for known branches
+    const branchNames: Record<string, string> = {
+      'branch_1': language === 'ar' ? 'فرع المعادي (فرع 1)' : 'Maadi Branch (1)',
+      'branch_2': language === 'ar' ? 'فرع مصر الجديدة (فرع 2)' : 'Heliopolis Branch (2)',
+      'branch_3': language === 'ar' ? 'فرع الزمالك (فرع 3)' : 'Zamalek Branch (3)',
+      'default': language === 'ar' ? 'الفرع الرئيسي' : 'Main Branch'
+    };
+
+    todayOrders.forEach(order => {
+      const bId = order.branch_id || 'default';
+      if (!branchStats[bId]) {
+        branchStats[bId] = { totalOrders: 0, totalRevenue: 0, totalUnpaid: 0, cash: 0, card: 0 };
+      }
+      
+      branchStats[bId].totalOrders += 1;
+      const amount = Number(order.total_amount) || 0;
+      
+      if (order.paymentStatus === 'Unpaid') {
+        branchStats[bId].totalUnpaid += amount;
+      } else {
+        branchStats[bId].totalRevenue += amount;
+        if (order.payment_method === 'Card') {
+          branchStats[bId].card += amount;
+        } else {
+          branchStats[bId].cash += amount;
+        }
+      }
+    });
+
+    // 4. Format Message
+    const todayStr = new Date().toLocaleDateString('en-CA');
+    let message = `🏛️ <b>التقرير الموحد لكافة الفروع لليوم</b>\n`;
+    message += `⏱️ التاريخ: <code>${todayStr}</code>\n\n`;
+
+    let totalAllOrders = 0;
+    let totalAllRevenue = 0;
+    let totalAllUnpaid = 0;
+
+    Object.entries(branchStats).forEach(([bId, s]) => {
+      const bName = branchNames[bId] || bId;
+      message += `📍 <b>${bName}:</b>\n`;
+      message += `• عدد الطلبات: <b>${s.totalOrders}</b>\n`;
+      message += `• مبيعات محصلة: <b>${s.totalRevenue.toFixed(2)}</b> ج.م\n`;
+      message += `• مبيعات آجلة: <b>${s.totalUnpaid.toFixed(2)}</b> ج.م\n`;
+      message += `• كاش: <b>${s.cash.toFixed(2)}</b> ج.م | شبكة: <b>${s.card.toFixed(2)}</b> ج.م\n\n`;
+
+      totalAllOrders += s.totalOrders;
+      totalAllRevenue += s.totalRevenue;
+      totalAllUnpaid += s.totalUnpaid;
+    });
+
+    message += `📈 <b>الإجمالي الكلي لجميع الفروع:</b>\n`;
+    message += `• إجمالي المبيعات: <b>${totalAllRevenue.toFixed(2)}</b> ج.م\n`;
+    message += `• إجمالي الطلبات: <b>${totalAllOrders}</b> طلب\n`;
+    message += `• إجمالي الآجل: <b>${totalAllUnpaid.toFixed(2)}</b> ج.م\n\n`;
+    message += `✅ تم إرسال التقرير بنجاح من لوحة الإشراف المركزية`;
+
+    // 5. Send message
+    try {
+      const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          chat_id: chatId,
+          text: message,
+          parse_mode: 'HTML'
+        })
+      });
+      const data = await res.json();
+      if (data.ok) {
+        alert(language === 'ar' ? 'تم إرسال التقرير الموحد للتليجرام بنجاح!' : 'Consolidated report sent successfully to Telegram!');
+      } else {
+        throw new Error(data.description);
+      }
+    } catch(err: any) {
+      alert(`${language === 'ar' ? 'فشل الإرسال: ' : 'Send failed: '}${err.message || 'خطأ غير معروف'}`);
+    }
+  };
 
   // Close dropdown on outside click
   useEffect(() => {
@@ -945,6 +1058,16 @@ export default function ManagerDashboard() {
               <option value="This Year">{t('This Year')}</option>
             </select>
           </div>
+
+          {/* Telegram Daily Report */}
+          <button
+            onClick={sendConsolidatedTelegramReport}
+            className="flex items-center gap-2 px-4 py-2.5 bg-sky-600 hover:bg-sky-700 text-white rounded-xl text-xs md:text-sm font-bold transition-all active:scale-95 shadow-sm"
+            title={language === 'ar' ? 'إرسال تقرير اليوم لتليجرام' : 'Send Daily Report to Telegram'}
+          >
+            <Send size={14} />
+            <span>{language === 'ar' ? 'تقرير التليجرام' : 'Telegram Report'}</span>
+          </button>
 
           {/* Print Report */}
           <button

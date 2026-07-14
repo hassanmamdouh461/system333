@@ -112,6 +112,11 @@ class SyncEngine {
     if (this.isSyncing) return;
     this.isSyncing = true;
 
+    // Trigger check for daily Telegram report send in background
+    this.checkAndSendTelegramReport().catch(err => {
+      console.error('[syncEngine] Auto Telegram report failed:', err);
+    });
+
     try {
       // 1. Check for internet connectivity first
       this.status.state = 'syncing';
@@ -216,6 +221,55 @@ class SyncEngine {
       this.updatePendingCount(); // Updates pending count and calls emitStatus()
     } finally {
       this.isSyncing = false;
+    }
+  }
+
+  /**
+   * Automatically check and send Telegram report if configured and scheduled time is reached
+   */
+  async checkAndSendTelegramReport() {
+    try {
+      const db = require('./database.cjs');
+      const settings = db.getSettings();
+      
+      const configRaw = settings['brewmaster_telegram_config'];
+      if (!configRaw) return;
+
+      let config;
+      try {
+        config = JSON.parse(configRaw);
+      } catch (e) {
+        return;
+      }
+
+      if (!config.enabled || !config.botToken || !config.chatId) return;
+
+      const now = new Date();
+      // Format time as "HH:MM" (local time)
+      const currentHours = String(now.getHours()).padStart(2, '0');
+      const currentMinutes = String(now.getMinutes()).padStart(2, '0');
+      const currentTimeStr = `${currentHours}:${currentMinutes}`;
+      
+      // Target scheduled time
+      const scheduledTimeStr = config.reportTime || '23:00';
+      
+      // Format today's date as "YYYY-MM-DD"
+      const todayDateStr = now.toLocaleDateString('en-CA');
+      const lastReportDate = settings['telegram_last_report_date'] || '';
+
+      // If current local time is at or after scheduled time, and we haven't sent it today
+      if (currentTimeStr >= scheduledTimeStr && lastReportDate !== todayDateStr) {
+        console.log(`[syncEngine] Triggering automatic daily Telegram report at ${currentTimeStr} (Scheduled: ${scheduledTimeStr})`);
+        
+        const telegramService = require('./telegramService.cjs');
+        await telegramService.sendDailyReport();
+        
+        // Save today's date as the last sent report to prevent double sends
+        db.saveSetting('telegram_last_report_date', todayDateStr);
+        console.log(`[syncEngine] Automatic daily Telegram report sent successfully for ${todayDateStr}.`);
+      }
+    } catch (error) {
+      console.error('[syncEngine] Failed to send automatic Telegram report:', error.message);
     }
   }
 }

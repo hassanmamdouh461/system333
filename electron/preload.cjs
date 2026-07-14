@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   updateOrder: (id, data) => ipcRenderer.invoke('db:update-order', id, data),
   deleteOrder: (id) => ipcRenderer.invoke('db:delete-order', id),
   resetOrders: (defaults) => ipcRenderer.invoke('db:reset-orders', defaults),
+  getDailyReportStats: () => ipcRenderer.invoke('db:get-daily-report-stats'),
+  sendDailyReportToTelegram: () => ipcRenderer.invoke('telegram:send-daily-report'),
 
   getCustomers: () => ipcRenderer.invoke('db:get-customers'),
   getCustomerByPhone: (phone) => ipcRenderer.invoke('db:get-customer-by-phone', phone),

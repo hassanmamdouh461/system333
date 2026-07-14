@@ -343,6 +343,54 @@ class OrderRepository {
 
     runTx(pulledOrders);
   }
+
+  getDailyReportStats() {
+    const sqlite = this.getDb();
+    
+    // Query basic daily summary in local timezone
+    const summary = sqlite.prepare(`
+      SELECT 
+        COUNT(*) as totalOrders,
+        SUM(CASE WHEN paymentStatus = 'Paid' THEN totalAmount ELSE 0 END) as totalRevenue,
+        SUM(CASE WHEN paymentStatus = 'Unpaid' THEN totalAmount ELSE 0 END) as totalUnpaid,
+        SUM(CASE WHEN paymentMethod = 'Cash' AND paymentStatus = 'Paid' THEN totalAmount ELSE 0 END) as cashRevenue,
+        SUM(CASE WHEN paymentMethod = 'Card' AND paymentStatus = 'Paid' THEN totalAmount ELSE 0 END) as cardRevenue
+      FROM orders 
+      WHERE date(createdAt, 'localtime') = date('now', 'localtime')
+    `).get();
+
+    // Query items sold in local timezone
+    const rows = sqlite.prepare(`
+      SELECT items FROM orders 
+      WHERE date(createdAt, 'localtime') = date('now', 'localtime')
+        AND paymentStatus = 'Paid'
+    `).all();
+
+    const itemsMap = {};
+    for (const row of rows) {
+      try {
+        const items = JSON.parse(row.items);
+        for (const item of items) {
+          const qty = Number(item.quantity) || 0;
+          itemsMap[item.name] = (itemsMap[item.name] || 0) + qty;
+        }
+      } catch (e) {
+        console.error('[OrderRepository] Failed to parse items json in getDailyReportStats:', e);
+      }
+    }
+
+    const itemsSold = Object.entries(itemsMap).map(([name, quantity]) => ({ name, quantity }));
+
+    return {
+      date: new Date().toLocaleDateString('en-CA'),
+      totalOrders: summary.totalOrders || 0,
+      totalRevenue: summary.totalRevenue || 0,
+      totalUnpaid: summary.totalUnpaid || 0,
+      cashRevenue: summary.cashRevenue || 0,
+      cardRevenue: summary.cardRevenue || 0,
+      itemsSold
+    };
+  }
 }
 
 module.exports = new OrderRepository();
