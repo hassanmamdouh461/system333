@@ -429,6 +429,11 @@ export default function ManagerDashboard() {
 
     const { botToken, chatId } = config;
 
+    if (activeTab === 'settings') {
+      alert(language === 'ar' ? 'يرجى فتح لوحة الإحصائيات أو المخزون أو العملاء لإرسال تقرير تليجرام المخصص لها!' : 'Please open the Analytics, Inventory, or Customers tab to send its report!');
+      return;
+    }
+
     // 2. Resolve selected branch label
     const branchNames: Record<string, string> = {
       'branch_1': language === 'ar' ? 'فرع المعادي (فرع 1)' : 'Maadi Branch (1)',
@@ -441,95 +446,169 @@ export default function ManagerDashboard() {
       ? (language === 'ar' ? 'كافة الفروع' : 'All Branches')
       : (branchNames[selectedBranch] || selectedBranch);
 
-    // Resolve date range label
-    const periodNames: Record<AnalyticsPeriod, string> = {
-      'Today': language === 'ar' ? 'اليوم' : 'Today',
-      'This Week': language === 'ar' ? 'هذا الأسبوع' : 'This Week',
-      'This Month': language === 'ar' ? 'هذا الشهر' : 'This Month',
-      'This Year': language === 'ar' ? 'هذا العام' : 'This Year'
-    };
-
-    const activePeriodLabel = periodNames[dateRange] || dateRange;
-
-    // 3. Filter orders matching current dateRange and branch
-    const filteredOrders = orders.filter(order => {
-      const matchesBranch = selectedBranch === 'all' || order.branch_id === selectedBranch;
-      const matchesPeriod = inPeriod(order.$createdAt, dateRange);
-      return matchesBranch && matchesPeriod;
-    });
-
-    if (filteredOrders.length === 0) {
-      alert(language === 'ar' ? 'لا توجد مبيعات مسجلة في هذه الفترة لإرسالها!' : 'No orders recorded in this period to send!');
-      return;
-    }
-
-    // 4. Group by branch for consolidated report if 'all' is selected
-    const branchStats: Record<string, { totalOrders: number; totalRevenue: number; totalUnpaid: number; cash: number; card: number }> = {};
-    if (selectedBranch === 'all') {
-      filteredOrders.forEach(order => {
-        const bId = order.branch_id || 'default';
-        if (!branchStats[bId]) {
-          branchStats[bId] = { totalOrders: 0, totalRevenue: 0, totalUnpaid: 0, cash: 0, card: 0 };
-        }
-        
-        branchStats[bId].totalOrders += 1;
-        const amount = Number(order.total_amount) || 0;
-        
-        if (order.paymentStatus === 'Unpaid') {
-          branchStats[bId].totalUnpaid += amount;
-        } else {
-          branchStats[bId].totalRevenue += amount;
-          if (order.payment_method === 'Card') {
-            branchStats[bId].card += amount;
-          } else {
-            branchStats[bId].cash += amount;
-          }
-        }
-      });
-    }
-
-    // 5. Format Message
     const todayStr = new Date().toLocaleDateString('en-CA');
-    let message = `📊 <b>تقرير مبيعات BrewMaster: ${activeBranchName}</b>\n`;
-    message += `⏱️ الفئة/الفترة: <b>${activePeriodLabel}</b> (بتاريخ: <code>${todayStr}</code>)\n\n`;
+    let message = '';
 
-    message += `💰 <b>الملخص المالي للفترة:</b>\n`;
-    message += `• إجمالي المبيعات (المحصلة): <b>${processedData.totalRevenue.toFixed(2)}</b> ج.م\n`;
-    message += `• عدد الطلبات الكلي: <b>${processedData.totalCount}</b> طلب\n`;
-    message += `• إجمالي الآجل: <b>${processedData.unpaidAmount.toFixed(2)}</b> ج.م\n\n`;
+    if (activeTab === 'analytics') {
+      // 📑 REPORT 1: SALES & ANALYTICS REPORT
+      const periodNames: Record<AnalyticsPeriod, string> = {
+        'Today': language === 'ar' ? 'اليوم' : 'Today',
+        'This Week': language === 'ar' ? 'هذا الأسبوع' : 'This Week',
+        'This Month': language === 'ar' ? 'هذا الشهر' : 'This Month',
+        'This Year': language === 'ar' ? 'هذا العام' : 'This Year'
+      };
+      const activePeriodLabel = periodNames[dateRange] || dateRange;
 
-    message += `💳 <b>تفاصيل طرق الدفع (المحصلة):</b>\n`;
-    message += `• نقدي (Cash): <b>${processedData.cashAmount.toFixed(2)}</b> ج.م (${processedData.cashPercentage}%)\n`;
-    message += `• شبكة/بطاقة (Card): <b>${processedData.cardAmount.toFixed(2)}</b> ج.م (${processedData.cardPercentage}%)\n\n`;
-
-    // Dine-in vs Takeaway
-    message += `🍽️ <b>أنواع الطلبات:</b>\n`;
-    message += `• سفري (Takeaway): <b>${processedData.takeawayCount}</b> طلب\n`;
-    message += `• صالة (Dine-in): <b>${processedData.dineInCount}</b> طلب\n\n`;
-
-    // Branch Breakdown (only if selectedBranch === 'all')
-    if (selectedBranch === 'all' && Object.keys(branchStats).length > 0) {
-      message += `🏢 <b>تفاصيل الفروع المفرّقة:</b>\n`;
-      Object.entries(branchStats).forEach(([bId, s]) => {
-        const bName = branchNames[bId] || bId;
-        message += `📍 <b>${bName}:</b>\n`;
-        message += `• عدد الطلبات: <b>${s.totalOrders}</b>\n`;
-        message += `• مبيعات محصلة: <b>${s.totalRevenue.toFixed(2)}</b> ج.م\n`;
-        message += `• مبيعات آجلة: <b>${s.totalUnpaid.toFixed(2)}</b> ج.م\n`;
-        message += `• كاش: <b>${s.cash.toFixed(2)}</b> | شبكة: <b>${s.card.toFixed(2)}</b>\n\n`;
+      // Filter orders matching current dateRange and branch
+      const filteredOrders = orders.filter(order => {
+        const matchesBranch = selectedBranch === 'all' || order.branch_id === selectedBranch;
+        const matchesPeriod = inPeriod(order.$createdAt, dateRange);
+        return matchesBranch && matchesPeriod;
       });
-    }
 
-    // Top selling items
-    if (processedData.topItems && processedData.topItems.length > 0) {
-      message += `☕ <b>أكثر الأصناف مبيعاً في هذه الفترة:</b>\n`;
-      processedData.topItems.forEach(item => {
-        message += `• ${item.name}: عدد <b>${item.count}</b>\n`;
-      });
-      message += `\n`;
-    }
+      if (filteredOrders.length === 0) {
+        alert(language === 'ar' ? 'لا توجد مبيعات مسجلة في هذه الفترة لإرسالها!' : 'No orders recorded in this period to send!');
+        return;
+      }
 
-    message += `✅ تم تصدير التقرير من لوحة الإشراف المركزية`;
+      // Group by branch for consolidated report if 'all' is selected
+      const branchStats: Record<string, { totalOrders: number; totalRevenue: number; totalUnpaid: number; cash: number; card: number }> = {};
+      if (selectedBranch === 'all') {
+        filteredOrders.forEach(order => {
+          const bId = order.branch_id || 'default';
+          if (!branchStats[bId]) {
+            branchStats[bId] = { totalOrders: 0, totalRevenue: 0, totalUnpaid: 0, cash: 0, card: 0 };
+          }
+          
+          branchStats[bId].totalOrders += 1;
+          const amount = Number(order.total_amount) || 0;
+          
+          if (order.paymentStatus === 'Unpaid') {
+            branchStats[bId].totalUnpaid += amount;
+          } else {
+            branchStats[bId].totalRevenue += amount;
+            if (order.payment_method === 'Card') {
+              branchStats[bId].card += amount;
+            } else {
+              branchStats[bId].cash += amount;
+            }
+          }
+        });
+      }
+
+      message = `📊 <b>تقرير مبيعات BrewMaster: ${activeBranchName}</b>\n`;
+      message += `⏱️ الفئة/الفترة: <b>${activePeriodLabel}</b> (بتاريخ: <code>${todayStr}</code>)\n\n`;
+
+      message += `💰 <b>الملخص المالي للفترة:</b>\n`;
+      message += `• إجمالي المبيعات (المحصلة): <b>${processedData.totalRevenue.toFixed(2)}</b> ج.م\n`;
+      message += `• عدد الطلبات الكلي: <b>${processedData.totalCount}</b> طلب\n`;
+      message += `• إجمالي الآجل: <b>${processedData.unpaidAmount.toFixed(2)}</b> ج.م\n\n`;
+
+      message += `💳 <b>تفاصيل طرق الدفع (المحصلة):</b>\n`;
+      message += `• نقدي (Cash): <b>${processedData.cashAmount.toFixed(2)}</b> ج.م (${processedData.cashPercentage}%)\n`;
+      message += `• شبكة/بطاقة (Card): <b>${processedData.cardAmount.toFixed(2)}</b> ج.م (${processedData.cardPercentage}%)\n\n`;
+
+      message += `🍽️ <b>أنواع الطلبات:</b>\n`;
+      message += `• سفري (Takeaway): <b>${processedData.takeawayCount}</b> طلب\n`;
+      message += `• صالة (Dine-in): <b>${processedData.dineInCount}</b> طلب\n\n`;
+
+      if (selectedBranch === 'all' && Object.keys(branchStats).length > 0) {
+        message += `🏢 <b>تفاصيل الفروع المفرّقة:</b>\n`;
+        Object.entries(branchStats).forEach(([bId, s]) => {
+          const bName = branchNames[bId] || bId;
+          message += `📍 <b>${bName}:</b>\n`;
+          message += `• عدد الطلبات: <b>${s.totalOrders}</b>\n`;
+          message += `• مبيعات محصلة: <b>${s.totalRevenue.toFixed(2)}</b> ج.م\n`;
+          message += `• مبيعات آجلة: <b>${s.totalUnpaid.toFixed(2)}</b> ج.م\n`;
+          message += `• كاش: <b>${s.cash.toFixed(2)}</b> | شبكة: <b>${s.card.toFixed(2)}</b>\n\n`;
+        });
+      }
+
+      if (processedData.topItems && processedData.topItems.length > 0) {
+        message += `☕ <b>أكثر الأصناف مبيعاً في هذه الفترة:</b>\n`;
+        processedData.topItems.forEach(item => {
+          message += `• ${item.name}: عدد <b>${item.count}</b>\n`;
+        });
+        message += `\n`;
+      }
+
+      message += `✅ تم تصدير التقرير من لوحة الإشراف المركزية`;
+
+    } else if (activeTab === 'inventory') {
+      // 📦 REPORT 2: INVENTORY REPORT
+      message = `📦 <b>تقرير حالة المخزون: ${activeBranchName}</b>\n`;
+      message += `⏱️ التاريخ: <code>${todayStr}</code>\n\n`;
+
+      message += `📊 <b>ملخص حالة المخزون للفترة:</b>\n`;
+      message += `• القيمة التقديرية للمخزون: <b>${inventorySummary.totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</b> ج.م\n`;
+      message += `• عدد المواد الخام المتابعة: <b>${inventorySummary.totalItems}</b> صنف\n`;
+      message += `• تنبيهات نقص المخزون: <b>${inventorySummary.lowStockCount}</b> صنف\n\n`;
+
+      if (selectedBranch === 'all') {
+        message += `🏢 <b>الكميات المتبقية مقارنة بين الفروع:</b>\n`;
+        inventoryData.forEach(inv => {
+          const name = language === 'ar' ? inv.nameAr : inv.nameEn;
+          const unit = language === 'ar' ? inv.unitAr : inv.unit;
+          
+          message += `• <b>${name}:</b>\n`;
+          ['branch_1', 'branch_2', 'branch_3'].forEach(bId => {
+            const bd = inv.branches[bId];
+            const bName = branchNames[bId] || bId;
+            if (bd) {
+              const warning = bd.isLow ? ' ⚠️ (نقص)' : '';
+              message += `  - ${bName}: <code>${bd.remaining}</code> ${unit}${warning}\n`;
+            }
+          });
+        });
+        message += `\n`;
+      } else {
+        message += `📋 <b>تفاصيل كميات المواد الخام بالفرع:</b>\n`;
+        inventoryData.forEach(inv => {
+          const bd = inv.branches[selectedBranch];
+          if (!bd) return;
+          const name = language === 'ar' ? inv.nameAr : inv.nameEn;
+          const unit = language === 'ar' ? inv.unitAr : inv.unit;
+          const warning = bd.isLow ? ' ⚠️ (نقص)' : '';
+          message += `• ${name}: <b>${bd.remaining}</b> ${unit} (${bd.percentage}%)${warning}\n`;
+        });
+        message += `\n`;
+      }
+
+      message += `✅ تم تصدير تقرير المخزون من لوحة الإشراف المركزية`;
+
+    } else if (activeTab === 'customers') {
+      // 👥 REPORT 3: CUSTOMERS REPORT
+      const totalPoints = filteredCustomers.reduce((sum, c) => sum + (Number(c.points) || 0), 0);
+
+      message = `👥 <b>تقرير العملاء ونقاط الولاء: ${activeBranchName}</b>\n`;
+      message += `⏱️ التاريخ: <code>${todayStr}</code>\n\n`;
+
+      message += `📊 <b>إحصائيات ولاء العملاء:</b>\n`;
+      message += `• إجمالي العملاء المسجلين: <b>${filteredCustomers.length}</b> عضو\n`;
+      message += `• إجمالي نقاط الولاء الموزعة: <b>${totalPoints.toLocaleString()}</b> نقطة\n`;
+      message += `• قيمة استرداد النقاط الكلية: <b>${totalPoints.toLocaleString()}</b> ج.م\n\n`;
+
+      if (filteredCustomers.length > 0) {
+        message += `📋 <b>قائمة العملاء المسجلين (أعلى 30 نقاط):</b>\n`;
+        const displayLimit = 30;
+        const sortedCustomers = [...filteredCustomers].sort((a, b) => (Number(b.points) || 0) - (Number(a.points) || 0));
+        
+        sortedCustomers.slice(0, displayLimit).forEach(c => {
+          const branchLabel = BRANCHES.find(b => b.id === c.branchId);
+          const bLabel = language === 'ar' ? branchLabel?.labelAr : branchLabel?.labelEn;
+          message += `• ${c.name || 'عميل'} (<code>${c.phone}</code>): <b>${c.points || 0}</b> نقطة [${bLabel || 'default'}]\n`;
+        });
+
+        if (filteredCustomers.length > displayLimit) {
+          message += `• ... و <b>${filteredCustomers.length - displayLimit}</b> عميل آخرين\n`;
+        }
+        message += `\n`;
+      } else {
+        message += `⚠️ لا يوجد عملاء مسجلين حالياً في هذا النطاق.\n\n`;
+      }
+
+      message += `✅ تم تصدير تقرير العملاء من لوحة الإشراف المركزية`;
+    }
 
     // 6. Send message to Telegram
     try {
