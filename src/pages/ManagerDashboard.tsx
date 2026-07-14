@@ -429,22 +429,7 @@ export default function ManagerDashboard() {
 
     const { botToken, chatId } = config;
 
-    // 2. Filter orders for today
-    const todayOrders = orders.filter(order => {
-      const d = new Date(order.$createdAt);
-      const now = new Date();
-      return d.toDateString() === now.toDateString();
-    });
-
-    if (todayOrders.length === 0) {
-      alert(language === 'ar' ? 'لا توجد مبيعات مسجلة اليوم لإرسالها!' : 'No orders recorded today to send!');
-      return;
-    }
-
-    // 3. Group by branch
-    const branchStats: Record<string, { totalOrders: number; totalRevenue: number; totalUnpaid: number; cash: number; card: number }> = {};
-    
-    // Initialize stats for known branches
+    // 2. Resolve selected branch label
     const branchNames: Record<string, string> = {
       'branch_1': language === 'ar' ? 'فرع المعادي (فرع 1)' : 'Maadi Branch (1)',
       'branch_2': language === 'ar' ? 'فرع مصر الجديدة (فرع 2)' : 'Heliopolis Branch (2)',
@@ -452,56 +437,101 @@ export default function ManagerDashboard() {
       'default': language === 'ar' ? 'الفرع الرئيسي' : 'Main Branch'
     };
 
-    todayOrders.forEach(order => {
-      const bId = order.branch_id || 'default';
-      if (!branchStats[bId]) {
-        branchStats[bId] = { totalOrders: 0, totalRevenue: 0, totalUnpaid: 0, cash: 0, card: 0 };
-      }
-      
-      branchStats[bId].totalOrders += 1;
-      const amount = Number(order.total_amount) || 0;
-      
-      if (order.paymentStatus === 'Unpaid') {
-        branchStats[bId].totalUnpaid += amount;
-      } else {
-        branchStats[bId].totalRevenue += amount;
-        if (order.payment_method === 'Card') {
-          branchStats[bId].card += amount;
-        } else {
-          branchStats[bId].cash += amount;
+    const activeBranchName = selectedBranch === 'all' 
+      ? (language === 'ar' ? 'كافة الفروع' : 'All Branches')
+      : (branchNames[selectedBranch] || selectedBranch);
+
+    // Resolve date range label
+    const periodNames: Record<AnalyticsPeriod, string> = {
+      'Today': language === 'ar' ? 'اليوم' : 'Today',
+      'This Week': language === 'ar' ? 'هذا الأسبوع' : 'This Week',
+      'This Month': language === 'ar' ? 'هذا الشهر' : 'This Month',
+      'This Year': language === 'ar' ? 'هذا العام' : 'This Year'
+    };
+
+    const activePeriodLabel = periodNames[dateRange] || dateRange;
+
+    // 3. Filter orders matching current dateRange and branch
+    const filteredOrders = orders.filter(order => {
+      const matchesBranch = selectedBranch === 'all' || order.branch_id === selectedBranch;
+      const matchesPeriod = inPeriod(order.$createdAt, dateRange);
+      return matchesBranch && matchesPeriod;
+    });
+
+    if (filteredOrders.length === 0) {
+      alert(language === 'ar' ? 'لا توجد مبيعات مسجلة في هذه الفترة لإرسالها!' : 'No orders recorded in this period to send!');
+      return;
+    }
+
+    // 4. Group by branch for consolidated report if 'all' is selected
+    const branchStats: Record<string, { totalOrders: number; totalRevenue: number; totalUnpaid: number; cash: number; card: number }> = {};
+    if (selectedBranch === 'all') {
+      filteredOrders.forEach(order => {
+        const bId = order.branch_id || 'default';
+        if (!branchStats[bId]) {
+          branchStats[bId] = { totalOrders: 0, totalRevenue: 0, totalUnpaid: 0, cash: 0, card: 0 };
         }
-      }
-    });
+        
+        branchStats[bId].totalOrders += 1;
+        const amount = Number(order.total_amount) || 0;
+        
+        if (order.paymentStatus === 'Unpaid') {
+          branchStats[bId].totalUnpaid += amount;
+        } else {
+          branchStats[bId].totalRevenue += amount;
+          if (order.payment_method === 'Card') {
+            branchStats[bId].card += amount;
+          } else {
+            branchStats[bId].cash += amount;
+          }
+        }
+      });
+    }
 
-    // 4. Format Message
+    // 5. Format Message
     const todayStr = new Date().toLocaleDateString('en-CA');
-    let message = `🏛️ <b>التقرير الموحد لكافة الفروع لليوم</b>\n`;
-    message += `⏱️ التاريخ: <code>${todayStr}</code>\n\n`;
+    let message = `📊 <b>تقرير مبيعات BrewMaster: ${activeBranchName}</b>\n`;
+    message += `⏱️ الفئة/الفترة: <b>${activePeriodLabel}</b> (بتاريخ: <code>${todayStr}</code>)\n\n`;
 
-    let totalAllOrders = 0;
-    let totalAllRevenue = 0;
-    let totalAllUnpaid = 0;
+    message += `💰 <b>الملخص المالي للفترة:</b>\n`;
+    message += `• إجمالي المبيعات (المحصلة): <b>${processedData.totalRevenue.toFixed(2)}</b> ج.م\n`;
+    message += `• عدد الطلبات الكلي: <b>${processedData.totalCount}</b> طلب\n`;
+    message += `• إجمالي الآجل: <b>${processedData.unpaidAmount.toFixed(2)}</b> ج.م\n\n`;
 
-    Object.entries(branchStats).forEach(([bId, s]) => {
-      const bName = branchNames[bId] || bId;
-      message += `📍 <b>${bName}:</b>\n`;
-      message += `• عدد الطلبات: <b>${s.totalOrders}</b>\n`;
-      message += `• مبيعات محصلة: <b>${s.totalRevenue.toFixed(2)}</b> ج.م\n`;
-      message += `• مبيعات آجلة: <b>${s.totalUnpaid.toFixed(2)}</b> ج.م\n`;
-      message += `• كاش: <b>${s.cash.toFixed(2)}</b> ج.م | شبكة: <b>${s.card.toFixed(2)}</b> ج.م\n\n`;
+    message += `💳 <b>تفاصيل طرق الدفع (المحصلة):</b>\n`;
+    message += `• نقدي (Cash): <b>${processedData.cashAmount.toFixed(2)}</b> ج.م (${processedData.cashPercentage}%)\n`;
+    message += `• شبكة/بطاقة (Card): <b>${processedData.cardAmount.toFixed(2)}</b> ج.م (${processedData.cardPercentage}%)\n\n`;
 
-      totalAllOrders += s.totalOrders;
-      totalAllRevenue += s.totalRevenue;
-      totalAllUnpaid += s.totalUnpaid;
-    });
+    // Dine-in vs Takeaway
+    message += `🍽️ <b>أنواع الطلبات:</b>\n`;
+    message += `• سفري (Takeaway): <b>${processedData.takeawayCount}</b> طلب\n`;
+    message += `• صالة (Dine-in): <b>${processedData.dineInCount}</b> طلب\n\n`;
 
-    message += `📈 <b>الإجمالي الكلي لجميع الفروع:</b>\n`;
-    message += `• إجمالي المبيعات: <b>${totalAllRevenue.toFixed(2)}</b> ج.م\n`;
-    message += `• إجمالي الطلبات: <b>${totalAllOrders}</b> طلب\n`;
-    message += `• إجمالي الآجل: <b>${totalAllUnpaid.toFixed(2)}</b> ج.م\n\n`;
-    message += `✅ تم إرسال التقرير بنجاح من لوحة الإشراف المركزية`;
+    // Branch Breakdown (only if selectedBranch === 'all')
+    if (selectedBranch === 'all' && Object.keys(branchStats).length > 0) {
+      message += `🏢 <b>تفاصيل الفروع المفرّقة:</b>\n`;
+      Object.entries(branchStats).forEach(([bId, s]) => {
+        const bName = branchNames[bId] || bId;
+        message += `📍 <b>${bName}:</b>\n`;
+        message += `• عدد الطلبات: <b>${s.totalOrders}</b>\n`;
+        message += `• مبيعات محصلة: <b>${s.totalRevenue.toFixed(2)}</b> ج.م\n`;
+        message += `• مبيعات آجلة: <b>${s.totalUnpaid.toFixed(2)}</b> ج.م\n`;
+        message += `• كاش: <b>${s.cash.toFixed(2)}</b> | شبكة: <b>${s.card.toFixed(2)}</b>\n\n`;
+      });
+    }
 
-    // 5. Send message
+    // Top selling items
+    if (processedData.topItems && processedData.topItems.length > 0) {
+      message += `☕ <b>أكثر الأصناف مبيعاً في هذه الفترة:</b>\n`;
+      processedData.topItems.forEach(item => {
+        message += `• ${item.name}: عدد <b>${item.count}</b>\n`;
+      });
+      message += `\n`;
+    }
+
+    message += `✅ تم تصدير التقرير من لوحة الإشراف المركزية`;
+
+    // 6. Send message to Telegram
     try {
       const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
       const res = await fetch(url, {
@@ -515,7 +545,7 @@ export default function ManagerDashboard() {
       });
       const data = await res.json();
       if (data.ok) {
-        alert(language === 'ar' ? 'تم إرسال التقرير الموحد للتليجرام بنجاح!' : 'Consolidated report sent successfully to Telegram!');
+        alert(language === 'ar' ? 'تم إرسال تقرير الفترة المحددة للتليجرام بنجاح!' : 'Report for the selected period sent successfully to Telegram!');
       } else {
         throw new Error(data.description);
       }
