@@ -67,6 +67,13 @@ export default function Settings() {
 
   const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
 
+  const visibleSections = sections.filter(section => {
+    if (!isElectron && (section.id === 'profile' || section.id === 'security')) {
+      return false;
+    }
+    return true;
+  });
+
   return (
     <div className="p-4 md:p-8 max-w-4xl mx-auto pb-24 md:pb-8">
       {/* Header */}
@@ -79,7 +86,7 @@ export default function Settings() {
 
         {/* Settings Sections Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-          {sections.map((section, idx) => {
+          {visibleSections.map((section, idx) => {
             const Icon = section.icon;
             return (
               <motion.div
