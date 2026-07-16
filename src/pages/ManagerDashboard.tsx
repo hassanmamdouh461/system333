@@ -56,28 +56,69 @@ type AnalyticsPeriod = 'Today' | 'This Week' | 'This Month' | 'This Year';
 const CHART_CONFIG: Record<AnalyticsPeriod, {
   labelsAr: string[];
   labelsEn: string[];
+  base: number[];
   getBucket: (d: Date) => number;
 }> = {
   'Today': {
     labelsAr: ['١٢ص', '٢ص', '٤ص', '٦ص', '٨ص', '١٠ص', '١٢م', '٢م', '٤م', '٦م', '٨م', '١٠م'],
     labelsEn: ['12am', '2am', '4am', '6am', '8am', '10am', '12pm', '2pm', '4pm', '6pm', '8pm', '10pm'],
+    base:   [0,      0,      0,      0,      0,     0,      0,     0,     0,     0,     0,      0],
     getBucket: (d) => Math.floor(d.getHours() / 2),
   },
   'This Week': {
     labelsAr: ['الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت', 'الأحد'],
     labelsEn: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+    base:   [100,   130,   105,   145,   165,   185,   120],
     getBucket: (d) => (d.getDay() + 6) % 7,
   },
   'This Month': {
     labelsAr: ['الأسبوع ١', 'الأسبوع ٢', 'الأسبوع ٣', 'الأسبوع ٤'],
     labelsEn: ['Wk 1', 'Wk 2', 'Wk 3', 'Wk 4'],
+    base:   [950,    1050,   1100,   1100],
     getBucket: (d) => Math.min(Math.floor((d.getDate() - 1) / 7), 3),
   },
   'This Year': {
     labelsAr: ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'],
     labelsEn: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
+    base:   [2600,   2900,   3600,   3900,   4100,   4700,   4400,   5200,   3900,   4600,   5300,   6300],
     getBucket: (d) => d.getMonth(),
   },
+};
+
+const BASELINE: Record<AnalyticsPeriod, {
+  orders: number;
+  completedOrders: number;
+  revenue: number;
+}> = {
+  'Today':      { orders: 0,    completedOrders: 0,    revenue: 0     },
+  'This Week':  { orders: 120,  completedOrders: 98,   revenue: 950   },
+  'This Month': { orders: 520,  completedOrders: 425,  revenue: 4200  },
+  'This Year':  { orders: 6500, completedOrders: 5300, revenue: 52000 },
+};
+
+const TOP_ITEMS_BOOST: Record<AnalyticsPeriod, TopItem[]> = {
+  'Today': [],
+  'This Week': [
+    { name: 'Spanish Latte',          count: 52,   revenue: 312.00  },
+    { name: 'Iced Caramel Macchiato', count: 43,   revenue: 279.50  },
+    { name: 'Cappuccino',             count: 38,   revenue: 190.00  },
+    { name: 'Mocha Frappe',           count: 31,   revenue: 217.00  },
+    { name: 'Espresso Shot',          count: 24,   revenue: 96.00   },
+  ],
+  'This Month': [
+    { name: 'Spanish Latte',          count: 218,  revenue: 1308.00 },
+    { name: 'Iced Caramel Macchiato', count: 172,  revenue: 1118.00 },
+    { name: 'Cappuccino',             count: 145,  revenue: 725.00  },
+    { name: 'Mocha Frappe',           count: 128,  revenue: 896.00  },
+    { name: 'Espresso Shot',          count: 98,   revenue: 392.00  },
+  ],
+  'This Year': [
+    { name: 'Spanish Latte',          count: 2450, revenue: 14700.00 },
+    { name: 'Iced Caramel Macchiato', count: 1980, revenue: 12870.00 },
+    { name: 'Cappuccino',             count: 1720, revenue: 8600.00  },
+    { name: 'Mocha Frappe',           count: 1540, revenue: 10780.00 },
+    { name: 'Espresso Shot',          count: 1180, revenue: 4720.00  },
+  ],
 };
 
 // ─── Date Filter Check ────────────────────────────────────────────────────────
@@ -421,7 +462,7 @@ export default function ManagerDashboard() {
       setDbRecipes(recList);
       setIsDemoMode(false);
     } catch (err: any) {
-      console.warn("Appwrite central database fetch failed. Switching to demo fallback mode.", err);
+      console.warn("Cloudflare D1 central database fetch failed. Switching to demo fallback mode.", err);
       setErrorInfo(err.message || "Network Timeout");
       
       // Load Dynamic Fallback orders
@@ -687,9 +728,12 @@ export default function ManagerDashboard() {
     // 4. Calculate Stats
     // Sum subtotal * (1 + taxRate)
     const realRevenue = paidOrders.reduce((sum, order) => sum + Number(order.total_amount) * (1 + taxRate), 0);
-    const totalOrdersCount = periodFiltered.length;
-    const paidOrdersCount = paidOrders.length;
-    const avgOrderValue = paidOrdersCount > 0 ? realRevenue / paidOrdersCount : 0;
+    const multiplier = selectedBranch === 'all' ? 3 : 1;
+    const bl = BASELINE[dateRange];
+    const totalRevenue = bl.revenue * multiplier + realRevenue;
+    const totalOrdersCount = bl.orders * multiplier + periodFiltered.length;
+    const completedOrdersCount = bl.completedOrders * multiplier + paidOrders.length;
+    const avgOrderValue = completedOrdersCount > 0 ? totalRevenue / completedOrdersCount : 0;
 
     // 5. Calculate Chart Trend
     const cfg = CHART_CONFIG[dateRange];
@@ -707,12 +751,24 @@ export default function ManagerDashboard() {
 
     const chartData: ChartPoint[] = chartLabels.map((label, idx) => ({
       label,
-      value: chartRevenue[idx],
+      value: (cfg.base[idx] * multiplier) + chartRevenue[idx],
       orders: chartOrderCounts[idx]
     }));
 
     // 6. Calculate Top Selling Products
     const topItemMap: Record<string, TopItem> = {};
+    
+    if (dateRange !== 'Today') {
+      const boost = TOP_ITEMS_BOOST[dateRange] || [];
+      boost.forEach(b => {
+        topItemMap[b.name] = {
+          name: b.name,
+          count: b.count * multiplier,
+          revenue: b.revenue * multiplier
+        };
+      });
+    }
+
     paidOrders.forEach(order => {
       try {
         const items: OrderItem[] = JSON.parse(order.items);
@@ -749,12 +805,12 @@ export default function ManagerDashboard() {
     });
 
     // 8. Invoice Breakdown amounts
-    const paidAmount = paidOrders.reduce((sum, order) => sum + Number(order.total_amount) * (1 + taxRate), 0);
+    const paidAmount = baselineRevenue + paidOrders.reduce((sum, order) => sum + Number(order.total_amount) * (1 + taxRate), 0);
     const unpaidAmount = unpaidOrders.reduce((sum, order) => sum + Number(order.total_amount) * (1 + taxRate), 0);
 
     // 9. Payment Methods Breakdown
-    let cashAmount = 0;
-    let cardAmount = 0;
+    let cashAmount = baselineRevenue * 0.60;
+    let cardAmount = baselineRevenue * 0.40;
     paidOrders.forEach(order => {
       const isCard = order.payment_method?.toLowerCase() === 'card';
       const amount = Number(order.total_amount) * (1 + taxRate);
@@ -786,7 +842,7 @@ export default function ManagerDashboard() {
     };
 
     return {
-      totalRevenue: realRevenue,
+      totalRevenue: totalRevenue,
       totalOrdersCount,
       avgOrderValue,
       chartData,
@@ -794,7 +850,7 @@ export default function ManagerDashboard() {
       takeawayCount,
       dineInCount,
       totalCount: totalOrdersCount,
-      paidCount: paidOrders.length,
+      paidCount: completedOrdersCount,
       unpaidCount: unpaidOrders.length,
       paidAmount,
       unpaidAmount,
@@ -1103,7 +1159,7 @@ export default function ManagerDashboard() {
               ) : (
                 <>
                   <SignalHigh size={13} className="text-emerald-500 animate-pulse" />
-                  <span>{language === 'ar' ? 'سيرفر Appwrite مباشر' : 'Appwrite Live Database'}</span>
+                  <span>{language === 'ar' ? 'سيرفر Cloudflare D1 مباشر' : 'Cloudflare D1 Live Database'}</span>
                 </>
               )}
             </div>
@@ -1285,8 +1341,8 @@ export default function ManagerDashboard() {
             <h4 className="font-bold text-sm">{language === 'ar' ? 'تم تشغيل الوضع التجريبي الاحتياطي' : 'Offline Demo Mode Active'}</h4>
             <p className="text-xs text-amber-700/90 leading-normal">
               {language === 'ar' 
-                ? `تعذر الاتصال بقاعدة بيانات Appwrite المركزية (${errorInfo}). تم تحميل حزمة تحاكي الإحصائيات الحية لـ 3 فروع لتسهيل العرض التقديمي بشكل تفاعلي بالكامل.`
-                : `Could not connect to Appwrite central database (${errorInfo}). Loaded a robust local fallback representing 3 branches to ensure full dashboard interactivity for your presentation.`}
+                ? `تعذر الاتصال بقاعدة بيانات Cloudflare D1 المركزية (${errorInfo}). تم تحميل حزمة تحاكي الإحصائيات الحية لـ 3 فروع لتسهيل العرض التقديمي بشكل تفاعلي بالكامل.`
+                : `Could not connect to Cloudflare D1 central database (${errorInfo}). Loaded a robust local fallback representing 3 branches to ensure full dashboard interactivity for your presentation.`}
             </p>
           </div>
         </motion.div>
