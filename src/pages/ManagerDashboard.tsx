@@ -730,7 +730,8 @@ export default function ManagerDashboard() {
     const realRevenue = paidOrders.reduce((sum, order) => sum + Number(order.total_amount) * (1 + taxRate), 0);
     const multiplier = selectedBranch === 'all' ? 3 : 1;
     const bl = BASELINE[dateRange];
-    const totalRevenue = bl.revenue * multiplier + realRevenue;
+    const baselineRevenue = bl.revenue * multiplier;
+    const totalRevenue = baselineRevenue + realRevenue;
     const totalOrdersCount = bl.orders * multiplier + periodFiltered.length;
     const completedOrdersCount = bl.completedOrders * multiplier + paidOrders.length;
     const avgOrderValue = completedOrdersCount > 0 ? totalRevenue / completedOrdersCount : 0;
