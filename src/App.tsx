@@ -17,7 +17,6 @@ import Login from './pages/Login';
 import PublicMenu from './pages/PublicMenu';
 import Customers from './pages/Customers';
 import Inventory from './pages/Inventory';
-import { PinProtection } from './components/auth/PinProtection';
 
 
 function ProtectedRoute() {
@@ -45,13 +44,11 @@ function AppRoutes() {
           <Route path="/drinks" element={<Orders type="drinks" />} />
           <Route path="/payment" element={<Payment />} />
           <Route path="/customers" element={<Customers />} />
+          <Route path="/inventory" element={<Inventory />} />
           
-          <Route element={<PinProtection />}>
-            <Route path="/inventory" element={<Inventory />} />
-            <Route path="/reports" element={<Reports />} />
-            <Route path="/manager-dashboard" element={<ManagerDashboard />} />
-            <Route path="/settings" element={<Settings />} />
-          </Route>
+          <Route path="/reports" element={<Reports />} />
+          <Route path="/manager-dashboard" element={<ManagerDashboard />} />
+          <Route path="/settings" element={<Settings />} />
         </Route>
       </Route>
       <Route path="/" element={<Navigate to="/dashboard" replace />} />

@@ -1,64 +1,80 @@
 /**
- * Appwrite Sync API Service
- * Replaces the mock simulation with real HTTP requests to the Appwrite REST API.
+ * Cloudflare D1 Sync API Service
+ * Replaces the Appwrite REST API with standard HTTP requests to our Cloudflare Worker Proxy.
  */
 
-const ENDPOINT = "https://fra.cloud.appwrite.io/v1";
-const PROJECT_ID = "69879ae70002444f3f38";
-const DATABASE_ID = "6a545eb00016d126bc82";
-const COLLECTION_ID = "orders";
-const database = require('./database.cjs');
+const fs = require('fs');
+const path = require('path');
 const https = require('https');
-const dns = require('dns');
+const database = require('./database.cjs');
 
-// Force DNS servers to Google & Cloudflare
-dns.setServers(['8.8.8.8', '1.1.1.1']);
-
-function customLookup(hostname, options, callback) {
-  dns.resolve4(hostname, (err, addresses) => {
-    if (err || !addresses || addresses.length === 0) {
-      dns.lookup(hostname, options, callback);
-      return;
+// 1. Resolve Worker URL from .env file or local database settings
+let WORKER_URL = "";
+try {
+  const envPath = path.join(__dirname, '..', '.env');
+  if (fs.existsSync(envPath)) {
+    const envContent = fs.readFileSync(envPath, 'utf8');
+    const match = envContent.match(/VITE_CF_WORKER_URL\s*=\s*(.*)/);
+    if (match && match[1]) {
+      WORKER_URL = match[1].trim();
     }
-    const family = 4;
-    if (options.all) {
-      const results = addresses.map(addr => ({ address: addr, family }));
-      callback(null, results);
-    } else {
-      callback(null, addresses[0], family);
-    }
-  });
+  }
+} catch (e) {
+  console.error('[D1 Sync API] Failed to load .env file:', e.message);
 }
 
-function customFetch(url, options = {}) {
+if (!WORKER_URL) {
+  try {
+    const settings = database.getSettings();
+    if (settings['brewmaster_d1_worker_url']) {
+      WORKER_URL = settings['brewmaster_d1_worker_url'];
+    }
+  } catch (e) {}
+}
+
+if (!WORKER_URL) {
+  WORKER_URL = "https://your-worker.your-username.workers.dev"; // default placeholder
+}
+
+console.log('[D1 Sync API] Configured Worker URL:', WORKER_URL);
+
+/**
+ * Custom fetch implementation using standard Node.js https module
+ */
+function fetchWorker(payload) {
   return new Promise((resolve, reject) => {
-    const parsedUrl = new URL(url);
-    const reqOptions = {
+    if (!WORKER_URL || WORKER_URL.includes('your-username')) {
+      return reject(new Error('Cloudflare Worker URL is not configured'));
+    }
+
+    const parsedUrl = new URL(WORKER_URL);
+    const bodyStr = JSON.stringify(payload);
+
+    const options = {
       hostname: parsedUrl.hostname,
       port: parsedUrl.port || 443,
       path: parsedUrl.pathname + parsedUrl.search,
-      method: options.method || 'GET',
-      headers: options.headers || {},
-      timeout: 30000, // 30 seconds timeout
-      lookup: customLookup // Custom DNS resolver override
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(bodyStr)
+      },
+      timeout: 15000 // 15 seconds
     };
 
-    const req = https.request(reqOptions, (res) => {
+    const req = https.request(options, (res) => {
       let data = '';
       res.on('data', (chunk) => data += chunk);
       res.on('end', () => {
-        resolve({
-          ok: res.statusCode >= 200 && res.statusCode < 300,
-          status: res.statusCode,
-          text: () => Promise.resolve(data),
-          json: () => {
-            try {
-              return Promise.resolve(JSON.parse(data));
-            } catch (err) {
-              return Promise.reject(new Error(`Failed to parse JSON: ${data}`));
-            }
+        if (res.statusCode >= 200 && res.statusCode < 300) {
+          try {
+            resolve(JSON.parse(data));
+          } catch (e) {
+            reject(new Error(`Failed to parse json response: ${data}`));
           }
-        });
+        } else {
+          reject(new Error(`HTTP Error ${res.statusCode}: ${data}`));
+        }
       });
     });
 
@@ -68,359 +84,213 @@ function customFetch(url, options = {}) {
       reject(new Error('Connection timed out'));
     });
 
-    if (options.body) {
-      req.write(options.body);
-    }
+    req.write(bodyStr);
     req.end();
   });
 }
 
-const fetch = customFetch;
+// ─── API Sync Methods ──────────────────────────────────────────────────────────
 
 async function pushMenuItems(items) {
   if (items.length === 0) return { success: true };
-  
-  console.log(`[mockApi] Pushing ${items.length} menu items to Appwrite...`);
-  
-  for (const item of items) {
-    const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/menu_items/documents`;
-    const docUrl = `${url}/${encodeURIComponent(item.id)}`;
-    
-    const dataPayload = {
-      name: item.name,
-      price: Number(item.price),
-      category: item.category,
-      description: item.description || "",
-      image: item.image || "",
-      available: Boolean(item.available)
-    };
+  console.log(`[D1 Sync API] Pushing ${items.length} menu items...`);
 
-    // Try to update (PATCH) first
-    let res = await fetch(docUrl, {
-      method: 'PATCH',
-      headers: {
-        'X-Appwrite-Project': PROJECT_ID,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ data: dataPayload })
-    });
+  const batch = items.map(item => ({
+    sql: `INSERT OR REPLACE INTO menu_items (id, name, description, price, category, image, available, branch_id) 
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    params: [
+      item.id,
+      item.name,
+      item.description || "",
+      Number(item.price),
+      item.category,
+      item.image || "",
+      item.available ? 1 : 0,
+      item.branch_id || "branch_1"
+    ]
+  }));
 
-    if (res.status === 404) {
-      // If 404, create it (POST)
-      res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'X-Appwrite-Project': PROJECT_ID,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          documentId: item.id,
-          data: dataPayload,
-          permissions: ["read(\"any\")", "write(\"any\")"]
-        })
-      });
-    }
-
-    if (!res.ok) {
-      if (res.status === 409) {
-        console.warn(`[mockApi] Menu item ${item.id} already exists on Appwrite. Skipping to prevent block.`);
-        continue;
-      }
-      const errorText = await res.text();
-      console.error(`[mockApi] Appwrite request failed for menu item ${item.id} with status ${res.status}:`, errorText);
-      throw new Error(`Appwrite error ${res.status}: ${errorText}`);
-    }
-
-    const resData = await res.json();
-    console.log(`[mockApi] Successfully synced menu item ${item.id} to Appwrite.`);
+  const res = await fetchWorker({ batch });
+  if (!res.success) {
+    throw new Error(res.error || 'Failed to push menu items to D1');
   }
-
   return { success: true };
 }
 
 async function pushOrders(orders) {
   if (orders.length === 0) return { success: true };
-  
-  console.log(`[mockApi] Pushing ${orders.length} orders to Appwrite...`);
-  
-  for (const order of orders) {
-    const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/${COLLECTION_ID}/documents`;
-    const docUrl = `${url}/${encodeURIComponent(order.id)}`;
-    
-    const dataPayload = {
-      orderNumber: order.orderNumber || "",
-      tableId: order.tableId || "",
-      status: order.status || "New",
-      paymentStatus: order.paymentStatus || "Unpaid",
-      totalAmount: Number(order.totalAmount) || 0,
-      total_amount: Number(order.totalAmount) || 0,
-      items: typeof order.items === 'string' ? order.items : JSON.stringify(order.items),
-      branch_id: order.branchId || database.getBranchId() || "branch_1",
-      payment_method: order.paymentMethod || "Cash"
-    };
+  console.log(`[D1 Sync API] Pushing ${orders.length} orders...`);
 
-    // Try to update (PATCH) first
-    let res = await fetch(docUrl, {
-      method: 'PATCH',
-      headers: {
-        'X-Appwrite-Project': PROJECT_ID,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ data: dataPayload })
-    });
+  const batch = orders.map(order => ({
+    sql: `INSERT OR REPLACE INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, createdAt, paidAt, branch_id) 
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    params: [
+      order.id,
+      order.orderNumber,
+      order.tableId,
+      typeof order.items === 'string' ? order.items : JSON.stringify(order.items),
+      order.status,
+      order.paymentStatus || 'Unpaid',
+      order.paymentMethod || null,
+      Number(order.totalAmount),
+      order.createdAt,
+      order.paidAt || null,
+      order.branch_id || "branch_1"
+    ]
+  }));
 
-    if (res.status === 404) {
-      // If 404, create it (POST)
-      res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'X-Appwrite-Project': PROJECT_ID,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          documentId: order.id,
-          data: dataPayload,
-          permissions: ["read(\"any\")", "write(\"any\")"]
-        })
-      });
-    }
-
-    if (!res.ok) {
-      if (res.status === 409) {
-        console.warn(`[mockApi] Order ${order.id} already exists on Appwrite. Skipping to prevent block.`);
-        continue;
-      }
-      const errorText = await res.text();
-      console.error(`[mockApi] Appwrite request failed for order ${order.id} with status ${res.status}:`, errorText);
-      throw new Error(`Appwrite error ${res.status}: ${errorText}`);
-    }
-
-    const resData = await res.json();
-    console.log(`[mockApi] Successfully synced order ${order.id} to Appwrite. Document ID: ${resData.$id}`);
+  const res = await fetchWorker({ batch });
+  if (!res.success) {
+    throw new Error(res.error || 'Failed to push orders to D1');
   }
-
   return { success: true };
 }
 
 async function pushCustomers(customers) {
   if (customers.length === 0) return { success: true };
-  
-  console.log(`[mockApi] Pushing ${customers.length} customers to Appwrite...`);
-  
-  for (const customer of customers) {
-    const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/customers/documents`;
-    const docUrl = `${url}/${encodeURIComponent(customer.id)}`;
-    
-    const dataPayload = {
-      name: customer.name || "Customer",
-      phone: customer.phone,
-      points: Number(customer.points) || 0,
-      createdAt: customer.createdAt || new Date().toISOString(),
-      branchId: customer.branchId || "default"
-    };
+  console.log(`[D1 Sync API] Pushing ${customers.length} customers...`);
 
-    // Try to update (PATCH) first
-    let res = await fetch(docUrl, {
-      method: 'PATCH',
-      headers: {
-        'X-Appwrite-Project': PROJECT_ID,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ data: dataPayload })
-    });
+  const batch = customers.map(c => ({
+    sql: `INSERT OR REPLACE INTO customers (id, name, phone, points, createdAt, branch_id) 
+          VALUES (?, ?, ?, ?, ?, ?)`,
+    params: [
+      c.id,
+      c.name,
+      c.phone,
+      Number(c.points) || 0,
+      c.createdAt,
+      c.branch_id || "branch_1"
+    ]
+  }));
 
-    if (res.status === 404) {
-      // If 404, create it (POST)
-      res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'X-Appwrite-Project': PROJECT_ID,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          documentId: customer.id,
-          data: dataPayload,
-          permissions: ["read(\"any\")", "write(\"any\")"]
-        })
-      });
-    }
-
-    if (!res.ok) {
-      if (res.status === 409) {
-        console.warn(`[mockApi] Customer ${customer.id} already exists on Appwrite. Skipping to prevent block.`);
-        continue;
-      }
-      const errorText = await res.text();
-      console.error(`[mockApi] Appwrite request failed for customer ${customer.id} with status ${res.status}:`, errorText);
-      throw new Error(`Appwrite error ${res.status}: ${errorText}`);
-    }
-
-    console.log(`[mockApi] Successfully synced customer ${customer.id} to Appwrite.`);
+  const res = await fetchWorker({ batch });
+  if (!res.success) {
+    throw new Error(res.error || 'Failed to push customers to D1');
   }
-
   return { success: true };
-}
-
-async function pullOrders() {
-  console.log('[mockApi] Pulling all orders from Appwrite...');
-  const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/${COLLECTION_ID}/documents?limit=1000`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: {
-      'X-Appwrite-Project': PROJECT_ID
-    }
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('[mockApi] Appwrite pull failed:', errorText);
-    throw new Error(`Appwrite pull error ${response.status}: ${errorText}`);
-  }
-
-  const data = await response.json();
-  return data.documents || [];
-}
-
-async function deleteMenuItem(id) {
-  const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/menu_items/documents/${encodeURIComponent(id)}`;
-  const response = await fetch(url, {
-    method: 'DELETE',
-    headers: {
-      'X-Appwrite-Project': PROJECT_ID
-    }
-  });
-  if (!response.ok && response.status !== 404) {
-    const errorText = await response.text();
-    console.error(`[mockApi] Appwrite delete failed for menu item ${id}:`, errorText);
-  } else {
-    console.log(`[mockApi] Successfully deleted menu item ${id} from Appwrite.`);
-  }
-}
-
-async function getManagerOrders() {
-  console.log('[mockApi] Manager fetching all orders from Appwrite...');
-  const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/orders/documents?limit=1000`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: {
-      'X-Appwrite-Project': PROJECT_ID
-    }
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('[mockApi] Appwrite manager orders fetch failed:', errorText);
-    throw new Error(`Appwrite error ${response.status}: ${errorText}`);
-  }
-
-  const data = await response.json();
-  return data.documents || [];
-}
-
-async function getManagerCustomers() {
-  console.log('[mockApi] Manager fetching all customers from Appwrite...');
-  const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/customers/documents?limit=1000`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: {
-      'X-Appwrite-Project': PROJECT_ID
-    }
-  });
-
-  if (!response.ok) {
-    const errorText = await response.text();
-    console.error('[mockApi] Appwrite manager customers fetch failed:', errorText);
-    throw new Error(`Appwrite error ${response.status}: ${errorText}`);
-  }
-
-  const data = await response.json();
-  return data.documents || [];
 }
 
 async function pushInventory(items) {
   if (items.length === 0) return { success: true };
-  
-  console.log(`[mockApi] Pushing ${items.length} inventory items to Appwrite...`);
-  
-  for (const item of items) {
-    const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/inventory/documents`;
-    const docUrl = `${url}/${encodeURIComponent(item.id)}`;
-    
-    const dataPayload = {
-      name: item.name,
-      unit: item.unit,
-      stock: Number(item.stock) || 0,
-      minStock: Number(item.minStock) || 0,
-      costPerUnit: Number(item.costPerUnit) || 0,
-      branch_id: item.branch_id || "branch_1",
-      created_at: item.created_at || new Date().toISOString(),
-      updated_at: item.updated_at || new Date().toISOString()
-    };
+  console.log(`[D1 Sync API] Pushing ${items.length} inventory items...`);
 
-    // Try to update (PATCH) first
-    let res = await fetch(docUrl, {
-      method: 'PATCH',
-      headers: {
-        'X-Appwrite-Project': PROJECT_ID,
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({ data: dataPayload })
-    });
+  const batch = items.map(item => ({
+    sql: `INSERT OR REPLACE INTO inventory (id, name, unit, stock, minStock, costPerUnit, branch_id, created_at, updated_at) 
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    params: [
+      item.id,
+      item.name,
+      item.unit,
+      Number(item.stock) || 0,
+      Number(item.minStock) || 0,
+      Number(item.costPerUnit) || 0,
+      item.branch_id || "branch_1",
+      item.createdAt || new Date().toISOString(),
+      item.updatedAt || new Date().toISOString()
+    ]
+  }));
 
-    if (res.status === 404) {
-      // If 404, create it (POST)
-      res = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'X-Appwrite-Project': PROJECT_ID,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          documentId: item.id,
-          data: dataPayload,
-          permissions: ["read(\"any\")", "write(\"any\")"]
-        })
-      });
-    }
-
-    if (!res.ok) {
-      if (res.status === 409) {
-        console.warn(`[mockApi] Inventory item ${item.id} already exists on Appwrite. Skipping to prevent block.`);
-        continue;
-      }
-      const errorText = await res.text();
-      console.error(`[mockApi] Appwrite request failed for inventory item ${item.id} with status ${res.status}:`, errorText);
-      throw new Error(`Appwrite error ${res.status}: ${errorText}`);
-    }
-
-    console.log(`[mockApi] Successfully synced inventory item ${item.id} to Appwrite.`);
+  const res = await fetchWorker({ batch });
+  if (!res.success) {
+    throw new Error(res.error || 'Failed to push inventory to D1');
   }
-
   return { success: true };
 }
 
-async function getManagerInventory() {
-  console.log('[mockApi] Manager fetching all inventory from Appwrite...');
-  const url = `${ENDPOINT}/databases/${DATABASE_ID}/collections/inventory/documents?limit=1000`;
-  const response = await fetch(url, {
-    method: 'GET',
-    headers: {
-      'X-Appwrite-Project': PROJECT_ID
-    }
+async function pullOrders() {
+  console.log('[D1 Sync API] Pulling orders from D1...');
+  const res = await fetchWorker({
+    sql: "SELECT * FROM orders ORDER BY createdAt DESC LIMIT 1000"
   });
 
-  if (!response.ok) {
-    if (response.status === 404) {
-      console.warn('[mockApi] Appwrite manager inventory fetch failed because collection is missing.');
-      return [];
-    }
-    const errorText = await response.text();
-    console.error('[mockApi] Appwrite manager inventory fetch failed:', errorText);
-    throw new Error(`Appwrite error ${response.status}: ${errorText}`);
+  if (!res.success) {
+    throw new Error(res.error || 'Failed to pull orders from D1');
   }
 
-  const data = await response.json();
-  return data.documents || [];
+  // D1 query response: results is under res.result[0].results
+  const rows = res.result[0]?.results || [];
+  
+  // Map back to Appwrite document structure format expected by upsertPulledOrders
+  return rows.map(row => ({
+    $id: row.id,
+    $createdAt: row.createdAt,
+    $updatedAt: row.createdAt, // fallback to createdAt since D1 orders doesn't have updated_at
+    total_amount: Number(row.totalAmount),
+    payment_method: row.paymentMethod || 'Cash',
+    items: row.items, // JSON string
+    branch_id: row.branch_id
+  }));
+}
+
+async function deleteMenuItem(id) {
+  console.log(`[D1 Sync API] Deleting menu item ${id}...`);
+  const res = await fetchWorker({
+    sql: "DELETE FROM menu_items WHERE id = ?",
+    params: [id]
+  });
+  if (!res.success) {
+    console.error(`[D1 Sync API] Failed to delete menu item ${id}:`, res.error);
+  }
+}
+
+async function getManagerOrders() {
+  console.log('[D1 Sync API] Manager fetching all orders...');
+  const res = await fetchWorker({
+    sql: "SELECT * FROM orders ORDER BY createdAt DESC LIMIT 1000"
+  });
+  if (!res.success) {
+    throw new Error(res.error || 'Failed to fetch manager orders');
+  }
+  const rows = res.result[0]?.results || [];
+  return rows.map(row => ({
+    $id: row.id,
+    $createdAt: row.createdAt,
+    $updatedAt: row.createdAt,
+    total_amount: Number(row.totalAmount),
+    payment_method: row.paymentMethod || 'Cash',
+    items: row.items,
+    branch_id: row.branch_id
+  }));
+}
+
+async function getManagerCustomers() {
+  console.log('[D1 Sync API] Manager fetching all customers...');
+  const res = await fetchWorker({
+    sql: "SELECT * FROM customers ORDER BY createdAt DESC LIMIT 1000"
+  });
+  if (!res.success) {
+    throw new Error(res.error || 'Failed to fetch manager customers');
+  }
+  const rows = res.result[0]?.results || [];
+  return rows.map(row => ({
+    $id: row.id,
+    $createdAt: row.createdAt,
+    $updatedAt: row.createdAt,
+    name: row.name,
+    phone: row.phone,
+    points: Number(row.points),
+    branchId: row.branch_id
+  }));
+}
+
+async function getManagerInventory() {
+  console.log('[D1 Sync API] Manager fetching all inventory...');
+  const res = await fetchWorker({
+    sql: "SELECT * FROM inventory ORDER BY name ASC LIMIT 1000"
+  });
+  if (!res.success) {
+    throw new Error(res.error || 'Failed to fetch manager inventory');
+  }
+  const rows = res.result[0]?.results || [];
+  return rows.map(row => ({
+    $id: row.id,
+    name: row.name,
+    unit: row.unit,
+    stock: Number(row.stock),
+    minStock: Number(row.minStock),
+    costPerUnit: Number(row.costPerUnit),
+    branch_id: row.branch_id
+  }));
 }
 
 module.exports = {

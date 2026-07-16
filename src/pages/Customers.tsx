@@ -12,10 +12,7 @@ import {
   X,
   Phone,
   User,
-  Calendar,
-  Lock,
-  Delete,
-  AlertCircle
+  Calendar
 } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { customersService } from '../services/customersService';
@@ -40,13 +37,6 @@ export default function Customers() {
   const [newName, setNewName] = useState('');
   const [selectedCustomer, setSelectedCustomer] = useState<Customer | null>(null);
   const [editPoints, setEditPoints] = useState<number>(0);
-  
-  // PIN Verification State
-  const [isPinPromptOpen, setIsPinPromptOpen] = useState(false);
-  const [pendingEditCustomer, setPendingEditCustomer] = useState<Customer | null>(null);
-  const [pendingDeleteCustomer, setPendingDeleteCustomer] = useState<Customer | null>(null);
-  const [enteredVerificationPin, setEnteredVerificationPin] = useState('');
-  const [verificationPinError, setVerificationPinError] = useState(false);
 
   // Load customers
   const loadCustomers = async () => {
@@ -107,49 +97,9 @@ export default function Customers() {
   };
 
   const handleOpenEdit = (customer: Customer) => {
-    const savedPin = localStorage.getItem('brewmaster_admin_pin');
-    if (savedPin) {
-      setPendingEditCustomer(customer);
-      setEnteredVerificationPin('');
-      setVerificationPinError(false);
-      setIsPinPromptOpen(true);
-    } else {
-      setSelectedCustomer(customer);
-      setEditPoints(customer.points);
-      setIsEditModalOpen(true);
-    }
-  };
-
-  const handleVerificationPinPress = (num: string) => {
-    if (enteredVerificationPin.length < 4) {
-      setVerificationPinError(false);
-      const newPin = enteredVerificationPin + num;
-      setEnteredVerificationPin(newPin);
-      
-      if (newPin.length === 4) {
-        const savedPin = localStorage.getItem('brewmaster_admin_pin');
-        if (newPin === savedPin) {
-          setIsPinPromptOpen(false);
-          if (pendingEditCustomer) {
-            setSelectedCustomer(pendingEditCustomer);
-            setEditPoints(pendingEditCustomer.points);
-            setIsEditModalOpen(true);
-            setPendingEditCustomer(null);
-          } else if (pendingDeleteCustomer) {
-            executeDeleteCustomer(pendingDeleteCustomer);
-            setPendingDeleteCustomer(null);
-          }
-        } else {
-          setVerificationPinError(true);
-          setTimeout(() => setEnteredVerificationPin(''), 500);
-        }
-      }
-    }
-  };
-
-  const handleVerificationPinDelete = () => {
-    setEnteredVerificationPin(prev => prev.slice(0, -1));
-    setVerificationPinError(false);
+    setSelectedCustomer(customer);
+    setEditPoints(customer.points);
+    setIsEditModalOpen(true);
   };
 
   const handleSaveEdit = async (e: React.FormEvent) => {
@@ -184,16 +134,7 @@ export default function Customers() {
   };
 
   const handleDeleteCustomer = (customer: Customer) => {
-    const savedPin = localStorage.getItem('brewmaster_admin_pin');
-    if (savedPin) {
-      setPendingDeleteCustomer(customer);
-      setPendingEditCustomer(null);
-      setEnteredVerificationPin('');
-      setVerificationPinError(false);
-      setIsPinPromptOpen(true);
-    } else {
-      executeDeleteCustomer(customer);
-    }
+    executeDeleteCustomer(customer);
   };
 
   return (
@@ -421,96 +362,6 @@ export default function Customers() {
                   </button>
                 </div>
               </form>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
-
-      {/* ─── PIN Verification Prompt Modal ─── */}
-      <AnimatePresence>
-        {isPinPromptOpen && (pendingEditCustomer || pendingDeleteCustomer) && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.95 }}
-              className="bg-white p-8 rounded-3xl shadow-2xl border border-gray-100 max-w-sm w-full text-center relative"
-            >
-              <button
-                onClick={() => {
-                  setIsPinPromptOpen(false);
-                  setPendingEditCustomer(null);
-                  setPendingDeleteCustomer(null);
-                }}
-                className="absolute top-4 right-4 p-1 hover:bg-gray-100 text-gray-400 hover:text-gray-600 rounded-lg transition-colors"
-              >
-                <X size={18} />
-              </button>
-              
-              <div className="w-16 h-16 bg-mocha-50 text-mocha-700 rounded-full flex items-center justify-center mx-auto mb-6">
-                <Lock size={32} />
-              </div>
-              
-              <h2 className="text-2xl font-black text-gray-905 mb-2">{t('Enter PIN')}</h2>
-              <p className="text-gray-500 mb-8">{t('Please enter your access code to continue')}</p>
-
-              {/* PIN Dots */}
-              <div className="flex justify-center gap-4 mb-8">
-                {[0, 1, 2, 3].map(i => (
-                  <div 
-                    key={i}
-                    className={`w-4 h-4 rounded-full transition-all duration-300 ${
-                      enteredVerificationPin.length > i ? 'bg-mocha-700 scale-110' : 'bg-gray-200'
-                    } ${verificationPinError ? 'bg-red-500 animate-pulse' : ''}`}
-                  />
-                ))}
-              </div>
-
-              {verificationPinError && (
-                <div className="flex justify-center items-center gap-1.5 text-red-500 text-sm font-bold mb-6">
-                  <AlertCircle size={16} />
-                  <span>{t('Incorrect PIN')}</span>
-                </div>
-              )}
-
-              {/* Numpad */}
-              <div className="grid grid-cols-3 gap-3 mb-2">
-                {[1, 2, 3, 4, 5, 6, 7, 8, 9].map(num => (
-                  <button
-                    key={num}
-                    type="button"
-                    onClick={() => handleVerificationPinPress(num.toString())}
-                    className="bg-gray-50 hover:bg-gray-100 text-gray-800 font-mono text-2xl font-black py-3 rounded-2xl active:scale-95 transition-all"
-                  >
-                    {num}
-                  </button>
-                ))}
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsPinPromptOpen(false);
-                    setPendingEditCustomer(null);
-                    setPendingDeleteCustomer(null);
-                  }}
-                  className="text-gray-405 hover:text-gray-600 font-bold active:scale-95 transition-all"
-                >
-                  {t('Cancel')}
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleVerificationPinPress('0')}
-                  className="bg-gray-50 hover:bg-gray-100 text-gray-800 font-mono text-2xl font-black py-3 rounded-2xl active:scale-95 transition-all"
-                >
-                  0
-                </button>
-                <button
-                  type="button"
-                  onClick={handleVerificationPinDelete}
-                  className="text-gray-405 hover:text-gray-600 flex justify-center items-center active:scale-95 transition-all"
-                >
-                  <Delete size={28} />
-                </button>
-              </div>
             </motion.div>
           </div>
         )}

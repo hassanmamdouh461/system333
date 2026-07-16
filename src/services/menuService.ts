@@ -21,26 +21,32 @@ export const menuService = {
         throw new Error('Failed to fetch menu items');
       }
     } else {
-      // Browser/Web fallback — fetch from central Appwrite database
+      // Browser/Web fallback — fetch from central Cloudflare D1 database
       try {
-        const headers = { 'X-Appwrite-Project': APPWRITE_PROJECT };
-        const url = `${APPWRITE_ENDPOINT}/databases/${APPWRITE_DB}/collections/menu_items/documents?limit=1000`;
-        const res = await fetch(url, { headers });
-        if (!res.ok) throw new Error(`Appwrite menu fetch failed: ${res.status}`);
+        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://brewmaster-d1-proxy.hassanmamdouh461.workers.dev';
+        const res = await fetch(workerUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            sql: 'SELECT * FROM menu_items ORDER BY category, name'
+          })
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        const docs = data.documents || [];
+        if (!data.success) throw new Error(data.error || 'D1 query failed');
+        const docs = data.result[0]?.results || [];
         return docs.map((doc: any) => ({
-          id: doc.$id || doc.id,
+          id: doc.id,
           name: doc.name,
-          price: doc.price,
+          price: Number(doc.price),
           category: doc.category,
           description: doc.description || "",
           image: doc.image || "",
-          available: doc.available !== undefined ? doc.available : true,
+          available: doc.available !== undefined ? Boolean(doc.available) : true,
           isSynced: true
         }));
       } catch (error) {
-        console.error('[menuService] Error fetching menu items from Appwrite:', error);
+        console.error('[menuService] Error fetching menu items from D1:', error);
         throw new Error('Failed to fetch menu items');
       }
     }

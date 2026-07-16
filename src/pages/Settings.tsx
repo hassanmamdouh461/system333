@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
-import { User, Store, Lock, HelpCircle, LogOut, QrCode, Building2, Send } from 'lucide-react';
+import { User, Store, HelpCircle, LogOut, QrCode, Building2, Send } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useAuth } from '../context/AuthContext';
 import { QrMenuModal } from '../components/settings/QrMenuModal';
-import { PinSetupModal } from '../components/settings/PinSetupModal';
 import { ProfileSettingsModal } from '../components/settings/ProfileSettingsModal';
 import { StoreConfigModal } from '../components/settings/StoreConfigModal';
 import { BranchConfigModal } from '../components/settings/BranchConfigModal';
@@ -15,7 +14,6 @@ import { SyncStatus } from '../components/ui/SyncStatus';
 export default function Settings() {
   const { t } = useLanguage();
   const [isQrModalOpen, setIsQrModalOpen] = useState(false);
-  const [isPinModalOpen, setIsPinModalOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
   const [isStoreModalOpen, setIsStoreModalOpen] = useState(false);
   const [isBranchModalOpen, setIsBranchModalOpen] = useState(false);
@@ -40,14 +38,6 @@ export default function Settings() {
       description: 'Edit tax rates',
     },
     {
-      id: 'security',
-      title: 'Security & Access',
-      icon: Lock,
-      color: 'text-indigo-600',
-      bgColor: 'bg-indigo-50',
-      description: 'Manage pin codes and user permissions',
-    },
-    {
       id: 'branch',
       title: 'Branch Configuration',
       icon: Building2,
@@ -68,7 +58,7 @@ export default function Settings() {
   const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
 
   const visibleSections = sections.filter(section => {
-    if (!isElectron && (section.id === 'profile' || section.id === 'security')) {
+    if (!isElectron && (section.id === 'profile')) {
       return false;
     }
     return true;
@@ -95,7 +85,6 @@ export default function Settings() {
                 animate={{ opacity: 1, y: 0 }}
                 transition={{ delay: idx * 0.05 }}
                 onClick={() => {
-                  if (section.id === 'security') setIsPinModalOpen(true);
                   if (section.id === 'profile') setIsProfileModalOpen(true);
                   if (section.id === 'store') setIsStoreModalOpen(true);
                   if (section.id === 'branch') setIsBranchModalOpen(true);
@@ -193,7 +182,6 @@ export default function Settings() {
       </div>
       
       <QrMenuModal isOpen={isQrModalOpen} onClose={() => setIsQrModalOpen(false)} />
-      <PinSetupModal isOpen={isPinModalOpen} onClose={() => setIsPinModalOpen(false)} />
       <ProfileSettingsModal isOpen={isProfileModalOpen} onClose={() => setIsProfileModalOpen(false)} />
       <StoreConfigModal isOpen={isStoreModalOpen} onClose={() => setIsStoreModalOpen(false)} />
       <BranchConfigModal isOpen={isBranchModalOpen} onClose={() => setIsBranchModalOpen(false)} />

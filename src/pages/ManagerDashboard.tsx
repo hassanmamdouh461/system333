@@ -358,31 +358,60 @@ export default function ManagerDashboard() {
           recList = await window.electronAPI.getMenuRecipes();
         }
       } else {
-        // Browser — direct REST API call (same approach as system-2)
-        const headers = { 'X-Appwrite-Project': APPWRITE_PROJECT };
+        // Browser — query Cloudflare D1 instead of Appwrite
+        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://brewmaster-d1-proxy.hassanmamdouh461.workers.dev';
+        
+        const executeD1Query = async (sql: string, params: any[] = []) => {
+          const res = await fetch(workerUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ sql, params })
+          });
+          if (!res.ok) throw new Error(`HTTP ${res.status}`);
+          const data = await res.json();
+          if (!data.success) throw new Error(data.error || 'D1 query failed');
+          return data.result[0]?.results || [];
+        };
 
-        const [ordersRes, customersRes, inventoryRes] = await Promise.all([
-          fetch(`${APPWRITE_ENDPOINT}/databases/${APPWRITE_DB}/collections/orders/documents?limit=1000`, { headers }),
-          fetch(`${APPWRITE_ENDPOINT}/databases/${APPWRITE_DB}/collections/customers/documents?limit=1000`, { headers }),
-          fetch(`${APPWRITE_ENDPOINT}/databases/${APPWRITE_DB}/collections/inventory/documents?limit=1000`, { headers }).catch(() => null)
-        ]);
+        try {
+          const [d1Orders, d1Customers, d1Inventory] = await Promise.all([
+            executeD1Query('SELECT * FROM orders ORDER BY createdAt DESC LIMIT 1000'),
+            executeD1Query('SELECT * FROM customers ORDER BY createdAt DESC LIMIT 1000'),
+            executeD1Query('SELECT * FROM inventory ORDER BY name ASC LIMIT 1000')
+          ]);
 
-        if (!ordersRes.ok) throw new Error(`Orders fetch failed: ${ordersRes.status}`);
-        const ordersData = await ordersRes.json();
-        ordersList = ordersData.documents || [];
+          ordersList = d1Orders.map((row: any) => ({
+            $id: row.id,
+            $createdAt: row.createdAt,
+            branch_id: row.branch_id,
+            total_amount: Number(row.totalAmount),
+            payment_method: row.paymentMethod,
+            items: row.items,
+            tableId: row.tableId,
+            paymentStatus: row.paymentStatus
+          }));
 
-        if (customersRes.ok) {
-          const customersData = await customersRes.json();
-          customersList = customersData.documents || [];
-        } else {
-          customersList = [];
-        }
+          customersList = d1Customers.map((row: any) => ({
+            $id: row.id,
+            name: row.name,
+            phone: row.phone,
+            points: Number(row.points),
+            createdAt: row.createdAt,
+            branchId: row.branch_id
+          }));
 
-        if (inventoryRes && inventoryRes.ok) {
-          const inventoryData = await inventoryRes.json();
-          invList = inventoryData.documents || [];
-        } else {
-          invList = [];
+          invList = d1Inventory.map((row: any) => ({
+            $id: row.id,
+            name: row.name,
+            unit: row.unit,
+            stock: Number(row.stock),
+            minStock: Number(row.minStock),
+            costPerUnit: Number(row.costPerUnit),
+            branch_id: row.branch_id
+          }));
+        } catch (d1Err) {
+          console.error('[ManagerDashboard] Failed to fetch data from D1:', d1Err);
+          throw d1Err;
         }
       }
 

@@ -27,25 +27,29 @@ export function DatabaseStatus() {
         setLastChecked(new Date());
       }
     } else {
-      // Running on Web: Check Appwrite Cloud Database connection
+      // Running on Web: Check Cloudflare D1 Cloud Database connection
       try {
-        const response = await fetch(
-          'https://fra.cloud.appwrite.io/v1/databases/6a545eb00016d126bc82/collections/orders/documents?limit=1',
-          {
-            method: 'GET',
-            headers: {
-              'X-Appwrite-Project': '69879ae70002444f3f38',
-              'Content-Type': 'application/json'
-            }
-          }
-        );
+        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://brewmaster-d1-proxy.hassanmamdouh461.workers.dev';
+        const response = await fetch(workerUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            sql: 'SELECT 1'
+          })
+        });
         if (!response.ok) {
           throw new Error(`Cloud database returned status ${response.status}`);
+        }
+        const data = await response.json();
+        if (!data.success) {
+          throw new Error(data.error || 'D1 query failed');
         }
         setStatus('connected');
         setLastChecked(new Date());
       } catch (error) {
-        console.error('Appwrite connection error:', error);
+        console.error('D1 connection error:', error);
         setStatus('error');
         setLastChecked(new Date());
       }
@@ -70,7 +74,7 @@ export function DatabaseStatus() {
           label: language === 'ar' ? 'جاري التحقق...' : 'Checking...',
           description: isElectron 
             ? (language === 'ar' ? 'يتم الآن فحص الاتصال بقاعدة بيانات SQLite المحلية' : 'Verifying local database connection')
-            : (language === 'ar' ? 'يتم الآن فحص الاتصال بقاعدة بيانات Appwrite السحابية' : 'Verifying Appwrite cloud database connection'),
+            : (language === 'ar' ? 'يتم الآن فحص الاتصال بقاعدة بيانات Cloudflare D1 السحابية' : 'Verifying Cloudflare D1 cloud database connection'),
         };
       case 'connected':
         return {
@@ -80,10 +84,10 @@ export function DatabaseStatus() {
           borderColor: 'border-green-200',
           label: isElectron 
             ? (language === 'ar' ? 'قاعدة البيانات المحلية متصلة' : 'Local SQLite Connected')
-            : (language === 'ar' ? 'قاعدة البيانات السحابية متصلة' : 'Appwrite Cloud Connected'),
+            : (language === 'ar' ? 'قاعدة البيانات السحابية متصلة' : 'Cloudflare D1 Connected'),
           description: isElectron
             ? (language === 'ar' ? 'قاعدة البيانات المحلية متصلة وتعمل بكفاءة تامة' : 'Local SQLite database is connected and fully operational')
-            : (language === 'ar' ? 'قاعدة بيانات Appwrite متصلة وتعمل بكفاءة تامة أونلاين' : 'Appwrite cloud database is connected and fully operational online'),
+            : (language === 'ar' ? 'قاعدة بيانات Cloudflare D1 متصلة وتعمل بكفاءة تامة أونلاين' : 'Cloudflare D1 cloud database is connected and fully operational online'),
         };
       case 'error':
         return {
@@ -96,7 +100,7 @@ export function DatabaseStatus() {
             : (language === 'ar' ? 'خطأ في الاتصال بالسحاب' : 'Cloud Connection Error'),
           description: isElectron
             ? (language === 'ar' ? 'فشل الاتصال بقاعدة بيانات SQLite المحلية' : 'Failed to access local SQLite database')
-            : (language === 'ar' ? 'تعذر الاتصال بـ Appwrite. تأكد من إعداد الصلاحيات (Permissions) للجدول' : 'Failed to connect to Appwrite. Please ensure collection permissions are set.'),
+            : (language === 'ar' ? 'تعذر الاتصال بـ Cloudflare D1. يرجى التحقق من إعدادات الـ Worker' : 'Failed to connect to Cloudflare D1. Please check Worker settings.'),
         };
     }
   };
@@ -135,11 +139,11 @@ export function DatabaseStatus() {
             <div className="space-y-1 text-xs text-gray-500">
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-semibold text-gray-700">{language === 'ar' ? 'النوع:' : 'Type:'}</span>
-                <span>{isElectron ? t('SQLite (Offline Standalone)') : (language === 'ar' ? 'سحابي (Appwrite Cloud)' : 'Appwrite Cloud Database')}</span>
+                <span>{isElectron ? t('SQLite (Offline Standalone)') : (language === 'ar' ? 'سحابي (Cloudflare D1)' : 'Cloudflare D1 Database')}</span>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-semibold text-gray-700">{isElectron ? (language === 'ar' ? 'مسار التخزين:' : 'File Storage:') : (language === 'ar' ? 'رابط الاتصال:' : 'Endpoint:')}</span>
-                <span className="font-mono">{isElectron ? 'brewmaster.db' : 'https://fra.cloud.appwrite.io'}</span>
+                <span className="font-mono">{isElectron ? 'brewmaster.db' : 'Cloudflare D1'}</span>
               </div>
               {lastChecked && (
                 <div className="flex items-center gap-2">
