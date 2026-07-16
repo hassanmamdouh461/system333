@@ -300,6 +300,7 @@ class OrderRepository {
         paymentMethod = excluded.paymentMethod,
         totalAmount = excluded.totalAmount,
         items = excluded.items,
+        branch_id = excluded.branch_id,
         updated_at = excluded.updated_at
     `);
 
