@@ -100,3 +100,5 @@ Thumbs.db
 /mingit/
 /scratch/
 /dist-electron
+.vercel
+.env*
