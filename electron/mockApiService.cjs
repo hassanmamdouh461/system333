@@ -106,7 +106,7 @@ async function pushMenuItems(items) {
       item.category,
       item.image || "",
       item.available ? 1 : 0,
-      item.branch_id || "branch_1"
+      item.branchId || item.branch_id || "branch_1"
     ]
   }));
 
@@ -135,7 +135,7 @@ async function pushOrders(orders) {
       Number(order.totalAmount),
       order.createdAt,
       order.paidAt || null,
-      order.branch_id || "branch_1"
+      order.branchId || order.branch_id || "branch_1"
     ]
   }));
 
@@ -159,7 +159,7 @@ async function pushCustomers(customers) {
       c.phone,
       Number(c.points) || 0,
       c.createdAt,
-      c.branch_id || "branch_1"
+      c.branchId || c.branch_id || "branch_1"
     ]
   }));
 
@@ -184,7 +184,7 @@ async function pushInventory(items) {
       Number(item.stock) || 0,
       Number(item.minStock) || 0,
       Number(item.costPerUnit) || 0,
-      item.branch_id || "branch_1",
+      item.branchId || item.branch_id || "branch_1",
       item.createdAt || new Date().toISOString(),
       item.updatedAt || new Date().toISOString()
     ]
