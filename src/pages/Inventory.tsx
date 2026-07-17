@@ -3,17 +3,21 @@ import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Package, History, Plus, Search, Trash2, Edit2, 
   Scale, AlertTriangle, CheckCircle2, ArrowUpRight, 
-  ArrowDownRight, RefreshCw, X, HelpCircle
+  ArrowDownRight, RefreshCw, X, HelpCircle, TrendingUp
 } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { inventoryService } from '../services/inventoryService';
-import { InventoryItem, InventoryTransaction } from '../global';
+import { menuService } from '../services/menuService';
+import { InventoryItem, InventoryTransaction, RecipeIngredient } from '../global';
+import { MenuItem } from '../types/menu';
 
 export default function Inventory() {
   const { t, isRtl } = useLanguage();
   const [activeTab, setActiveTab] = useState<'stock' | 'history'>('stock');
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [transactions, setTransactions] = useState<InventoryTransaction[]>([]);
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [recipes, setRecipes] = useState<RecipeIngredient[]>([]);
   const [loading, setLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -40,12 +44,16 @@ export default function Inventory() {
   const fetchData = async () => {
     setLoading(true);
     try {
-      const [invData, txData] = await Promise.all([
+      const [invData, txData, menuData, recipeData] = await Promise.all([
         inventoryService.getAll(),
-        inventoryService.getTransactions()
+        inventoryService.getTransactions(),
+        menuService.getAll().catch(() => []),
+        inventoryService.getMenuRecipes().catch(() => [])
       ]);
       setInventory(invData);
       setTransactions(txData);
+      setMenuItems(menuData);
+      setRecipes(recipeData);
     } catch (error) {
       console.error('Failed to load inventory data:', error);
     } finally {
@@ -56,6 +64,51 @@ export default function Inventory() {
   useEffect(() => {
     fetchData();
   }, []);
+
+  // Precompute average selling yield for each inventory item ID
+  const itemYields = useMemo(() => {
+    const yields: Record<string, number> = {};
+    
+    // Group recipe entries by inventoryItemId
+    const recipeGroups: Record<string, { menuItemId: string; quantity: number }[]> = {};
+    recipes.forEach(r => {
+      if (!recipeGroups[r.inventoryItemId]) {
+        recipeGroups[r.inventoryItemId] = [];
+      }
+      recipeGroups[r.inventoryItemId].push({
+        menuItemId: r.menuItemId,
+        quantity: r.quantity
+      });
+    });
+
+    // Create a map of menu items by ID for fast lookup
+    const menuMap = new Map(menuItems.map(item => [item.id, item]));
+
+    // Calculate average yield for each inventory item
+    inventory.forEach(item => {
+      const itemRecipes = recipeGroups[item.id] || [];
+      if (itemRecipes.length === 0) {
+        yields[item.id] = 0;
+        return;
+      }
+
+      let totalYield = 0;
+      let validCount = 0;
+
+      itemRecipes.forEach(rec => {
+        const menuItem = menuMap.get(rec.menuItemId);
+        if (menuItem && rec.quantity > 0) {
+          const yieldVal = menuItem.price / rec.quantity;
+          totalYield += yieldVal;
+          validCount++;
+        }
+      });
+
+      yields[item.id] = validCount > 0 ? (totalYield / validCount) : 0;
+    });
+
+    return yields;
+  }, [inventory, recipes, menuItems]);
 
   // Filtered Stock list
   const filteredStock = useMemo(() => {
@@ -87,6 +140,16 @@ export default function Inventory() {
   const lowStockCount = useMemo(() => {
     return inventory.filter(item => item.stock <= item.minStock).length;
   }, [inventory]);
+
+  // Total Potential Profit
+  const totalPotentialProfit = useMemo(() => {
+    return inventory.reduce((sum, item) => {
+      const avgYield = itemYields[item.id] || 0;
+      const potSales = item.stock * avgYield;
+      const potProfit = potSales > 0 ? Math.max(potSales - (item.stock * item.costPerUnit), 0) : 0;
+      return sum + potProfit;
+    }, 0);
+  }, [inventory, itemYields]);
 
   const handleOpenItemModal = (item?: InventoryItem) => {
     if (item) {
@@ -207,7 +270,7 @@ export default function Inventory() {
       </div>
 
       {/* ── Stats Row ──────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white/95 border border-gray-100 rounded-2xl p-5 shadow-sm flex items-center gap-4">
           <div className="bg-amber-50 text-amber-600 p-3 rounded-xl">
             <Package size={24} />
@@ -231,13 +294,25 @@ export default function Inventory() {
         </div>
 
         <div className="bg-white/95 border border-gray-100 rounded-2xl p-5 shadow-sm flex items-center gap-4">
-          <div className="bg-green-50 text-green-600 p-3 rounded-xl">
+          <div className="bg-blue-50 text-blue-600 p-3 rounded-xl">
             <Scale size={24} />
           </div>
           <div>
             <p className="text-xs text-gray-400 font-semibold">{t('TOTAL VALUE (EST)')}</p>
             <p className="text-xl md:text-2xl font-bold text-gray-800">
               EGP {totalValue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+            </p>
+          </div>
+        </div>
+
+        <div className="bg-white/95 border border-gray-100 rounded-2xl p-5 shadow-sm flex items-center gap-4">
+          <div className="bg-emerald-50 text-emerald-600 p-3 rounded-xl">
+            <TrendingUp size={24} />
+          </div>
+          <div>
+            <p className="text-xs text-gray-400 font-semibold">{t('TOTAL EXPECTED PROFIT')}</p>
+            <p className="text-xl md:text-2xl font-bold text-emerald-600">
+              EGP {totalPotentialProfit.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
             </p>
           </div>
         </div>
@@ -282,7 +357,6 @@ export default function Inventory() {
         </div>
       </div>
 
-      {/* ── Tab Contents ─────────────────────────────────────────────────── */}
       {loading ? (
         <div className="flex flex-col items-center justify-center h-64 bg-white/50 backdrop-blur-sm rounded-2xl border border-gray-100">
           <RefreshCw className="animate-spin text-mocha-600 mb-2 w-8 h-8" />
@@ -301,37 +375,36 @@ export default function Inventory() {
                     <th className="p-4 text-center">{t('Min Stock Warning')}</th>
                     <th className="p-4 text-center">{t('Cost Per Unit')}</th>
                     <th className="p-4 text-center">{t('Estimated Cost')}</th>
-                    <th className="p-4 text-center">{t('Status')}</th>
+                    <th className="p-4 text-center">{t('Potential Sales')}</th>
+                    <th className="p-4 text-center">{t('Potential Profit')}</th>
                     <th className="p-4 text-right">{t('Action')}</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-gray-100">
                   {filteredStock.map((item) => {
                     const isLow = item.stock <= item.minStock;
+                    const avgYield = itemYields[item.id] || 0;
+                    const potSales = item.stock * avgYield;
+                    const potProfit = potSales > 0 ? Math.max(potSales - (item.stock * item.costPerUnit), 0) : 0;
+                    
                     return (
                       <tr key={item.id} className="hover:bg-gray-50/50 transition-colors">
                         <td className="p-4 font-semibold text-gray-900">{t(item.name)}</td>
                         <td className="p-4 text-center text-gray-500 font-medium">{t(item.unit)}</td>
-                        <td className="p-4 text-center font-bold text-gray-800">
+                        <td className={`p-4 text-center font-bold ${isLow ? 'text-red-600 bg-red-50/30 rounded-lg' : 'text-gray-800'}`}>
                           {item.stock.toFixed(2)}
+                          {isLow && <span className="block text-[10px] text-red-500 font-semibold">{t('Low Stock')}</span>}
                         </td>
                         <td className="p-4 text-center text-gray-500">{item.minStock.toFixed(2)}</td>
                         <td className="p-4 text-center font-medium text-gray-700">EGP {item.costPerUnit.toFixed(2)}</td>
                         <td className="p-4 text-center font-bold text-gray-800">
                           EGP {(item.stock * item.costPerUnit).toFixed(2)}
                         </td>
-                        <td className="p-4 text-center">
-                          {isLow ? (
-                            <span className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full font-semibold bg-red-50 text-red-600 border border-red-100">
-                              <AlertTriangle size={12} />
-                              {t('Warning: Low Stock')}
-                            </span>
-                          ) : (
-                            <span className="inline-flex items-center gap-1 text-xs px-2.5 py-1 rounded-full font-semibold bg-green-50 text-green-600 border border-green-100">
-                              <CheckCircle2 size={12} />
-                              {t('Healthy')}
-                            </span>
-                          )}
+                        <td className="p-4 text-center font-bold text-emerald-600">
+                          EGP {potSales.toFixed(2)}
+                        </td>
+                        <td className="p-4 text-center font-bold text-sky-600">
+                          EGP {potProfit.toFixed(2)}
                         </td>
                         <td className="p-4 text-right">
                           <div className="flex justify-end items-center gap-1.5">
@@ -362,7 +435,7 @@ export default function Inventory() {
                   })}
                   {filteredStock.length === 0 && (
                     <tr>
-                      <td colSpan={8} className="p-8 text-center text-gray-400">
+                      <td colSpan={9} className="p-8 text-center text-gray-400">
                         {t('No stock items found')}
                       </td>
                     </tr>
@@ -490,11 +563,11 @@ export default function Inventory() {
                       onChange={(e) => setItemForm({ ...itemForm, unit: e.target.value })}
                       className="w-full px-4 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent transition-all bg-white"
                     >
-                      <option value="kg">kg</option>
-                      <option value="g">g</option>
-                      <option value="liter">liter</option>
-                      <option value="ml">ml</option>
-                      <option value="piece">piece</option>
+                      <option value="kg">{t('kg')}</option>
+                      <option value="g">{t('g')}</option>
+                      <option value="liter">{t('liter')}</option>
+                      <option value="ml">{t('ml')}</option>
+                      <option value="piece">{t('piece')}</option>
                     </select>
                   </div>
 
@@ -634,6 +707,51 @@ export default function Inventory() {
                     placeholder={t('e.g. Weekly inventory audit / purchase invoice #124')}
                   />
                 </div>
+
+                {/* Real-time Potential Selling & Profit calculation card */}
+                {(() => {
+                  const qtyVal = parseFloat(adjustForm.quantity) || 0;
+                  const itemCost = selectedItem.costPerUnit;
+                  const itemYield = itemYields[selectedItem.id] || 0;
+
+                  const totalTxCost = qtyVal * itemCost;
+                  const totalTxSales = qtyVal * itemYield;
+                  const totalTxProfit = totalTxSales > 0 ? Math.max(totalTxSales - totalTxCost, 0) : 0;
+
+                  if (qtyVal <= 0) return null;
+
+                  if (adjustForm.type === 'OUT') {
+                    return (
+                      <div className="bg-orange-50/50 border border-orange-100 p-4 rounded-xl space-y-2 text-xs">
+                        <div className="flex justify-between font-bold text-gray-700">
+                          <span>{t('Total Cost Value')}:</span>
+                          <span>EGP {totalTxCost.toFixed(2)}</span>
+                        </div>
+                        <div className="flex justify-between font-bold text-orange-700">
+                          <span>{t('Potential Value Loss')}:</span>
+                          <span>EGP {totalTxSales.toFixed(2)}</span>
+                        </div>
+                      </div>
+                    );
+                  }
+
+                  return (
+                    <div className="bg-emerald-50/50 border border-emerald-100 p-4 rounded-xl space-y-2 text-xs">
+                      <div className="flex justify-between font-bold text-gray-700">
+                        <span>{t('Total Cost Value')}:</span>
+                        <span>EGP {totalTxCost.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between font-bold text-emerald-700">
+                        <span>{t('Potential Selling Value')}:</span>
+                        <span>EGP {totalTxSales.toFixed(2)}</span>
+                      </div>
+                      <div className="flex justify-between font-bold text-sky-700">
+                        <span>{t('Expected Potential Profit')}:</span>
+                        <span>EGP {totalTxProfit.toFixed(2)}</span>
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 <div className="flex gap-3 pt-4 border-t border-gray-100">
                   <button

@@ -4,7 +4,7 @@ import {
   TrendingUp, DollarSign, ShoppingBag,
   Coffee, Calendar, Download,
   CheckCircle2, Clock, XCircle, AlertCircle, Utensils,
-  UserCheck, Award, Coins, TrendingDown, AlertTriangle
+  UserCheck, Award, Coins, TrendingDown, AlertTriangle, Scale
 } from 'lucide-react';
 import { useAnalytics, AnalyticsPeriod } from '../hooks/useAnalytics';
 import { StatCard } from '../components/ui/StatCard';
@@ -15,6 +15,8 @@ import { getTaxRate } from '../utils/settingsConfig';
 import { customersService } from '../services/customersService';
 import { Customer } from '../types/customer';
 import { inventoryService } from '../services/inventoryService';
+import { menuService } from '../services/menuService';
+import { MenuItem } from '../types/menu';
 
 // ─── Status display config (UI-only: icons & colours) ────────────────────────
 const STATUS_CONFIG: Array<{
@@ -41,17 +43,89 @@ function periodLabel(p: AnalyticsPeriod, t: (k: string) => string) {
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function Reports() {
   const { t, isRtl, language } = useLanguage();
-  const [dateRange, setDateRange] = useState<AnalyticsPeriod>('This Week');
+  const [dateRange, setDateRange] = useState<AnalyticsPeriod>(() => {
+    const saved = localStorage.getItem('reports_date_range');
+    return (saved as AnalyticsPeriod) || 'This Week';
+  });
+
+  const handleDateRangeChange = (value: AnalyticsPeriod) => {
+    setDateRange(value);
+    localStorage.setItem('reports_date_range', value);
+  };
 
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [inventory, setInventory] = useState<any[]>([]);
   const [recipes, setRecipes] = useState<any[]>([]);
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
 
   useEffect(() => {
     customersService.getAll().then(setCustomers).catch(console.error);
     inventoryService.getAll().then(setInventory).catch(console.error);
     inventoryService.getMenuRecipes().then(setRecipes).catch(console.error);
+    menuService.getAll().then(setMenuItems).catch(console.error);
   }, []);
+
+  // Precompute average selling yield for each inventory item ID
+  const itemYields = useMemo(() => {
+    const yields: Record<string, number> = {};
+    
+    // Group recipe entries by inventoryItemId
+    const recipeGroups: Record<string, { menuItemId: string; quantity: number }[]> = {};
+    recipes.forEach(r => {
+      if (!recipeGroups[r.inventoryItemId]) {
+        recipeGroups[r.inventoryItemId] = [];
+      }
+      recipeGroups[r.inventoryItemId].push({
+        menuItemId: r.menuItemId,
+        quantity: r.quantity
+      });
+    });
+
+    // Create a map of menu items by ID for fast lookup
+    const menuMap = new Map(menuItems.map(item => [item.id, item]));
+
+    // Calculate average yield for each inventory item
+    inventory.forEach(item => {
+      const itemRecipes = recipeGroups[item.id] || [];
+      if (itemRecipes.length === 0) {
+        yields[item.id] = 0;
+        return;
+      }
+
+      let totalYield = 0;
+      let validCount = 0;
+
+      itemRecipes.forEach(rec => {
+        const menuItem = menuMap.get(rec.menuItemId);
+        if (menuItem && rec.quantity > 0) {
+          const yieldVal = menuItem.price / rec.quantity;
+          totalYield += yieldVal;
+          validCount++;
+        }
+      });
+
+      yields[item.id] = validCount > 0 ? (totalYield / validCount) : 0;
+    });
+
+    return yields;
+  }, [inventory, recipes, menuItems]);
+
+  const inventoryValuation = useMemo(() => {
+    let totalCost = 0;
+    let totalProfit = 0;
+
+    inventory.forEach(item => {
+      const costVal = item.stock * item.costPerUnit;
+      const avgYield = itemYields[item.id] || 0;
+      const potSales = item.stock * avgYield;
+      const potProfit = potSales > 0 ? Math.max(potSales - costVal, 0) : 0;
+
+      totalCost += costVal;
+      totalProfit += potProfit;
+    });
+
+    return { totalCost, totalProfit };
+  }, [inventory, itemYields]);
 
   const customerStats = useMemo(() => {
     const totalCount = customers.length;
@@ -186,13 +260,15 @@ export default function Reports() {
     return { takeaway, dineIn, total };
   }, [analytics.periodOrders, dateRange]);
 
+  const currencyStr = language === 'ar' ? 'ج.م' : 'EGP';
+
   // Stat cards — when dateRange = 'Today', these equal Dashboard's values exactly
   const statCards = [
     {
       label: t('TOTAL REVENUE (INCL. TAX)'),
-      value: `$${analytics.totalRevenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      value: `${analytics.totalRevenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyStr}`,
       icon: DollarSign,
-      trend: analytics.realRevenue > 0 ? `+$${analytics.realRevenue.toFixed(2)} ${pLabel}` : t('Lifetime total'),
+      trend: analytics.realRevenue > 0 ? `+${analytics.realRevenue.toFixed(2)} ${currencyStr} ${pLabel}` : t('Lifetime total'),
       color: 'green',
     },
     {
@@ -204,7 +280,7 @@ export default function Reports() {
     },
     {
       label: t('AVG. ORDER VALUE'),
-      value: `$${analytics.avgOrderValue.toFixed(2)}`,
+      value: `${analytics.avgOrderValue.toFixed(2)} ${currencyStr}`,
       icon: TrendingUp,
       trend: `${analytics.completedPeriod.length} ${t('completed')} ${pLabel}`,
       color: 'orange',
@@ -232,7 +308,7 @@ export default function Reports() {
             <Calendar className={`absolute top-1/2 -translate-y-1/2 text-gray-400 w-3.5 h-3.5 md:w-4 md:h-4 ${isRtl ? 'right-3' : 'left-3'}`} />
             <select
               value={dateRange}
-              onChange={e => setDateRange(e.target.value as AnalyticsPeriod)}
+              onChange={e => handleDateRangeChange(e.target.value as AnalyticsPeriod)}
               className={`w-full pr-3 md:pr-4 py-2 bg-white border border-gray-200 rounded-lg text-xs md:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-caramel ${isRtl ? 'pr-8 md:pr-9 pl-3 md:pl-4' : 'pl-8 md:pl-9'}`}
             >
               <option value="Today">{t('Today')}</option>
@@ -257,20 +333,34 @@ export default function Reports() {
       </div>
 
       {/* ── Cost & Profit Cards Row ────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-2 md:gap-6">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 md:gap-6">
         <StatCard
           label={t('Cost of Goods Sold (COGS)')}
-          value={`$${cogs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          value={`${cogs.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyStr}`}
           icon={TrendingDown}
           trend={t('Recipe materials cost')}
           color="orange"
         />
         <StatCard
           label={t('Net Profit')}
-          value={`$${netProfit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`}
+          value={`${netProfit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyStr}`}
           icon={Coins}
           trend={t('Earnings after COGS & tax')}
           color="green"
+        />
+        <StatCard
+          label={t('Total Stock Cost')}
+          value={`${inventoryValuation.totalCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyStr}`}
+          icon={Scale}
+          trend={t('Cost value of remaining stock')}
+          color="blue"
+        />
+        <StatCard
+          label={t('Expected Potential Profit')}
+          value={`${inventoryValuation.totalProfit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyStr}`}
+          icon={TrendingUp}
+          trend={t('Potential profit of remaining stock')}
+          color="purple"
         />
       </div>
 
@@ -304,7 +394,7 @@ export default function Reports() {
             <h2 className="text-sm md:text-lg font-bold text-gray-900">{t('Revenue Trend')}</h2>
             {analytics.realRevenue > 0 && (
               <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded-full font-medium">
-                +${analytics.realRevenue.toFixed(2)} {pLabel}
+                +{analytics.realRevenue.toFixed(2)} {currencyStr} {pLabel}
               </span>
             )}
           </div>
@@ -321,7 +411,7 @@ export default function Reports() {
                     style={{ background: data.realRevenue > 0 ? '#c8956c' : '#e8d5c4' }}
                   >
                     <div className="opacity-0 group-hover:opacity-100 absolute -top-11 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-[11px] py-1 px-2 rounded pointer-events-none transition-opacity whitespace-nowrap z-10">
-                      ${data.value.toFixed(2)}{data.orders > 0 ? ` · ${data.orders} ${t('orders')}` : ''}
+                      {data.value.toFixed(2)} {currencyStr}{data.orders > 0 ? ` · ${data.orders} ${t('orders')}` : ''}
                     </div>
                   </motion.div>
                 </div>
@@ -364,7 +454,7 @@ export default function Reports() {
                       className="h-full bg-caramel rounded-full"
                     />
                   </div>
-                  <p className="text-[11px] text-gray-400">${item.revenue.toFixed(2)} {t('revenue')}</p>
+                  <p className="text-[11px] text-gray-400">{item.revenue.toFixed(2)} {currencyStr} {t('revenue')}</p>
                 </div>
               ))}
             </div>

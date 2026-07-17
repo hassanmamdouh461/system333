@@ -5,7 +5,7 @@ import {
   Coffee, Calendar, Download,
   CheckCircle2, Clock, XCircle, AlertCircle, Utensils,
   UserCheck, Award, Coins, Building2, ChevronDown, RefreshCw,
-  Signal, SignalHigh, WifiOff, Package, AlertTriangle, BarChart3, Languages, Users, Search, Settings, Send
+  Signal, SignalHigh, WifiOff, Package, AlertTriangle, BarChart3, Languages, Users, Search, Settings, Send, Scale
 } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { getTaxRate } from '../utils/settingsConfig';
@@ -56,69 +56,28 @@ type AnalyticsPeriod = 'Today' | 'This Week' | 'This Month' | 'This Year';
 const CHART_CONFIG: Record<AnalyticsPeriod, {
   labelsAr: string[];
   labelsEn: string[];
-  base: number[];
   getBucket: (d: Date) => number;
 }> = {
   'Today': {
     labelsAr: ['١٢ص', '٢ص', '٤ص', '٦ص', '٨ص', '١٠ص', '١٢م', '٢م', '٤م', '٦م', '٨م', '١٠م'],
     labelsEn: ['12am', '2am', '4am', '6am', '8am', '10am', '12pm', '2pm', '4pm', '6pm', '8pm', '10pm'],
-    base:   [0,      0,      0,      0,      0,     0,      0,     0,     0,     0,     0,      0],
     getBucket: (d) => Math.floor(d.getHours() / 2),
   },
   'This Week': {
     labelsAr: ['الإثنين', 'الثلاثاء', 'الأربعاء', 'الخميس', 'الجمعة', 'السبت', 'الأحد'],
     labelsEn: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-    base:   [100,   130,   105,   145,   165,   185,   120],
     getBucket: (d) => (d.getDay() + 6) % 7,
   },
   'This Month': {
     labelsAr: ['الأسبوع ١', 'الأسبوع ٢', 'الأسبوع ٣', 'الأسبوع ٤'],
     labelsEn: ['Wk 1', 'Wk 2', 'Wk 3', 'Wk 4'],
-    base:   [950,    1050,   1100,   1100],
     getBucket: (d) => Math.min(Math.floor((d.getDate() - 1) / 7), 3),
   },
   'This Year': {
     labelsAr: ['يناير', 'فبراير', 'مارس', 'أبريل', 'مايو', 'يونيو', 'يوليو', 'أغسطس', 'سبتمبر', 'أكتوبر', 'نوفمبر', 'ديسمبر'],
     labelsEn: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'],
-    base:   [2600,   2900,   3600,   3900,   4100,   4700,   4400,   5200,   3900,   4600,   5300,   6300],
     getBucket: (d) => d.getMonth(),
   },
-};
-
-const BASELINE: Record<AnalyticsPeriod, {
-  orders: number;
-  completedOrders: number;
-  revenue: number;
-}> = {
-  'Today':      { orders: 0,    completedOrders: 0,    revenue: 0     },
-  'This Week':  { orders: 120,  completedOrders: 98,   revenue: 950   },
-  'This Month': { orders: 520,  completedOrders: 425,  revenue: 4200  },
-  'This Year':  { orders: 6500, completedOrders: 5300, revenue: 52000 },
-};
-
-const TOP_ITEMS_BOOST: Record<AnalyticsPeriod, TopItem[]> = {
-  'Today': [],
-  'This Week': [
-    { name: 'Spanish Latte',          count: 52,   revenue: 312.00  },
-    { name: 'Iced Caramel Macchiato', count: 43,   revenue: 279.50  },
-    { name: 'Cappuccino',             count: 38,   revenue: 190.00  },
-    { name: 'Mocha Frappe',           count: 31,   revenue: 217.00  },
-    { name: 'Espresso Shot',          count: 24,   revenue: 96.00   },
-  ],
-  'This Month': [
-    { name: 'Spanish Latte',          count: 218,  revenue: 1308.00 },
-    { name: 'Iced Caramel Macchiato', count: 172,  revenue: 1118.00 },
-    { name: 'Cappuccino',             count: 145,  revenue: 725.00  },
-    { name: 'Mocha Frappe',           count: 128,  revenue: 896.00  },
-    { name: 'Espresso Shot',          count: 98,   revenue: 392.00  },
-  ],
-  'This Year': [
-    { name: 'Spanish Latte',          count: 2450, revenue: 14700.00 },
-    { name: 'Iced Caramel Macchiato', count: 1980, revenue: 12870.00 },
-    { name: 'Cappuccino',             count: 1720, revenue: 8600.00  },
-    { name: 'Mocha Frappe',           count: 1540, revenue: 10780.00 },
-    { name: 'Espresso Shot',          count: 1180, revenue: 4720.00  },
-  ],
 };
 
 // ─── Date Filter Check ────────────────────────────────────────────────────────
@@ -462,7 +421,7 @@ export default function ManagerDashboard() {
       setDbRecipes(recList);
       setIsDemoMode(false);
     } catch (err: any) {
-      console.warn("Cloudflare D1 central database fetch failed. Switching to demo fallback mode.", err);
+      console.warn("Appwrite central database fetch failed. Switching to demo fallback mode.", err);
       setErrorInfo(err.message || "Network Timeout");
       
       // Load Dynamic Fallback orders
@@ -728,13 +687,9 @@ export default function ManagerDashboard() {
     // 4. Calculate Stats
     // Sum subtotal * (1 + taxRate)
     const realRevenue = paidOrders.reduce((sum, order) => sum + Number(order.total_amount) * (1 + taxRate), 0);
-    const multiplier = selectedBranch === 'all' ? 3 : 1;
-    const bl = BASELINE[dateRange];
-    const baselineRevenue = bl.revenue * multiplier;
-    const totalRevenue = baselineRevenue + realRevenue;
-    const totalOrdersCount = bl.orders * multiplier + periodFiltered.length;
-    const completedOrdersCount = bl.completedOrders * multiplier + paidOrders.length;
-    const avgOrderValue = completedOrdersCount > 0 ? totalRevenue / completedOrdersCount : 0;
+    const totalOrdersCount = periodFiltered.length;
+    const paidOrdersCount = paidOrders.length;
+    const avgOrderValue = paidOrdersCount > 0 ? realRevenue / paidOrdersCount : 0;
 
     // 5. Calculate Chart Trend
     const cfg = CHART_CONFIG[dateRange];
@@ -752,24 +707,12 @@ export default function ManagerDashboard() {
 
     const chartData: ChartPoint[] = chartLabels.map((label, idx) => ({
       label,
-      value: (cfg.base[idx] * multiplier) + chartRevenue[idx],
+      value: chartRevenue[idx],
       orders: chartOrderCounts[idx]
     }));
 
     // 6. Calculate Top Selling Products
     const topItemMap: Record<string, TopItem> = {};
-    
-    if (dateRange !== 'Today') {
-      const boost = TOP_ITEMS_BOOST[dateRange] || [];
-      boost.forEach(b => {
-        topItemMap[b.name] = {
-          name: b.name,
-          count: b.count * multiplier,
-          revenue: b.revenue * multiplier
-        };
-      });
-    }
-
     paidOrders.forEach(order => {
       try {
         const items: OrderItem[] = JSON.parse(order.items);
@@ -806,12 +749,12 @@ export default function ManagerDashboard() {
     });
 
     // 8. Invoice Breakdown amounts
-    const paidAmount = baselineRevenue + paidOrders.reduce((sum, order) => sum + Number(order.total_amount) * (1 + taxRate), 0);
+    const paidAmount = paidOrders.reduce((sum, order) => sum + Number(order.total_amount) * (1 + taxRate), 0);
     const unpaidAmount = unpaidOrders.reduce((sum, order) => sum + Number(order.total_amount) * (1 + taxRate), 0);
 
     // 9. Payment Methods Breakdown
-    let cashAmount = baselineRevenue * 0.60;
-    let cardAmount = baselineRevenue * 0.40;
+    let cashAmount = 0;
+    let cardAmount = 0;
     paidOrders.forEach(order => {
       const isCard = order.payment_method?.toLowerCase() === 'card';
       const amount = Number(order.total_amount) * (1 + taxRate);
@@ -843,7 +786,7 @@ export default function ManagerDashboard() {
     };
 
     return {
-      totalRevenue: totalRevenue,
+      totalRevenue: realRevenue,
       totalOrdersCount,
       avgOrderValue,
       chartData,
@@ -851,7 +794,7 @@ export default function ManagerDashboard() {
       takeawayCount,
       dineInCount,
       totalCount: totalOrdersCount,
-      paidCount: completedOrdersCount,
+      paidCount: paidOrders.length,
       unpaidCount: unpaidOrders.length,
       paidAmount,
       unpaidAmount,
@@ -1032,10 +975,39 @@ export default function ManagerDashboard() {
     });
   }, [orders, INVENTORY_ITEMS, ITEM_RECIPES, dbInventory]);
 
+  // ── Compute average selling yields for materials based on recipes and menu prices ──
+  const materialYields = useMemo(() => {
+    const yields: Record<string, number> = {};
+
+    INVENTORY_ITEMS.forEach(inv => {
+      let totalYield = 0;
+      let validCount = 0;
+
+      Object.entries(ITEM_RECIPES).forEach(([menuName, recipe]) => {
+        const qty = recipe[inv.id];
+        if (qty && qty > 0) {
+          // Find menu item price (localMenuItems has them)
+          const menuItem = localMenuItems?.find(m => m.name === menuName || m.id === menuName);
+          const price = menuItem ? menuItem.price : 0;
+          if (price > 0) {
+            totalYield += price / qty;
+            validCount++;
+          }
+        }
+      });
+
+      yields[inv.id] = validCount > 0 ? (totalYield / validCount) : 0;
+    });
+
+    return yields;
+  }, [INVENTORY_ITEMS, ITEM_RECIPES, localMenuItems]);
+
   // Inventory summary stats
   const inventorySummary = useMemo(() => {
     const branchIds = selectedBranch === 'all' ? ['branch_1', 'branch_2', 'branch_3'] : [selectedBranch];
     let totalValue = 0;
+    let totalSalesValue = 0;
+    let totalProfitValue = 0;
     let lowStockCount = 0;
     let totalItems = 0;
 
@@ -1043,15 +1015,22 @@ export default function ManagerDashboard() {
       branchIds.forEach(bId => {
         const bd = inv.branches[bId];
         if (bd) {
-          totalValue += bd.remaining * inv.costPerUnit;
+          const costVal = bd.remaining * inv.costPerUnit;
+          const salesVal = bd.remaining * (materialYields[inv.id] || 0);
+          const profitVal = salesVal > 0 ? Math.max(salesVal - costVal, 0) : 0;
+
+          totalValue += costVal;
+          totalSalesValue += salesVal;
+          totalProfitValue += profitVal;
+          
           if (bd.isLow) lowStockCount++;
           totalItems++;
         }
       });
     });
 
-    return { totalValue, lowStockCount, totalItems };
-  }, [inventoryData, selectedBranch]);
+    return { totalValue, totalSalesValue, totalProfitValue, lowStockCount, totalItems };
+  }, [inventoryData, selectedBranch, materialYields]);
 
   // Max bounds for graphing
   const maxRevenueValue = Math.max(...processedData.chartData.map(d => d.value), 1);
@@ -1076,7 +1055,7 @@ export default function ManagerDashboard() {
   const statCards = [
     {
       label: t('TOTAL REVENUE (INCL. TAX)'),
-      value: `${language === 'ar' ? 'ج.م ' : '$'}${processedData.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`,
+      value: `${processedData.totalRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyStr}`,
       icon: DollarSign,
       trend: `${t('Paid revenue')} (${pLabel})`,
       color: 'green' as const,
@@ -1090,7 +1069,7 @@ export default function ManagerDashboard() {
     },
     {
       label: t('AVG. ORDER VALUE'),
-      value: `${language === 'ar' ? 'ج.م ' : '$'}${processedData.avgOrderValue.toFixed(2)}`,
+      value: `${processedData.avgOrderValue.toFixed(2)} ${currencyStr}`,
       icon: TrendingUp,
       trend: `${t('Average ticket')} (${pLabel})`,
       color: 'orange' as const,
@@ -1101,6 +1080,20 @@ export default function ManagerDashboard() {
       icon: Coffee,
       trend: `${localMenuItems ? localMenuItems.filter(i => i.available).length : '40'} ${t('available now')}`,
       color: 'purple' as const,
+    },
+    {
+      label: t('Total Stock Cost'),
+      value: `${inventorySummary.totalValue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ${currencyStr}`,
+      icon: Scale,
+      trend: language === 'ar' ? 'سعر شراء الخامات بالمخزن' : 'Cost value of remaining stock',
+      color: 'blue' as const,
+    },
+    {
+      label: t('Expected Potential Profit'),
+      value: `${inventorySummary.totalProfitValue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ${currencyStr}`,
+      icon: TrendingUp,
+      trend: language === 'ar' ? 'الأرباح المتوقعة من الخامات بالمخزن' : 'Potential profit of remaining stock',
+      color: 'green' as const,
     },
   ];
 
@@ -1160,7 +1153,7 @@ export default function ManagerDashboard() {
               ) : (
                 <>
                   <SignalHigh size={13} className="text-emerald-500 animate-pulse" />
-                  <span>{language === 'ar' ? 'سيرفر Cloudflare D1 مباشر' : 'Cloudflare D1 Live Database'}</span>
+                  <span>{language === 'ar' ? 'سيرفر Appwrite مباشر' : 'Appwrite Live Database'}</span>
                 </>
               )}
             </div>
@@ -1342,8 +1335,8 @@ export default function ManagerDashboard() {
             <h4 className="font-bold text-sm">{language === 'ar' ? 'تم تشغيل الوضع التجريبي الاحتياطي' : 'Offline Demo Mode Active'}</h4>
             <p className="text-xs text-amber-700/90 leading-normal">
               {language === 'ar' 
-                ? `تعذر الاتصال بقاعدة بيانات Cloudflare D1 المركزية (${errorInfo}). تم تحميل حزمة تحاكي الإحصائيات الحية لـ 3 فروع لتسهيل العرض التقديمي بشكل تفاعلي بالكامل.`
-                : `Could not connect to Cloudflare D1 central database (${errorInfo}). Loaded a robust local fallback representing 3 branches to ensure full dashboard interactivity for your presentation.`}
+                ? `تعذر الاتصال بقاعدة بيانات Appwrite المركزية (${errorInfo}). تم تحميل حزمة تحاكي الإحصائيات الحية لـ 3 فروع لتسهيل العرض التقديمي بشكل تفاعلي بالكامل.`
+                : `Could not connect to Appwrite central database (${errorInfo}). Loaded a robust local fallback representing 3 branches to ensure full dashboard interactivity for your presentation.`}
             </p>
           </div>
         </motion.div>
@@ -1355,7 +1348,7 @@ export default function ManagerDashboard() {
       {activeTab === 'analytics' && (<>
 
       {/* ── Metrics Stat Cards ─────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
+      <div className="grid grid-cols-2 lg:grid-cols-3 gap-4 md:gap-6">
         {statCards.map((s, i) => <StatCard key={i} {...s} />)}
       </div>
 
@@ -1377,7 +1370,7 @@ export default function ManagerDashboard() {
             </div>
             {processedData.totalRevenue > 0 && (
               <span className="text-xs text-green-600 bg-green-50 px-3 py-1 rounded-full font-bold border border-green-100">
-                +{language === 'ar' ? '' : '$'}{processedData.totalRevenue.toFixed(0)} {currencyStr}
+                +{processedData.totalRevenue.toFixed(0)} {currencyStr}
               </span>
             )}
           </div>
@@ -1712,20 +1705,27 @@ export default function ManagerDashboard() {
         <div className="space-y-6">
 
           {/* Inventory Summary Stat Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4 md:gap-6">
             <StatCard
-              label={language === 'ar' ? 'إجمالي قيمة المخزون' : 'Total Stock Value'}
+              label={language === 'ar' ? 'إجمالي تكلفة المخزون' : 'Total Stock Cost'}
               value={`${inventorySummary.totalValue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ${currencyStr}`}
               icon={DollarSign}
-              trend={language === 'ar' ? `${activeBranchLabel} - القيمة التقديرية` : `${activeBranchLabel} - Estimated`}
+              trend={language === 'ar' ? `${activeBranchLabel} - سعر الشراء` : `${activeBranchLabel} - Cost Price`}
+              color="blue"
+            />
+            <StatCard
+              label={language === 'ar' ? 'إجمالي القيمة البيعية' : 'Potential Sales Value'}
+              value={`${inventorySummary.totalSalesValue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ${currencyStr}`}
+              icon={Coins}
+              trend={language === 'ar' ? `قيمة البيع المتوقعة` : `Est. selling yield`}
               color="green"
             />
             <StatCard
-              label={language === 'ar' ? 'أصناف المخزون' : 'Tracked Items'}
-              value={inventorySummary.totalItems.toString()}
-              icon={Package}
-              trend={language === 'ar' ? 'مواد خام يتم تتبعها' : 'Raw materials tracked'}
-              color="blue"
+              label={language === 'ar' ? 'إجمالي الأرباح المتوقعة' : 'Expected Potential Profit'}
+              value={`${inventorySummary.totalProfitValue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} ${currencyStr}`}
+              icon={TrendingUp}
+              trend={language === 'ar' ? `الأرباح الكامنة بالمخزن` : `Expected margin`}
+              color="purple"
             />
             <StatCard
               label={language === 'ar' ? 'تنبيهات نقص المخزون' : 'Low Stock Alerts'}
@@ -1880,11 +1880,23 @@ export default function ManagerDashboard() {
                         <span>{language === 'ar' ? 'مستهلك' : 'Consumed'}: {bd.consumed}</span>
                         <span>{language === 'ar' ? 'بداية' : 'Start'}: {bd.startStock}</span>
                       </div>
-                      <div className="mt-2 pt-2 border-t border-gray-100">
-                        <p className="text-[10px] text-gray-400 font-bold">
-                          {language === 'ar' ? 'القيمة المتبقية' : 'Remaining Value'}: 
+                      <div className="mt-2 pt-2 border-t border-gray-100 space-y-1">
+                        <p className="text-[10px] text-gray-400 font-bold flex justify-between">
+                          <span>{language === 'ar' ? 'القيمة التقديرية (تكلفة):' : 'Cost Value:'}</span>
                           <span className="text-gray-700 ml-1">
                             {(bd.remaining * inv.costPerUnit).toLocaleString(undefined, { maximumFractionDigits: 0 })} {currencyStr}
+                          </span>
+                        </p>
+                        <p className="text-[10px] text-gray-400 font-bold flex justify-between">
+                          <span>{language === 'ar' ? 'القيمة البيعية المتوقعة:' : 'Potential Selling Value:'}</span>
+                          <span className="text-emerald-600 ml-1">
+                            {(bd.remaining * (materialYields[inv.id] || 0)).toLocaleString(undefined, { maximumFractionDigits: 0 })} {currencyStr}
+                          </span>
+                        </p>
+                        <p className="text-[10px] text-gray-400 font-bold flex justify-between">
+                          <span>{language === 'ar' ? 'الأرباح المتوقعة:' : 'Potential Profit:'}</span>
+                          <span className="text-sky-600 ml-1">
+                            {Math.max((bd.remaining * (materialYields[inv.id] || 0)) - (bd.remaining * inv.costPerUnit), 0).toLocaleString(undefined, { maximumFractionDigits: 0 })} {currencyStr}
                           </span>
                         </p>
                       </div>

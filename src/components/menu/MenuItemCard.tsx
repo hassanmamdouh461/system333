@@ -12,7 +12,7 @@ interface MenuItemCardProps {
 }
 
 export function MenuItemCard({ item, onEdit, onDelete, onToggleStatus }: MenuItemCardProps) {
-  const { t } = useLanguage();
+  const { t, isRtl } = useLanguage();
   return (
     <motion.div
       layout
@@ -31,7 +31,7 @@ export function MenuItemCard({ item, onEdit, onDelete, onToggleStatus }: MenuIte
             </span>
           </div>
           <div className="flex flex-col items-end shrink-0 gap-1">
-            <span className="font-bold text-base text-mocha-700">${item.price.toFixed(2)}</span>
+            <span className="font-bold text-base text-mocha-700">{item.price.toFixed(2)} {isRtl ? 'ج.م' : 'EGP'}</span>
             {!item.available && (
               <span className="bg-red-100 text-red-700 px-2 py-0.5 rounded-full text-[10px] font-bold">
                 {t('Sold Out')}
