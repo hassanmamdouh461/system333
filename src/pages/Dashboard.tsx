@@ -112,16 +112,6 @@ export default function Dashboard() {
             )}
           </div>
         </div>
-        
-        <div className="flex items-center gap-4">
-          <button
-            onClick={toggleLanguage}
-            className="flex items-center gap-2 px-4 py-2 bg-white border border-gray-200 hover:border-gray-300 rounded-xl text-xs md:text-sm font-black text-gray-700 hover:text-gray-900 shadow-sm transition-all active:scale-95"
-          >
-            <Languages size={16} className="text-mocha-600" />
-            <span>{language === 'en' ? 'العربية' : 'English'}</span>
-          </button>
-        </div>
       </div>
 
       {/* Grid of Pages */}

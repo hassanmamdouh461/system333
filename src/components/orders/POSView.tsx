@@ -95,17 +95,23 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     }
   };
 
-  // Available categories
-  const categories = CATEGORIES;
+  // Available categories for cashier: only All, Bar (بار), Kitchen (مطبخ)
+  const categories = useMemo(() => {
+    return ['All', 'Bar', 'Kitchen'];
+  }, []);
 
   // Filtered menu items
   const filteredMenuItems = useMemo(() => {
     const available = menuItems.filter(item => item.available);
     
-    // First, filter by category
+    // Filter by preparation destination (part after '|')
     const categoryFiltered = selectedCategory === 'All' 
       ? available 
-      : available.filter(item => item.category === selectedCategory);
+      : available.filter(item => {
+          const parts = item.category ? item.category.split('|') : [];
+          const prepDest = parts[1] || parts[0] || '';
+          return prepDest === selectedCategory;
+        });
       
     // Next, filter by search query (Arabic & English support)
     if (!searchQuery.trim()) return categoryFiltered;
@@ -366,47 +372,47 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       
       {/* 1. LEFT COLUMN: Payments & Calculator (Width 28%) - Only visible for Takeaway */}
       {orderMode === 'Takeaway' && (
-        <div className="w-full lg:w-[28%] lg:h-full bg-white p-2.5 md:p-3 rounded-2xl border border-gray-200/80 shadow-sm flex flex-col justify-between overflow-hidden pos-calculator">
-          <div className="overflow-y-auto hide-scrollbar flex-1 pr-0.5 flex flex-col justify-between gap-2">
+        <div className="w-full lg:w-[28%] lg:h-full bg-white p-2 md:p-2.5 rounded-2xl border border-gray-200/80 shadow-sm flex flex-col justify-between overflow-hidden pos-calculator">
+          <div className="overflow-y-auto hide-scrollbar flex-1 pr-0.5 flex flex-col justify-start gap-2 h-full">
             <h2 className="font-extrabold text-xs md:text-sm text-mocha-800 border-b border-gray-100 pb-1.5 shrink-0">
               <span className="font-sans">{t('Payment & Invoice')}</span>
             </h2>
             
             {/* Total Due & Received Amount Input */}
-            <div className="grid grid-cols-2 gap-2">
-              <div className="space-y-1">
+            <div className="grid grid-cols-2 gap-2 shrink-0">
+              <div className="space-y-0.5">
                 <label className="text-xs text-gray-500 font-extrabold"><span className="font-sans">{t('Total Due')}</span></label>
-                <div className="w-full bg-gray-950 text-amber-400 font-mono text-lg md:text-xl font-black px-2.5 py-0.5 rounded-xl border border-gray-800 flex justify-between items-center select-all h-[40px]">
+                <div className="w-full bg-gray-950 text-amber-400 font-mono text-base md:text-lg font-black px-2 py-0.5 rounded-xl border border-gray-800 flex justify-between items-center select-all h-[36px]">
                   <span>{grandTotal.toFixed(2)}</span>
-                  <span className="text-xs text-gray-500 font-sans font-bold">{isRtl ? 'ج.م' : 'EGP'}</span>
+                  <span className="text-[10px] text-gray-500 font-sans font-bold">{isRtl ? 'ج.م' : 'EGP'}</span>
                 </div>
               </div>
 
-              <div className="space-y-1">
+              <div className="space-y-0.5">
                 <label className="text-xs text-gray-500 font-extrabold"><span className="font-sans">{t('Received Amount')}</span></label>
-                <div className="w-full bg-gray-950 text-emerald-400 font-mono text-lg md:text-xl font-black px-2.5 py-0.5 rounded-xl border border-gray-800 flex justify-between items-center select-all h-[40px]">
+                <div className="w-full bg-gray-950 text-emerald-400 font-mono text-base md:text-lg font-black px-2 py-0.5 rounded-xl border border-gray-800 flex justify-between items-center select-all h-[36px]">
                   <span>{receivedAmount}</span>
-                  <span className="text-xs text-gray-500 font-sans font-bold">{isRtl ? 'ج.م' : 'EGP'}</span>
+                  <span className="text-[10px] text-gray-500 font-sans font-bold">{isRtl ? 'ج.م' : 'EGP'}</span>
                 </div>
               </div>
             </div>
 
             {/* Change for Customer */}
-            <div className="space-y-1">
+            <div className="space-y-0.5 shrink-0">
               <label className="text-xs text-gray-500 font-extrabold"><span className="font-sans">{t('Change for Customer')}</span></label>
-              <div className="w-full bg-gray-950 text-amber-400 font-mono text-lg md:text-xl font-black px-2.5 py-0.5 rounded-xl border border-gray-800 flex justify-between items-center h-[40px]">
+              <div className="w-full bg-gray-950 text-amber-400 font-mono text-base md:text-lg font-black px-2 py-0.5 rounded-xl border border-gray-800 flex justify-between items-center h-[36px]">
                 <span>{changeAmount.toFixed(2)}</span>
-                <span className="text-xs text-gray-500 font-sans font-bold">{isRtl ? 'ج.م' : 'EGP'}</span>
+                <span className="text-[10px] text-gray-500 font-sans font-bold">{isRtl ? 'ج.م' : 'EGP'}</span>
               </div>
             </div>
 
             {/* Quick Cash Buttons */}
-            <div className="grid grid-cols-3 gap-1.5">
+            <div className="grid grid-cols-3 gap-1.5 shrink-0">
               {[10, 20, 50, 100, 200, 500].map(amt => (
                 <button
                   key={amt}
                   onClick={() => handleQuickCash(amt)}
-                  className="bg-gray-100 hover:bg-gray-200 active:scale-95 transition-all text-sm sm:text-base font-black text-gray-800 py-2 rounded-xl border border-gray-200 shadow-sm"
+                  className="bg-gray-100 hover:bg-gray-200 active:scale-95 transition-all text-xs md:text-sm font-black text-gray-800 py-1.5 rounded-xl border border-gray-200 shadow-sm"
                 >
                   {amt}
                 </button>
@@ -414,47 +420,47 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
             </div>
 
             {/* Keypad */}
-            <div className="grid grid-cols-3 gap-1.5 font-mono">
+            <div className="grid grid-cols-3 grid-rows-5 gap-1.5 font-mono flex-grow min-h-[160px]">
               {['7', '8', '9', '4', '5', '6', '1', '2', '3', '.', '0', '00'].map(num => (
                 <button
                   key={num}
                   onClick={() => handleKeypadPress(num)}
-                  className="bg-gray-50 hover:bg-gray-100 active:scale-95 transition-all text-lg font-black text-gray-900 py-2.5 rounded-xl border border-gray-200 shadow-sm"
+                  className="bg-gray-50 hover:bg-gray-100 active:scale-95 transition-all text-base md:text-lg font-black text-gray-900 rounded-xl border border-gray-200 shadow-sm flex items-center justify-center h-full"
                 >
                   {num}
                 </button>
               ))}
               <button
                 onClick={() => handleKeypadPress('C')}
-                className="col-span-3 bg-red-500 hover:bg-red-600 text-white text-lg font-black py-2.5 rounded-xl border border-red-600 shadow-sm active:scale-95 transition-all"
+                className="col-span-3 bg-red-500 hover:bg-red-600 text-white text-base md:text-lg font-black rounded-xl border border-red-600 shadow-sm active:scale-95 transition-all flex items-center justify-center h-full"
               >
                 C
               </button>
             </div>
 
-            {/* Payment Method Selection (Moved down, styled larger & full width) */}
-            <div className="mt-2.5 border-t border-gray-100 pt-2 shrink-0">
-              <div className="space-y-1">
-                <label className="text-[11px] md:text-xs text-gray-500 font-extrabold uppercase"><span className="font-sans">{t('Payment Method')}</span></label>
-                <div className="flex bg-gray-100 rounded-xl p-1 border border-gray-200">
+            {/* Payment Method Selection */}
+            <div className="mt-1 border-t border-gray-100 pt-1.5 shrink-0">
+              <div className="space-y-0.5">
+                <label className="text-[10px] md:text-xs text-gray-500 font-extrabold uppercase block"><span className="font-sans">{t('Payment Method')}</span></label>
+                <div className="flex bg-gray-100 rounded-xl p-0.5 border border-gray-200">
                   <button
                     onClick={() => setPaymentMethod('Cash')}
                     className={clsx(
-                      "flex-1 py-2 rounded-lg text-xs sm:text-sm font-black transition-all flex items-center justify-center gap-1.5",
+                      "flex-1 py-1 rounded-lg text-xs md:text-sm font-black transition-all flex items-center justify-center gap-1.5",
                       paymentMethod === 'Cash' ? "bg-white text-mocha-700 shadow-sm" : "text-gray-500 hover:bg-white/30"
                     )}
                   >
-                    <DollarSign size={16} />
+                    <DollarSign size={14} />
                     <span className="font-sans">{t('Cash')}</span>
                   </button>
                   <button
                     onClick={() => setPaymentMethod('Card')}
                     className={clsx(
-                      "flex-1 py-2 rounded-lg text-xs sm:text-sm font-black transition-all flex items-center justify-center gap-1.5",
+                      "flex-1 py-1 rounded-lg text-xs md:text-sm font-black transition-all flex items-center justify-center gap-1.5",
                       paymentMethod === 'Card' ? "bg-white text-mocha-700 shadow-sm" : "text-gray-500 hover:bg-white/30"
                     )}
                   >
-                    <CreditCard size={16} />
+                    <CreditCard size={14} />
                     <span className="font-sans">{t('Card')}</span>
                   </button>
                 </div>
@@ -466,24 +472,24 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
           <div className="space-y-1.5 mt-2 pt-1.5 border-t border-gray-100 shrink-0">
             <button
               onClick={handlePrintAndPay}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-2 rounded-xl border border-emerald-700 transition-all active:scale-95 text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm"
+              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-1.5 rounded-xl border border-emerald-700 transition-all active:scale-95 text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm"
             >
-              <Printer size={16} />
+              <Printer size={14} />
               <span className="font-sans">{t('Print & Pay')}</span>
             </button>
             
             <div className="grid grid-cols-2 gap-1.5">
               <button
                 onClick={handleReset}
-                className="bg-red-50 hover:bg-red-100 text-red-600 font-black py-2 rounded-xl border border-red-200 transition-all active:scale-95 text-xs sm:text-sm text-center"
+                className="bg-red-50 hover:bg-red-100 text-red-600 font-black py-1.5 rounded-xl border border-red-200 transition-all active:scale-95 text-xs sm:text-sm text-center"
               >
                 <span className="font-sans">{t('Clear / Reset')}</span>
               </button>
               <button
                 onClick={handleSaveOrder}
-                className="bg-mocha-600 hover:bg-mocha-700 text-white font-black py-2 rounded-xl border border-mocha-700 transition-all active:scale-95 text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm"
+                className="bg-mocha-600 hover:bg-mocha-700 text-white font-black py-1.5 rounded-xl border border-mocha-700 transition-all active:scale-95 text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm"
               >
-                <Check size={16} />
+                <Check size={14} />
                 <span className="font-sans">{t('Save Invoice')}</span>
               </button>
             </div>

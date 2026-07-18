@@ -1153,7 +1153,7 @@ export default function ManagerDashboard() {
               ) : (
                 <>
                   <SignalHigh size={13} className="text-emerald-500 animate-pulse" />
-                  <span>{language === 'ar' ? 'سيرفر Appwrite مباشر' : 'Appwrite Live Database'}</span>
+                  <span>{language === 'ar' ? 'سيرفر Cloudflare مباشر' : 'Cloudflare Live Database'}</span>
                 </>
               )}
             </div>
@@ -1176,15 +1176,6 @@ export default function ManagerDashboard() {
 
         {/* Filters Panel (Branch Selector & Date Selector) */}
         <div className="flex flex-wrap items-center gap-3 shrink-0">
-          
-          {/* Language Switcher */}
-          <button
-            onClick={toggleLanguage}
-            className="flex items-center gap-2 px-4 py-2.5 bg-white border border-gray-250/70 hover:border-gray-300 rounded-xl text-xs md:text-sm font-black text-gray-700 hover:text-gray-900 shadow-sm transition-all active:scale-95"
-          >
-            <Languages size={16} className="text-mocha-600" />
-            <span>{language === 'en' ? 'العربية' : 'English'}</span>
-          </button>
           
           {/* Custom premium Branch Selector Dropdown */}
           <div className="relative">
@@ -1335,8 +1326,8 @@ export default function ManagerDashboard() {
             <h4 className="font-bold text-sm">{language === 'ar' ? 'تم تشغيل الوضع التجريبي الاحتياطي' : 'Offline Demo Mode Active'}</h4>
             <p className="text-xs text-amber-700/90 leading-normal">
               {language === 'ar' 
-                ? `تعذر الاتصال بقاعدة بيانات Appwrite المركزية (${errorInfo}). تم تحميل حزمة تحاكي الإحصائيات الحية لـ 3 فروع لتسهيل العرض التقديمي بشكل تفاعلي بالكامل.`
-                : `Could not connect to Appwrite central database (${errorInfo}). Loaded a robust local fallback representing 3 branches to ensure full dashboard interactivity for your presentation.`}
+                ? `تعذر الاتصال بقاعدة بيانات Cloudflare المركزية (${errorInfo}). تم تحميل حزمة تحاكي الإحصائيات الحية لـ 3 فروع لتسهيل العرض التقديمي بشكل تفاعلي بالكامل.`
+                : `Could not connect to Cloudflare central database (${errorInfo}). Loaded a robust local fallback representing 3 branches to ensure full dashboard interactivity for your presentation.`}
             </p>
           </div>
         </motion.div>

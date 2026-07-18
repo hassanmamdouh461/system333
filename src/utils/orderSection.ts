@@ -1,7 +1,8 @@
 import { Order, OrderItem, OrderStatus } from '../types/order';
 
 export function getItemSection(category: string, name: string): 'kitchen' | 'drinks' {
-  const cat = category.toLowerCase();
+  const parts = category.split('|');
+  const cat = parts[1] ? parts[1].toLowerCase() : parts[0].toLowerCase();
   
   if (cat === 'bar' || cat === 'drinks') return 'drinks';
   if (cat === 'kitchen') return 'kitchen';
@@ -26,7 +27,9 @@ export function filterItemsBySection(items: OrderItem[], section: 'all' | 'kitch
   if (section === 'all') return items;
   
   return items.filter(item => {
-    const cat = item.category?.toLowerCase() || '';
+    const catFull = item.category || '';
+    const parts = catFull.split('|');
+    const cat = parts[1] ? parts[1].toLowerCase() : parts[0].toLowerCase();
     if (cat === 'bar' || cat === 'drinks') {
       return section === 'drinks';
     }

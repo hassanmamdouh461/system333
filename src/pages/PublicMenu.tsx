@@ -1,264 +1,455 @@
 import React, { useState, useEffect } from 'react';
-import { Coffee, Search, Globe, AlertCircle } from 'lucide-react';
+import { Coffee, Search, AlertCircle, ArrowRight, ChevronLeft } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { menuService } from '../services/menuService';
 import { MenuItem } from '../types/menu';
 
-const TRANSLATIONS = {
-  en: {
-    title: 'BrewMaster',
-    subtitle: 'Premium Coffee & Treats Menu',
-    searchPlaceholder: 'Search for coffee, shakes...',
-    available: 'Available',
-    outOfStock: 'Out of Stock',
-    all: 'All',
-    hotCoffee: 'Hot Coffee',
-    icedCoffee: 'Iced Coffee',
-    frappe: 'Frappe',
-    milkshakes: 'Milkshakes',
-    noItems: 'No items found',
-    tryAgain: 'Try searching for something else.',
-    loading: 'Brewing your menu...',
-    errorMsg: 'Could not load the menu. Please try again.',
-  },
-  ar: {
-    title: 'بروماستر',
-    subtitle: 'قائمة القهوة والحلويات الفاخرة',
-    searchPlaceholder: 'ابحث عن قهوة، ميلك شيك...',
-    available: 'متوفر',
-    outOfStock: 'غير متوفر حالياً',
-    all: 'الكل',
-    hotCoffee: 'قهوة ساخنة',
-    icedCoffee: 'قهوة باردة',
-    frappe: 'فرابيه',
-    milkshakes: 'ميلك شيك',
-    noItems: 'لم يتم العثور على أصناف',
-    tryAgain: 'جرب البحث عن صنف آخر.',
-    loading: 'جاري تحضير القائمة...',
-    errorMsg: 'تعذر تحميل القائمة. يرجى المحاولة مرة أخرى.',
-  }
+const PAGE_BACKGROUND_URL = 'https://images.unsplash.com/photo-1447933601403-0c6688de566e?q=80&w=1000';
+const FOOD_PAGE_BACKGROUND_URL = 'https://images.unsplash.com/photo-1540189549336-e6e99c3679fe?q=80&w=1000';
+
+const CATEGORY_TRANSLATIONS: Record<string, string> = {
+  'Hot Coffee': 'قهوة ساخنة',
+  'Iced Coffee': 'قهوة باردة',
+  'Frappe': 'فرابيه',
+  'Milkshakes': 'ميلك شيك',
+  'Kitchen': 'مأكولات',
+  'Bar': 'مشروبات'
 };
 
-const CATEGORY_TRANSLATIONS: Record<string, { en: string; ar: string }> = {
-  'All': { en: 'All', ar: 'الكل' },
-  'Hot Coffee': { en: 'Hot Coffee', ar: 'قهوة ساخنة' },
-  'Iced Coffee': { en: 'Iced Coffee', ar: 'قهوة باردة' },
-  'Frappe': { en: 'Frappe', ar: 'فرابيه' },
-  'Milkshakes': { en: 'Milkshakes', ar: 'ميلك شيك' }
+const ITEM_TRANSLATIONS: Record<string, { name: string; desc: string }> = {
+  'espresso': { name: 'إسبيريسو', desc: 'جرعة مركزة وغنية من حبوب البن الإيطالية الفاخرة.' },
+  'double espresso': { name: 'إسبيريسو دبل', desc: 'جرعة مزدوجة من الإسبريسو الغني والمركز.' },
+  'cortado': { name: 'كورتادو', desc: 'أجزاء متساوية من الإسبريسو والحليب الدافئ الناعم.' },
+  'flat white': { name: 'فلات وايت', desc: 'جرعة مزدوجة من الإسبريسو القوي مع طبقة رقيقة من رغوة الحليب.' },
+  'cafe latte': { name: 'لاتيه', desc: 'جرعة إسبريسو مع الحليب المبخر وطبقة خفيفة من الرغوة.' },
+  'latte': { name: 'لاتيه', desc: 'جرعة إسبريسو مع الحليب المبخر وطبقة خفيفة من الرغوة.' },
+  'cappuccino': { name: 'كابوتشينو', desc: 'قهوة إيطالية كلاسيكية مع رغوة حليب كثيفة وغنية.' },
+  'spanish latte': { name: 'سبانش لاتيه', desc: 'إسبريسو مع الحليب المكثف المحلى والحليب المبخر.' },
+  'americano': { name: 'أمريكاو', desc: 'جرعات إسبريسو مخففة بالماء الساخن لمذاق ناعم.' },
+  'cafe mocha': { name: 'كافيه موكا', desc: 'إسبريسو ممزوج بالشوكولاتة الغنية والحليب الساخن.' },
+  'turkish coffee': { name: 'قهوة تركي', desc: 'بن مطحون ناعم ومحضر في وعاء قهوة تقليدي.' },
+  'french coffee': { name: 'قهوة فرنساوي', desc: 'قهوة تركية تقليدية محضرة بالحليب.' },
+  'iced americano': { name: 'أمريكانو بارد', desc: 'جرعات إسبريسو فوق الثلج مع الماء البارد.' },
+  'iced latte': { name: 'لاتيه بارد', desc: 'إسبريسو مثلج مع حليب بارد فوق الثلج.' },
+  'iced spanish latte': { name: 'سبانش لاتيه بارد', desc: 'إسبريسو مثلج مع الحليب المكثف المحلى والحليب البارد.' },
+  'iced caramel macchiato': { name: 'كراميل ماكياتو بارد', desc: 'لاتيه فانيليا مثلج مع صوص الكراميل اللذيذ.' },
+  'iced mocha': { name: 'موكا باردة', desc: 'شوكولاتة غنية وإسبريسو وحليب بارد يقدم مع الثلج.' },
+  'cold brew': { name: 'كولد برو', desc: 'بن فاخر منقوع في الماء البارد لمدة 18 ساعة.' },
+  'iced pistachio latte': { name: 'بستاشيو لاتيه بارد', desc: 'إسبريسو مع صوص البستاشيو اللذيذ والحليب والثلج.' },
+  'mocha frappe': { name: 'موكا فرابيه', desc: 'فرابيه موكا مثلجة مغطاة بالكريمة المخفوقة.' },
+  'caramel frappe': { name: 'كراميل فرابيه', desc: 'قهوة مثلجة ممزوجة بصلصة الكراميل الغنية وحلوة المذاق.' },
+  'coffee frappe': { name: 'قهوة فرابيه', desc: 'قهوة مثلجة كلاسيكية ممزوجة بالثلج والحليب.' },
+  'oreo frappe': { name: 'أوريو فرابيه', desc: 'بسكويت أوريو ممزوج بالقهوة والحليب وصوص الشوكولاتة.' },
+  'oreo milkshake': { name: 'ميلك شيك أوريو', desc: 'ميلك شيك كريمي مع بسكويت أوريو والآيس كريم.' },
+  'strawberry milkshake': { name: 'ميلك شيك فراولة', desc: 'فراولة طازجة ممزوجة بآيس كريم الفانيليا والحليب.' },
+  'chocolate milkshake': { name: 'ميلك شيك شوكولاتة', desc: 'ميلك شيك كريمي غني بالشوكولاتة السويسرية الفاخرة.' },
+  'vanilla milkshake': { name: 'ميلك شيك فانيليا', desc: 'ميلك شيك كلاسيكي بنكهة الفانيليا الطبيعية الفاخرة.' },
+  'mango milkshake': { name: 'ميلك شيك مانجو', desc: 'مانجو استوائية ممزوجة بآيس كريم الفانيليا الكريمي.' },
+  'green tea': { name: 'شاي أخضر', desc: 'شاي أخضر ياباني عضوي محضر ساخناً.' },
+  'karak tea': { name: 'شاي كرك', desc: 'شاي أسود مع الحليب المبخر والهيل والزعفران.' },
+  'mint lemonade': { name: 'عصير ليمون بالنعناع', desc: 'عصير ليمون طازج ممزوج بالثلج والنعناع الأخضر.' },
+  'peach iced tea': { name: 'شاي مثلج بالخوخ', desc: 'شاي أسود مثلج بنكهة الخوخ اللذيذة.' },
+  'passion fruit mojito': { name: 'موهيتو باشون فروت', desc: 'مزيج منعش من الليمون والنعناع الطازج والباشون فروت والصودا.' },
+  'classic club sandwich': { name: 'كلوب ساندوتش كلاسيك', desc: 'خبز توست محمص، صدور دجاج، خس، طماطم ومايونيز.' },
+  'prime beef cheeseburger': { name: 'تشيز برجر لحم بقري', desc: 'قطعة لحم بقري مشوية، جبنة شيدر، مخلل وصوص البرجر الخاص.' },
+  'chicken pane sandwich': { name: 'ساندوتش دجاج بانيه', desc: 'صدور دجاج مقرمشة، خس، جبنة وصوص بانيه خاص.' },
+  'turkey & cheese croissant': { name: 'كرواسون تركي وجبنة', desc: 'كرواسون هش محشو بشرائح الديك الرومي والجبنة السويسرية.' },
+  'grilled cheese sandwich': { name: 'ساندوتش جبنة مشوية', desc: 'جبنة شيدر وموزاريلا ذائبة في خبز توست محمص بالزبدة.' },
+  'cheese fries': { name: 'بطاطس بالجبنة', desc: 'بطاطس مقلية ذهبية مقرمشة مغطاة بصوص الجبنة الشيدر.' },
+  'chocolate fudge cake': { name: 'كيكة شوكولاتة فادج', desc: 'شريحة كيك شوكولاتة غنية بالفادج والكريمة السويسرية.' },
+  'warm chocolate brownie': { name: 'براوني شوكولاتة دافئة', desc: 'براوني شوكولاتة دافئة تقدم مع بول آيس كريم فانيليا.' }
 };
 
 export default function PublicMenu() {
-  const [lang, setLang] = useState<'ar' | 'en'>('ar'); // Default to Arabic as requested by user's context
   const [items, setItems] = useState<MenuItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
-  const [selectedCategory, setSelectedCategory] = useState('All');
+  // Navigation levels
+  const [activeSection, setActiveSection] = useState<'food' | 'drinks' | null>(null);
+  const [selectedCategory, setSelectedCategory] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
 
-  const t = TRANSLATIONS[lang];
-  const isRtl = lang === 'ar';
+  // Smart categorize an item based on its name if it has old-format category
+  const smartCategorize = (item: MenuItem): MenuItem => {
+    const cat = item.category || '';
+    // Already in new format with a proper menu category
+    if (cat.includes('|')) {
+      const menuCat = cat.split('|')[0];
+      if (menuCat !== 'Bar' && menuCat !== 'Kitchen' && menuCat !== 'All' && menuCat !== 'ساندوتشات' && menuCat !== 'مقبلات' && menuCat !== 'حلويات') {
+        return item; // Already good
+      }
+    }
+    
+    const nameLower = (item.name || '').toLowerCase();
+    let menuCategory = 'Hot Coffee';
+    let prepDest = 'Bar';
+    
+    // Determine prep destination from old category
+    if (cat === 'Kitchen' || cat === 'Food' || cat === 'Kitchen|Kitchen' || cat === 'ساندوتشات' || cat === 'مقبلات' || cat === 'حلويات' || cat.endsWith('|Kitchen')) {
+      prepDest = 'Kitchen';
+      const friesKw = ['fries', 'بطاطس', 'مقبلات', 'سناكس'];
+      const dessertKw = ['cake', 'brownie', 'كيك', 'براوني', 'حلويات', 'fudge', 'فادج'];
+      if (dessertKw.some(k => nameLower.includes(k))) {
+        menuCategory = 'حلويات';
+      } else if (friesKw.some(k => nameLower.includes(k))) {
+        menuCategory = 'مقبلات';
+      } else {
+        menuCategory = 'ساندوتشات';
+      }
+    } else {
+      // Determine menu category from name
+      const frappeKw = ['frappe', 'frappé'];
+      const milkshakeKw = ['milkshake', 'milk shake'];
+      const icedKw = ['iced', 'cold brew', 'cold', 'mint lemonade', 'peach iced', 'passion fruit', 'mojito', 'lemonade'];
+      
+      if (frappeKw.some(k => nameLower.includes(k))) {
+        menuCategory = 'Frappe';
+      } else if (milkshakeKw.some(k => nameLower.includes(k))) {
+        menuCategory = 'Milkshakes';
+      } else if (icedKw.some(k => nameLower.includes(k))) {
+        menuCategory = 'Iced Coffee';
+      } else {
+        menuCategory = 'Hot Coffee';
+      }
+    }
+    
+    return { ...item, category: `${menuCategory}|${prepDest}` };
+  };
+
+  const foodCategories = React.useMemo(() => {
+    const unique = new Set<string>();
+    unique.add('ساندوتشات');
+    unique.add('مقبلات');
+    unique.add('حلويات');
+    
+    items.forEach(item => {
+      const parts = item.category ? item.category.split('|') : [];
+      const prepDest = parts[1] || parts[0] || '';
+      const menuCat = parts[0] || '';
+      if (prepDest.toLowerCase() === 'kitchen' && menuCat && menuCat !== 'All' && menuCat !== 'Kitchen') {
+        unique.add(menuCat);
+      }
+    });
+    return Array.from(unique);
+  }, [items]);
+
+  const drinksCategories = React.useMemo(() => {
+    const unique = new Set<string>();
+    unique.add('Hot Coffee');
+    unique.add('Iced Coffee');
+    unique.add('Frappe');
+    unique.add('Milkshakes');
+    
+    items.forEach(item => {
+      const parts = item.category ? item.category.split('|') : [];
+      const prepDest = parts[1] || parts[0] || '';
+      const menuCat = parts[0] || '';
+      if (prepDest.toLowerCase() === 'bar' && menuCat && menuCat !== 'All') {
+        unique.add(menuCat);
+      }
+    });
+    return Array.from(unique);
+  }, [items]);
+
+  const activeCategories = React.useMemo(() => {
+    const list = activeSection === 'food' ? foodCategories : drinksCategories;
+    return list.map(cat => ({
+      id: cat,
+      name: CATEGORY_TRANSLATIONS[cat] || cat
+    }));
+  }, [activeSection, foodCategories, drinksCategories]);
 
   useEffect(() => {
+    document.title = 'قائمة المأكولات والمشروبات';
     async function loadMenu() {
       try {
         setLoading(true);
         const fetchedItems = await menuService.getAll();
-        setItems(fetchedItems);
+        const categorizedItems = fetchedItems.map(smartCategorize);
+        setItems(categorizedItems);
       } catch (err) {
         console.error('Error fetching public menu:', err);
-        setError(t.errorMsg);
+        setError('تعذر تحميل القائمة. يرجى المحاولة مرة أخرى.');
       } finally {
         setLoading(false);
       }
     }
     loadMenu();
-  }, [t.errorMsg]);
+  }, []);
+
+  // Dynamically update sub-category when switching main sections
+  useEffect(() => {
+    if (activeSection === 'food' && foodCategories.length > 0) {
+      setSelectedCategory(foodCategories[0]);
+    } else if (activeSection === 'drinks' && drinksCategories.length > 0) {
+      setSelectedCategory(drinksCategories[0]);
+    } else {
+      setSelectedCategory('');
+    }
+  }, [activeSection, foodCategories, drinksCategories]);
 
   const filteredItems = items.filter(item => {
-    const matchesCategory = selectedCategory === 'All' || item.category === selectedCategory;
-    const matchesSearch = item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-                          (item.description && item.description.toLowerCase().includes(searchQuery.toLowerCase()));
-    return matchesCategory && matchesSearch;
+    // If searching, ignore category filter and show all matching items
+    if (searchQuery.trim().length > 0) {
+      const key = item.name.toLowerCase().trim();
+      const translation = ITEM_TRANSLATIONS[key];
+      const arName = translation ? translation.name : item.name;
+      const arDesc = translation ? translation.desc : (item.description || '');
+
+      return item.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+             arName.includes(searchQuery) ||
+             (item.description && item.description.toLowerCase().includes(searchQuery.toLowerCase())) ||
+             arDesc.includes(searchQuery);
+    }
+
+    if (!activeSection) return false;
+
+    const menuCat = item.category ? item.category.split('|')[0] : '';
+    return menuCat === selectedCategory;
   });
 
-  const categories = ['All', 'Hot Coffee', 'Iced Coffee', 'Frappe', 'Milkshakes'];
-
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-mocha-50 flex flex-col items-center justify-center p-4">
-        <motion.div
-          animate={{ rotate: 360 }}
-          transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
-          className="mb-4"
-        >
-          <Coffee className="w-12 h-12 text-mocha-600" />
-        </motion.div>
-        <p className="text-mocha-800 font-medium animate-pulse">{t.loading}</p>
-      </div>
-    );
-  }
-
-  if (error) {
-    return (
-      <div className="min-h-screen bg-mocha-50 flex flex-col items-center justify-center p-6 text-center">
-        <AlertCircle className="w-16 h-16 text-red-500 mb-4" />
-        <h2 className="text-xl font-bold text-gray-900 mb-2">{t.errorMsg}</h2>
-        <button
-          onClick={() => window.location.reload()}
-          className="mt-4 px-6 py-2.5 bg-mocha-700 text-white rounded-xl font-medium shadow-md hover:bg-mocha-800 transition-colors"
-        >
-          {lang === 'ar' ? 'إعادة المحاولة' : 'Try Again'}
-        </button>
-      </div>
-    );
-  }
+  const DRINKS_BG = 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?q=80&w=1000';
+  const FOOD_BG = 'https://images.unsplash.com/photo-1504674900247-0877df9cc836?q=80&w=1000';
 
   return (
-    <div className="min-h-screen bg-mocha-50 pb-12 font-sans" dir={isRtl ? 'rtl' : 'ltr'}>
-      {/* Top Banner / Hero */}
-      <header className="relative bg-gradient-to-b from-mocha-900 to-mocha-800 text-white py-12 px-6 overflow-hidden rounded-b-[2.5rem] shadow-xl">
-        {/* Floating background blobs */}
-        <div className="absolute top-0 right-0 w-64 h-64 bg-caramel-light/10 rounded-full blur-3xl -mr-16 -mt-16"></div>
-        <div className="absolute bottom-0 left-0 w-48 h-48 bg-mocha-400/10 rounded-full blur-2xl -ml-16 -mb-16"></div>
+    <div className="min-h-screen bg-mocha-50 pb-12 font-sans relative" dir="rtl">
+      {/* Background Watermark Image */}
+      <div 
+        className="fixed inset-0 bg-cover bg-center opacity-[0.09] pointer-events-none z-0 transition-all duration-500"
+        style={{ backgroundImage: `url(${activeSection === 'food' ? FOOD_PAGE_BACKGROUND_URL : PAGE_BACKGROUND_URL})` }}
+      />
+
+      {/* Top Banner / Hero - Always fixed */}
+      <header className="relative bg-gradient-to-b from-mocha-950 to-mocha-900 text-white py-12 px-6 overflow-hidden rounded-b-[2.5rem] shadow-xl min-h-[180px] flex items-center justify-center z-10">
+        {/* Dynamic header background image: Drinks or Food only */}
+        <div 
+          className="absolute inset-0 bg-cover bg-center transition-all duration-700 ease-in-out opacity-30"
+          style={{ backgroundImage: `url(${activeSection === 'food' ? FOOD_BG : DRINKS_BG})` }}
+        />
+        {/* Dark overlay */}
+        <div className="absolute inset-0 bg-gradient-to-b from-black/40 via-transparent to-black/60 z-0" />
 
         <div className="max-w-md mx-auto flex flex-col items-center text-center relative z-10">
-          {/* Language Toggle */}
-          <button
-            onClick={() => setLang(prev => prev === 'ar' ? 'en' : 'ar')}
-            className="absolute top-0 right-0 bg-white/10 hover:bg-white/20 backdrop-blur text-xs px-3 py-1.5 rounded-full flex items-center gap-1.5 transition-all text-white border border-white/10"
-          >
-            <Globe size={14} />
-            {lang === 'ar' ? 'English' : 'العربية'}
-          </button>
-
           {/* Logo */}
           <div className="w-16 h-16 bg-white/10 border border-white/20 rounded-full flex items-center justify-center mb-4 shadow-inner backdrop-blur-sm">
             <Coffee className="w-9 h-9 text-caramel" />
           </div>
 
-          <h1 className="text-3xl font-extrabold tracking-tight mb-2 text-white">
-            {t.title}
+          <h1 className="text-3xl font-black tracking-tight mb-2 text-white">
+            بروماستر
           </h1>
-          <p className="text-mocha-200 text-sm max-w-xs font-light">
-            {t.subtitle}
+          <p className="text-mocha-200 text-sm max-w-xs font-medium">
+            قائمة المأكولات والمشروبات الفاخرة
           </p>
         </div>
       </header>
 
       {/* Main Content Area */}
-      <main className="max-w-md mx-auto px-4 mt-6">
-        {/* Search */}
-        <div className="relative mb-6 shadow-sm">
-          <div className={`absolute inset-y-0 ${isRtl ? 'right-3' : 'left-3'} flex items-center pointer-events-none`}>
-            <Search className="h-5 w-5 text-mocha-400" />
+      <main className="max-w-md mx-auto px-4 mt-6 relative z-10">
+        {loading ? (
+          <div className="flex flex-col items-center justify-center py-20">
+            <motion.div
+              animate={{ rotate: 360 }}
+              transition={{ duration: 2, repeat: Infinity, ease: 'linear' }}
+              className="mb-4"
+            >
+              <Coffee className="w-12 h-12 text-mocha-600" />
+            </motion.div>
+            <p className="text-mocha-800 font-bold animate-pulse text-center">جاري تحضير القائمة...</p>
           </div>
-          <input
-            type="text"
-            placeholder={t.searchPlaceholder}
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            className={`w-full py-3 bg-white border border-mocha-100 rounded-2xl focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent text-sm shadow-inner transition-all ${
-              isRtl ? 'pr-10 pl-4 text-right' : 'pl-10 pr-4 text-left'
-            }`}
-          />
-        </div>
+        ) : error ? (
+          <div className="flex flex-col items-center justify-center py-16 text-center">
+            <AlertCircle className="w-16 h-16 text-red-500 mb-4" />
+            <h2 className="text-xl font-bold text-gray-900 mb-2">{error}</h2>
+            <button
+              onClick={() => window.location.reload()}
+              className="mt-4 px-6 py-2.5 bg-mocha-700 text-white rounded-xl font-bold shadow-md hover:bg-mocha-800 transition-colors"
+            >
+              إعادة المحاولة
+            </button>
+          </div>
+        ) : (
+          <>
+            {/* Search */}
+            <div className="relative mb-6 shadow-sm">
+              <div className="absolute inset-y-0 right-3 flex items-center pointer-events-none">
+                <Search className="h-5 w-5 text-mocha-400" />
+              </div>
+              <input
+                type="text"
+                placeholder="قولنا تحب تاكل او تشرب ايه النهارده"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full py-3 pr-10 pl-4 bg-white border border-mocha-100 rounded-2xl focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent text-sm shadow-inner transition-all text-right font-bold"
+              />
+            </div>
 
-        {/* Categories Carousel */}
-        <div className="flex items-center gap-2 overflow-x-auto hide-scrollbar pb-3 mb-6 scroll-smooth">
-          {categories.map(category => {
-            const label = CATEGORY_TRANSLATIONS[category]?.[lang] || category;
-            const isSelected = selectedCategory === category;
-            return (
-              <button
-                key={category}
-                onClick={() => setSelectedCategory(category)}
-                className={`px-4 py-2 rounded-xl text-xs font-semibold whitespace-nowrap transition-all duration-200 ${
-                  isSelected
-                    ? 'bg-mocha-700 text-white shadow-md shadow-mocha-700/25 scale-105'
-                    : 'bg-white text-mocha-800 border border-mocha-100/50 hover:bg-mocha-100'
-                }`}
-              >
-                {label}
-              </button>
-            );
-          })}
-        </div>
+            {/* Level 1: Search Results (if searching) */}
+            {searchQuery.trim().length > 0 ? (
+              <div className="space-y-4">
+                <div className="flex justify-between items-center px-1">
+                  <span className="text-xs text-mocha-500 font-bold">نتائج البحث ({filteredItems.length})</span>
+                  <button 
+                    onClick={() => setSearchQuery('')}
+                    className="text-xs text-red-500 font-bold"
+                  >
+                    إلغاء البحث
+                  </button>
+                </div>
+                
+                <motion.div layout className="space-y-4">
+                  <AnimatePresence mode="popLayout">
+                    {filteredItems.map(item => {
+                      const key = item.name.toLowerCase().trim();
+                      const translation = ITEM_TRANSLATIONS[key];
+                      const displayName = translation ? translation.name : item.name;
+                      const displayDesc = translation ? translation.desc : item.description;
 
-        {/* Menu Items List */}
-        <motion.div layout className="space-y-4">
-          <AnimatePresence mode="popLayout">
-            {filteredItems.map(item => (
-              <motion.div
-                layout
-                key={item.id}
-                initial={{ opacity: 0, y: 12 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0, scale: 0.95 }}
-                transition={{ duration: 0.25 }}
-                className="bg-white rounded-2xl border border-mocha-100/40 p-3.5 shadow-sm relative overflow-hidden flex gap-4 transition-all hover:shadow-md"
-              >
-                {/* Image */}
-                {item.image && (
-                  <div className="w-20 h-20 rounded-xl overflow-hidden bg-mocha-50 flex-shrink-0 relative border border-mocha-100/30">
-                    <img
-                      src={item.image}
-                      alt={item.name}
-                      className="w-full h-full object-cover"
-                    />
+                      return (
+                        <motion.div
+                          layout
+                          key={item.id}
+                          initial={{ opacity: 0, y: 12 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          className="bg-white rounded-2xl border border-mocha-100/40 p-4 shadow-sm flex flex-col"
+                        >
+                          <div className="flex justify-between items-start gap-2">
+                            <h3 className="font-extrabold text-gray-900 text-base">{displayName}</h3>
+                            <span className="font-black text-mocha-700 text-base whitespace-nowrap">{item.price.toFixed(2)} ج.م</span>
+                          </div>
+                          {displayDesc && <p className="text-gray-500 text-xs mt-1.5 font-medium leading-relaxed">{displayDesc}</p>}
+                        </motion.div>
+                      );
+                    })}
+                  </AnimatePresence>
+                </motion.div>
+
+                {filteredItems.length === 0 && (
+                  <div className="text-center py-12">
+                    <p className="text-sm font-bold text-mocha-900">لم يتم العثور على نتائج للبحث</p>
                   </div>
                 )}
-
-                {/* Details */}
-                <div className="flex-1 flex flex-col justify-between min-w-0">
-                  <div>
-                    <div className="flex justify-between items-start gap-2">
-                      <h3 className="font-bold text-gray-900 text-base truncate">
-                        {item.name}
-                      </h3>
-                      <span className="font-extrabold text-mocha-700 text-base">
-                        ${item.price.toFixed(2)}
-                      </span>
+              </div>
+            ) : !activeSection ? (
+              /* Level 1: Main Section Toggles (Meals & Drinks) */
+              <div className="space-y-5 py-2">
+                <h3 className="text-center text-sm font-extrabold text-mocha-800 mb-2">تصفح القائمة الفاخرة</h3>
+                
+                <div className="grid grid-cols-1 gap-4">
+                  {/* Food Card */}
+                  <motion.button
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => setActiveSection('food')}
+                    className="h-44 w-full rounded-3xl overflow-hidden relative shadow-lg text-right flex flex-col justify-end p-6 group border border-mocha-100"
+                  >
+                    <div className="absolute inset-0 bg-cover bg-center transition-transform duration-700 group-hover:scale-105" style={{ backgroundImage: `url(${FOOD_BG})` }} />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent" />
+                    <div className="relative z-10 text-white">
+                      <span className="bg-caramel text-mocha-950 font-black text-[10px] px-2.5 py-1 rounded-full uppercase mb-2 inline-block">الأصناف الرئيسية</span>
+                      <h4 className="text-2xl font-black text-white">منيو المأكولات</h4>
+                      <p className="text-xs text-mocha-200 font-medium mt-1">ساندوتشات، وجبات سريعة، ومقبلات دافئة</p>
                     </div>
-                    {item.description && (
-                      <p className="text-gray-500 text-xs mt-1 font-sans leading-relaxed">
-                        {item.description}
-                      </p>
-                    )}
-                  </div>
+                  </motion.button>
 
-                  {/* Badges */}
-                  <div className="flex items-center justify-between mt-2 pt-1 border-t border-mocha-50/50">
-                    <span className="text-[10px] text-mocha-400 font-medium px-2 py-0.5 bg-mocha-50 rounded-full border border-mocha-100/20">
-                      {CATEGORY_TRANSLATIONS[item.category]?.[lang] || item.category}
-                    </span>
-                  </div>
+                  {/* Drinks Card */}
+                  <motion.button
+                    whileTap={{ scale: 0.98 }}
+                    onClick={() => setActiveSection('drinks')}
+                    className="h-44 w-full rounded-3xl overflow-hidden relative shadow-lg text-right flex flex-col justify-end p-6 group border border-mocha-100"
+                  >
+                    <div className="absolute inset-0 bg-cover bg-center transition-transform duration-700 group-hover:scale-105" style={{ backgroundImage: `url(${DRINKS_BG})` }} />
+                    <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent" />
+                    <div className="relative z-10 text-white">
+                      <span className="bg-caramel text-mocha-950 font-black text-[10px] px-2.5 py-1 rounded-full uppercase mb-2 inline-block">القهوة والمنعشات</span>
+                      <h4 className="text-2xl font-black text-white">منيو المشروبات</h4>
+                      <p className="text-xs text-mocha-200 font-medium mt-1">قهوة مختصة ساخنة وباردة، فرابيه وميلك شيك</p>
+                    </div>
+                  </motion.button>
                 </div>
-              </motion.div>
-            ))}
-          </AnimatePresence>
-        </motion.div>
+              </div>
+            ) : (
+              /* Level 2: Sub-categories Carousel & Sub-items list */
+              <div className="space-y-4">
+                {/* Back to main menu header & sub-tabs */}
+                <div className="flex items-center gap-3 justify-between">
+                  {/* Category tabs */}
+                  <div className="flex items-center gap-2 overflow-x-auto hide-scrollbar pb-1.5 scroll-smooth flex-1">
+                    {activeCategories.map(cat => {
+                      const isSelected = selectedCategory === cat.id;
+                      return (
+                        <button
+                          key={cat.id}
+                          onClick={() => setSelectedCategory(cat.id)}
+                          className={`px-4 py-2 rounded-xl text-xs font-black whitespace-nowrap transition-all duration-200 ${
+                            isSelected
+                              ? 'bg-mocha-700 text-white shadow-md shadow-mocha-700/25 scale-105'
+                              : 'bg-white text-mocha-800 border border-mocha-100/50 hover:bg-mocha-100'
+                          }`}
+                        >
+                          {cat.name}
+                        </button>
+                      );
+                    })}
+                  </div>
 
-        {/* Empty State */}
-        {filteredItems.length === 0 && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            className="text-center py-12 px-4"
-          >
-            <div className="bg-mocha-100 w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 border border-mocha-200">
-              <Search className="w-8 h-8 text-mocha-500" />
-            </div>
-            <p className="text-base font-bold text-mocha-900">{t.noItems}</p>
-            <p className="text-xs text-mocha-400 mt-1">{t.tryAgain}</p>
-          </motion.div>
+                  {/* Back button */}
+                  <button
+                    onClick={() => setActiveSection(null)}
+                    className="px-3.5 py-2.5 bg-mocha-900 text-white rounded-xl text-xs font-black flex items-center gap-1 shadow-md hover:bg-mocha-800 transition-colors shrink-0"
+                  >
+                    <span>الرئيسية</span>
+                    <ArrowRight size={14} />
+                  </button>
+                </div>
+
+                {/* Menu Items List */}
+                <motion.div layout className="space-y-4 mt-2">
+                  <AnimatePresence mode="popLayout">
+                    {filteredItems.map(item => {
+                      const key = item.name.toLowerCase().trim();
+                      const translation = ITEM_TRANSLATIONS[key];
+                      const displayName = translation ? translation.name : item.name;
+                      const displayDesc = translation ? translation.desc : item.description;
+
+                      return (
+                        <motion.div
+                          layout
+                          key={item.id}
+                          initial={{ opacity: 0, y: 12 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, scale: 0.95 }}
+                          transition={{ duration: 0.25 }}
+                          className="bg-white rounded-2xl border border-mocha-100/40 p-4 shadow-sm relative overflow-hidden flex flex-col transition-all hover:shadow-md"
+                        >
+                          <div className="flex justify-between items-start gap-2">
+                            <h3 className="font-extrabold text-gray-900 text-base">{displayName}</h3>
+                            <span className="font-black text-mocha-700 text-base whitespace-nowrap">{item.price.toFixed(2)} ج.م</span>
+                          </div>
+                          {displayDesc && <p className="text-gray-500 text-xs mt-1.5 font-medium leading-relaxed">{displayDesc}</p>}
+                        </motion.div>
+                      );
+                    })}
+                  </AnimatePresence>
+                </motion.div>
+
+                {/* Empty State */}
+                {filteredItems.length === 0 && (
+                  <div className="text-center py-12">
+                    <p className="text-sm font-bold text-mocha-900">لا توجد أصناف في هذا القسم حالياً</p>
+                  </div>
+                )}
+              </div>
+            )}
+          </>
         )}
       </main>
 
-      {/* Footer / Powered by */}
-      <footer className="text-center mt-12 px-4">
-        <p className="text-xs text-mocha-400 font-medium">
-          {lang === 'ar' ? 'بروماستر © ٢٠٢٦ - تم الصنع بحب ☕' : 'BrewMaster © 2026 - Made with Love ☕'}
+      {/* Footer */}
+      <footer className="text-center mt-12 px-4 relative z-10">
+        <p className="text-xs text-mocha-400 font-bold">
+          بروماستر © ٢٠٢٦ - تم الصنع بحب ☕
         </p>
       </footer>
     </div>

@@ -19,13 +19,14 @@ export function NewOrderModal({ isOpen, onClose, menuItems, onSubmit }: NewOrder
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   const categories = useMemo(() => {
-    const cats = Array.from(new Set(menuItems.map(i => i.category)));
-    return ['All', ...cats];
+    const cats = Array.from(new Set(menuItems.map(i => i.category ? i.category.split('|')[0] : '')));
+    return ['All', ...cats.filter(c => c)];
   }, [menuItems]);
 
   const filtered = useMemo(() => {
     return menuItems.filter(item => {
-      const matchCat = activeCategory === 'All' || item.category === activeCategory;
+      const menuCat = item.category ? item.category.split('|')[0] : '';
+      const matchCat = activeCategory === 'All' || menuCat === activeCategory;
       const matchSearch = item.name.toLowerCase().includes(search.toLowerCase());
       return matchCat && matchSearch && item.available;
     });

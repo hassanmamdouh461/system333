@@ -1,7 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { X, Plus, Trash2, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { MenuItem, CATEGORIES } from '../../types/menu';
+import { MenuItem } from '../../types/menu';
 import { useLanguage } from '../../context/LanguageContext';
 import { inventoryService } from '../../services/inventoryService';
 import { InventoryItem } from '../../global';
@@ -11,23 +11,48 @@ interface MenuModalProps {
   onClose: () => void;
   onSave: (item: Omit<MenuItem, 'id'> | MenuItem, recipeIngredients: any[]) => void;
   initialData?: MenuItem | null;
+  existingItems: MenuItem[];
 }
 
-export function MenuModal({ isOpen, onClose, onSave, initialData }: MenuModalProps) {
+export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems }: MenuModalProps) {
   const { t } = useLanguage();
   const [activeTab, setActiveTab] = useState<'general' | 'recipe'>('general');
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
   const [mappedIngredients, setMappedIngredients] = useState<Array<{ inventoryItemId: string; quantity: number }>>([]);
   const [loading, setLoading] = useState(false);
 
+  const [showNewCategoryInput, setShowNewCategoryInput] = useState(false);
+  const [newCategoryName, setNewCategoryName] = useState('');
+  const [preparation, setPreparation] = useState('Bar');
+
   const [formData, setFormData] = useState({
     name: '',
     description: '',
     price: '',
-    category: CATEGORIES[1], // Default to Hot Coffee
+    category: 'Hot Coffee', // Default category
     image: '',
     available: true,
   });
+
+  const existingCategories = useMemo(() => {
+    const unique = new Set<string>();
+    unique.add('Hot Coffee');
+    unique.add('Iced Coffee');
+    unique.add('Frappe');
+    unique.add('Milkshakes');
+    
+    if (existingItems) {
+      existingItems.forEach(item => {
+        if (item.category) {
+          const menuCat = item.category.split('|')[0];
+          if (menuCat && menuCat !== 'All' && menuCat !== 'Kitchen' && menuCat !== 'Bar') {
+            unique.add(menuCat);
+          }
+        }
+      });
+    }
+    return Array.from(unique);
+  }, [existingItems]);
 
   useEffect(() => {
     const loadRecipeAndInventory = async () => {
@@ -60,23 +85,33 @@ export function MenuModal({ isOpen, onClose, onSave, initialData }: MenuModalPro
 
   useEffect(() => {
     if (initialData) {
+      const parts = initialData.category.split('|');
+      const menuCat = parts[0];
+      const prepArea = parts[1] || 'Bar';
+
       setFormData({
         name: initialData.name,
         description: initialData.description,
         price: initialData.price.toString(),
-        category: initialData.category,
-        image: initialData.image,
+        category: menuCat,
+        image: initialData.image || '',
         available: initialData.available,
       });
+      setPreparation(prepArea);
+      setShowNewCategoryInput(false);
+      setNewCategoryName('');
     } else {
       setFormData({
         name: '',
         description: '',
         price: '',
-        category: CATEGORIES[1],
+        category: 'Hot Coffee',
         image: '',
         available: true,
       });
+      setPreparation('Bar');
+      setShowNewCategoryInput(false);
+      setNewCategoryName('');
     }
   }, [initialData, isOpen]);
 
@@ -107,18 +142,37 @@ export function MenuModal({ isOpen, onClose, onSave, initialData }: MenuModalPro
     setMappedIngredients(prev => prev.filter((_, i) => i !== index));
   };
 
+  const handleCategoryChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
+    const val = e.target.value;
+    if (val === 'CREATE_NEW') {
+      setShowNewCategoryInput(true);
+      setFormData(prev => ({ ...prev, category: '' }));
+    } else {
+      setShowNewCategoryInput(false);
+      setFormData(prev => ({ ...prev, category: val }));
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      const defaultImage = ['Hot Coffee', 'Iced Coffee', 'Frappe', 'Milkshakes', 'Bar'].includes(formData.category)
+      const menuCategory = showNewCategoryInput ? newCategoryName.trim() : formData.category;
+      if (!menuCategory) {
+        alert(t('Category is required') || 'يرجى تحديد أو كتابة اسم القسم');
+        return;
+      }
+      const finalCategory = `${menuCategory}|${preparation}`;
+
+      const defaultImage = ['Hot Coffee', 'Iced Coffee', 'Frappe', 'Milkshakes', 'Bar'].includes(menuCategory)
         ? 'https://images.unsplash.com/photo-1495474472287-4d71bcdd2085?w=400'
         : 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400';
-      const finalImage = formData.image.trim() || defaultImage;
+      const finalImage = defaultImage;
 
       const validIngredients = mappedIngredients.filter(ing => ing.quantity > 0);
 
       await onSave({
         ...formData,
+        category: finalCategory,
         image: finalImage,
         price: parseFloat(formData.price),
         ...(initialData ? { id: initialData.id } : {}),
@@ -187,8 +241,8 @@ export function MenuModal({ isOpen, onClose, onSave, initialData }: MenuModalPro
             </button>
           </div>
 
-          <form onSubmit={handleSubmit} className="p-6 flex flex-col h-[450px]">
-            <div className="flex-1 overflow-y-auto pr-1 space-y-4">
+          <form onSubmit={handleSubmit} className="p-6 flex flex-col">
+            <div className="space-y-4">
               {activeTab === 'general' ? (
                 <>
                   <div>
@@ -214,44 +268,65 @@ export function MenuModal({ isOpen, onClose, onSave, initialData }: MenuModalPro
                     />
                   </div>
 
-                  <div className="grid grid-cols-2 gap-4">
+                  <div className="grid grid-cols-3 gap-3">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">{t('Price')}</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">{t('Price') || 'السعر'}</label>
                       <input
                         type="number"
                         step="0.01"
                         required
                         value={formData.price}
                         onChange={(e) => setFormData({ ...formData, price: e.target.value })}
-                        className="w-full px-4 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent transition-all"
+                        className="w-full px-3 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent transition-all text-sm"
                         placeholder="0.00"
                       />
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">{t('Category')}</label>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">{t('Category') || 'قسم المنيو'}</label>
                       <select
-                        value={formData.category}
-                        onChange={(e) => setFormData({ ...formData, category: e.target.value })}
-                        className="w-full px-4 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent transition-all bg-white"
+                        value={showNewCategoryInput ? 'CREATE_NEW' : formData.category}
+                        onChange={handleCategoryChange}
+                        className="w-full px-3 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent transition-all bg-white text-sm"
                       >
-                        {CATEGORIES.filter(c => c !== 'All').map(category => (
-                          <option key={category} value={category}>{t(category)}</option>
+                        {existingCategories.map(category => (
+                          <option key={category} value={category}>{t(category) || category}</option>
                         ))}
+                        <option value="CREATE_NEW">{t('Add new category...') || '+ إضافة قسم جديد...'}</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label className="block text-sm font-medium text-gray-700 mb-1">{t('Preparation Destination') || 'مكان التحضير (الكاشير)'}</label>
+                      <select
+                        value={preparation}
+                        onChange={(e) => setPreparation(e.target.value)}
+                        className="w-full px-3 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent transition-all bg-white text-sm font-bold text-mocha-800"
+                      >
+                        <option value="Bar">بار (Bar)</option>
+                        <option value="Kitchen">مطبخ (Kitchen)</option>
                       </select>
                     </div>
                   </div>
 
-                  <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">{t('Image URL')}</label>
-                    <input
-                      type="url"
-                      value={formData.image}
-                      onChange={(e) => setFormData({ ...formData, image: e.target.value })}
-                      className="w-full px-4 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent transition-all"
-                      placeholder="https://images.unsplash.com/..."
-                    />
-                  </div>
+                  {showNewCategoryInput && (
+                    <div className="animate-fadeIn">
+                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                        {t('New Category Name') || 'اسم القسم الجديد'}
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        placeholder={t('e.g. Tea, Desserts') || 'مثال: شاي، حلويات'}
+                        value={newCategoryName}
+                        onChange={(e) => {
+                          setNewCategoryName(e.target.value);
+                          setFormData(prev => ({ ...prev, category: e.target.value }));
+                        }}
+                        className="w-full px-4 py-2 rounded-xl border border-mocha-300 focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent transition-all bg-white text-sm font-bold"
+                      />
+                    </div>
+                  )}
                 </>
               ) : (
                 <div className="space-y-4">
@@ -281,12 +356,12 @@ export function MenuModal({ isOpen, onClose, onSave, initialData }: MenuModalPro
                         return (
                           <div key={idx} className="flex gap-2 items-center bg-gray-50 p-2 rounded-xl border border-gray-100">
                             <select
-                              value={ing.inventoryItemId}
-                              onChange={(e) => updateIngredientRow(idx, e.target.value, ing.quantity)}
-                              className="flex-1 px-3 py-1.5 rounded-lg border border-gray-200 text-xs focus:outline-none bg-white font-medium"
+                               value={ing.inventoryItemId}
+                               onChange={(e) => updateIngredientRow(idx, e.target.value, ing.quantity)}
+                               className="flex-1 px-3 py-1.5 rounded-lg border border-gray-200 text-xs focus:outline-none bg-white font-medium"
                             >
                               {inventoryItems.map(item => (
-                                <option key={item.id} value={item.id}>{t(item.name)}</option>
+                                <option key={item.id} value={item.id}>{t(item.name) || item.name}</option>
                               ))}
                             </select>
 
@@ -334,7 +409,7 @@ export function MenuModal({ isOpen, onClose, onSave, initialData }: MenuModalPro
               )}
             </div>
 
-            <div className="flex gap-3 pt-4 border-t border-gray-100 mt-auto">
+            <div className="flex gap-3 pt-4 border-t border-gray-100 mt-6">
               <button
                 type="button"
                 onClick={onClose}

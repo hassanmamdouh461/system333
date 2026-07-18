@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Sidebar } from './Sidebar';
 import { MobileHeader } from './MobileHeader';
 import { MobileNav } from './MobileNav';
+import { TopNav } from './TopNav';
 import { Outlet } from 'react-router-dom';
 import { useAuth } from '../../context/AuthContext';
 
@@ -23,24 +24,30 @@ export function DashboardLayout() {
   }, [mobileMenuOpen]);
 
   return (
-    <div className="flex h-screen bg-gray-50 overflow-hidden">
+    <div className="flex flex-col h-screen bg-gray-50 overflow-hidden">
+      {/* Desktop Top Navigation Bar */}
+      {!isManager && <TopNav />}
+
       {/* Mobile Header */}
       {!isManager && <MobileHeader onMenuClick={() => setMobileMenuOpen(true)} />}
       
-      {/* Sidebar - Desktop/Mobile Drawer */}
-      {!isManager && (
-        <Sidebar 
-          mobileOpen={mobileMenuOpen} 
-          onMobileClose={() => setMobileMenuOpen(false)} 
-        />
-      )}
-      
-      {/* Main Content */}
-      <main className={`flex-1 overflow-y-auto overflow-x-hidden bg-gray-50 p-3 sm:p-4 md:p-8 pb-24 md:pb-8 ${
-        isManager ? "pt-4 md:pt-4" : "pt-[72px] md:pt-8"
-      }`}>
-        <Outlet />
-      </main>
+      {/* Lower layout wrapper */}
+      <div className="flex-grow flex overflow-hidden relative">
+        {/* Sidebar - Mobile Drawer only */}
+        {!isManager && (
+          <Sidebar 
+            mobileOpen={mobileMenuOpen} 
+            onMobileClose={() => setMobileMenuOpen(false)} 
+          />
+        )}
+        
+        {/* Main Content */}
+        <main className={`flex-1 overflow-y-auto overflow-x-hidden bg-gray-50 p-3 sm:p-4 md:p-8 pb-24 md:pb-6 ${
+          isManager ? "pt-4 md:pt-6" : "pt-[72px] md:pt-6"
+        }`}>
+          <Outlet />
+        </main>
+      </div>
 
       {/* Mobile Bottom Navigation */}
       {!isManager && <MobileNav />}

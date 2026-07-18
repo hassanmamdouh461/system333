@@ -100,5 +100,8 @@ Thumbs.db
 /mingit/
 /scratch/
 /dist-electron
+
+# Local Netlify folder
+.netlify
+
 .vercel
-.env*

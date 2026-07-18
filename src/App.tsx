@@ -30,6 +30,13 @@ function ProtectedRoute() {
   );
 }
 
+function DefaultRoute() {
+  const { user, isAuthenticated } = useAuth();
+  if (!isAuthenticated) return <Navigate to="/login" replace />;
+  if (user?.role === 'manager') return <Navigate to="/manager-dashboard" replace />;
+  return <Navigate to="/orders" replace />;
+}
+
 function AppRoutes() {
   return (
     <Routes>
@@ -51,8 +58,8 @@ function AppRoutes() {
           <Route path="/settings" element={<Settings />} />
         </Route>
       </Route>
-      <Route path="/" element={<Navigate to="/dashboard" replace />} />
-      <Route path="*" element={<Navigate to="/dashboard" replace />} />
+      <Route path="/" element={<DefaultRoute />} />
+      <Route path="*" element={<DefaultRoute />} />
     </Routes>
   );
 }

@@ -95,7 +95,6 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
           </>
         ) : (
           <>
-            <SidebarItem icon={LayoutDashboard} label={t('Dashboard')} to="/dashboard" collapsed={!isMobile && collapsed} onClick={handleItemClick} />
             <SidebarItem icon={ClipboardList} label={t('Cashier Board')} to="/orders" collapsed={!isMobile && collapsed} onClick={handleItemClick} />
             <SidebarItem icon={CreditCard} label={t('Payment & Invoice')} to="/payment" collapsed={!isMobile && collapsed} onClick={handleItemClick} />
             <SidebarItem icon={UtensilsCrossed} label={t('Menu')} to="/menu" collapsed={!isMobile && collapsed} onClick={handleItemClick} />
@@ -129,43 +128,43 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
     </div>
   );
 
-  // Mobile: Render as drawer with overlay
-  if (isMobile) {
-    return (
-      <AnimatePresence>
-        {mobileOpen && (
-          <>
-            {/* Overlay */}
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.15 }}
-              onClick={onMobileClose}
-              className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40"
-              style={{ willChange: 'opacity' }}
-            />
-            
-            {/* Drawer */}
-            <motion.div
-              initial={{ x: isRtl ? '100%' : '-100%' }}
-              animate={{ x: 0 }}
-              exit={{ x: isRtl ? '100%' : '-100%' }}
-              transition={{ type: 'spring', damping: 30, stiffness: 300 }}
-              className={clsx(
-                "fixed top-0 bottom-0 w-72 z-50 touch-pan-y",
-                isRtl ? "right-0" : "left-0"
-              )}
-              style={{ willChange: 'transform' }}
-            >
-              {sidebarContent}
-            </motion.div>
-          </>
-        )}
-      </AnimatePresence>
-    );
+  // Desktop: Render nothing (handled by TopNav)
+  if (!isMobile) {
+    return null;
   }
 
-  // Desktop: Render normally
-  return sidebarContent;
+  // Mobile: Render as drawer with overlay
+  return (
+    <AnimatePresence>
+      {mobileOpen && (
+        <>
+          {/* Overlay */}
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.15 }}
+            onClick={onMobileClose}
+            className="fixed inset-0 bg-black/50 backdrop-blur-sm z-40"
+            style={{ willChange: 'opacity' }}
+          />
+          
+          {/* Drawer */}
+          <motion.div
+            initial={{ x: isRtl ? '100%' : '-100%' }}
+            animate={{ x: 0 }}
+            exit={{ x: isRtl ? '100%' : '-100%' }}
+            transition={{ type: 'spring', damping: 30, stiffness: 300 }}
+            className={clsx(
+              "fixed top-0 bottom-0 w-72 z-50 touch-pan-y",
+              isRtl ? "right-0" : "left-0"
+            )}
+            style={{ willChange: 'transform' }}
+          >
+            {sidebarContent}
+          </motion.div>
+        </>
+      )}
+    </AnimatePresence>
+  );
 }

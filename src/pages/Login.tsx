@@ -36,7 +36,7 @@ export default function Login() {
       if (loggedUser.role === 'manager') {
         navigate('/manager-dashboard');
       } else {
-        navigate('/dashboard');
+        navigate('/orders');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Invalid credentials');

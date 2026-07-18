@@ -525,19 +525,70 @@ function initDatabase() {
     console.error('[database] Failed to run legacy orders migration:', e);
   }
 
-  // Migration: Update categories of existing menu items to Kitchen or Bar
+  // Migration: Smart re-categorize all menu items to MenuCategory|PrepDestination format
+  // This uses item names to determine the correct menu category for QR menu display
   try {
-    db.prepare(`
-      UPDATE menu 
-      SET category = 'Bar' 
-      WHERE category IN ('Hot Coffee', 'Iced Coffee', 'Frappe', 'Milkshakes', 'قهوة ساخنة', 'قهوة باردة', 'فرابيه', 'ميلك شيك')
-    `).run();
-    db.prepare(`
-      UPDATE menu 
-      SET category = 'Kitchen' 
-      WHERE category IN ('Food', 'Chicken Meals', 'وجبات دجاج', 'مأكولات', 'ساندوتشات')
-    `).run();
-    console.log('[database] Successfully migrated menu categories to Kitchen / Bar');
+    const allItems = db.prepare('SELECT id, name, category FROM menu').all();
+    const updateStmt = db.prepare('UPDATE menu SET category = ? WHERE id = ?');
+    
+    db.transaction(() => {
+      for (const item of allItems) {
+        const nameLower = (item.name || '').toLowerCase();
+        const currentCat = item.category || '';
+        
+        // Skip items already in correct new format with proper menu category (not just Hot Coffee|Bar for everything)
+        // We re-run this to fix items that were incorrectly all set to Hot Coffee|Bar
+        
+        let menuCategory = '';
+        let prepDest = '';
+        
+        // Determine preparation destination
+        // If already has a pipe, extract existing prep destination
+        if (currentCat.includes('|')) {
+          prepDest = currentCat.split('|')[1] || 'Bar';
+        } else if (currentCat === 'Kitchen' || currentCat === 'Food' || currentCat === 'Chicken Meals') {
+          prepDest = 'Kitchen';
+        } else {
+          prepDest = 'Bar';
+        }
+        
+        // If prep destination is Kitchen, map to specific menu sub-categories
+        if (prepDest === 'Kitchen') {
+          const friesKeywords = ['fries', 'بطاطس', 'مقبلات', 'سناكس'];
+          const dessertKeywords = ['cake', 'brownie', 'كيك', 'براوني', 'حلويات', 'fudge', 'فادج'];
+          
+          if (dessertKeywords.some(k => nameLower.includes(k))) {
+            menuCategory = 'حلويات';
+          } else if (friesKeywords.some(k => nameLower.includes(k))) {
+            menuCategory = 'مقبلات';
+          } else {
+            menuCategory = 'ساندوتشات';
+          }
+        } else {
+          // Determine menu category from item name for bar items
+          const icedKeywords = ['iced', 'cold brew', 'cold', 'mint lemonade', 'peach iced', 'passion fruit', 'mojito', 'lemonade', 'بارد', 'مثلج', 'نعناع', 'خوخ', 'موهيتو', 'ليمون', 'عصير', 'أيس', 'ايس'];
+          const frappeKeywords = ['frappe', 'frappé', 'فرابيه'];
+          const milkshakeKeywords = ['milkshake', 'milk shake', 'ميلك شيك', 'شيك'];
+          
+          if (frappeKeywords.some(k => nameLower.includes(k))) {
+            menuCategory = 'Frappe';
+          } else if (milkshakeKeywords.some(k => nameLower.includes(k))) {
+            menuCategory = 'Milkshakes';
+          } else if (icedKeywords.some(k => nameLower.includes(k))) {
+            menuCategory = 'Iced Coffee';
+          } else {
+            menuCategory = 'Hot Coffee';
+          }
+        }
+        
+        const newCategory = `${menuCategory}|${prepDest}`;
+        if (newCategory !== currentCat) {
+          updateStmt.run(newCategory, item.id);
+        }
+      }
+    })();
+    
+    console.log('[database] Successfully migrated menu categories to MenuCategory|PrepDestination format');
   } catch (e) {
     console.error('[database] Failed to run menu categories migration:', e);
   }

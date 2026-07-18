@@ -523,16 +523,10 @@ const translations: Record<string, Record<Language, string>> = {
 };
 
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
-  const [language, setLanguage] = useState<Language>(() => {
-    return (localStorage.getItem('brewmaster_lang') as Language) || 'en';
-  });
+  const [language, setLanguage] = useState<Language>('ar');
 
   const toggleLanguage = () => {
-    setLanguage(prev => {
-      const next = prev === 'en' ? 'ar' : 'en';
-      localStorage.setItem('brewmaster_lang', next);
-      return next;
-    });
+    // No-op: Arabic only is adopted
   };
 
   const t = useCallback((key: string): string => {

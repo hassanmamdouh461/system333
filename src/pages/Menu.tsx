@@ -18,8 +18,15 @@ export default function Menu() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
 
+  // Admin menu page: filter by preparation destination only (Bar / Kitchen)
+  const dynamicCategories = React.useMemo(() => {
+    return ['All', 'Bar', 'Kitchen'];
+  }, []);
+
   const filteredItems = items.filter(item => {
-    const matchesCategory = selectedCategory === 'All' || item.category === selectedCategory;
+    const parts = item.category ? item.category.split('|') : [];
+    const prepDest = parts[1] || parts[0] || '';
+    const matchesCategory = selectedCategory === 'All' || prepDest === selectedCategory;
     
     const nameTranslated = t(item.name).toLowerCase();
     const descTranslated = t(item.description || '').toLowerCase();
@@ -115,9 +122,9 @@ export default function Menu() {
         </div>
         <button 
           onClick={handleAddNew}
-          className="bg-mocha-700 hover:bg-mocha-800 text-white px-4 py-2.5 rounded-xl font-semibold flex items-center justify-center gap-2 shadow-lg shadow-mocha-500/20 transition-all active:scale-95 w-full sm:w-auto text-sm"
+          className="bg-mocha-700 hover:bg-mocha-800 text-white px-6 md:px-8 py-3.5 md:py-4 rounded-xl font-bold flex items-center justify-center gap-2.5 shadow-lg shadow-mocha-500/30 transition-all active:scale-95 w-full sm:w-auto text-base md:text-lg"
         >
-          <Plus size={16} />
+          <Plus size={20} />
           {t('Add New Item')}
         </button>
       </div>
@@ -126,7 +133,7 @@ export default function Menu() {
       <div className="bg-white p-2 md:p-3 rounded-2xl shadow-sm border border-gray-100 flex flex-col gap-2 sticky top-0 z-10 backdrop-blur-xl bg-white/95">
         {/* Categories - Horizontal scroll on mobile */}
         <div className="flex items-center gap-1.5 overflow-x-auto hide-scrollbar pb-0.5">
-          {CATEGORIES.map(category => (
+          {dynamicCategories.map(category => (
             <button
               key={category}
               onClick={() => setSelectedCategory(category)}
@@ -136,7 +143,7 @@ export default function Menu() {
                   : 'bg-mocha-100 text-mocha-800 hover:bg-mocha-200'
               }`}
             >
-              {t(category)}
+              {t(category) || category}
             </button>
           ))}
         </div>
@@ -188,6 +195,7 @@ export default function Menu() {
         onClose={() => setIsModalOpen(false)}
         onSave={handleSave}
         initialData={editingItem}
+        existingItems={items}
       />
     </div>
   );
