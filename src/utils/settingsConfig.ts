@@ -3,6 +3,21 @@ const LS_TAX_RATE_KEY = 'brewmaster_tax_rate';
 const LS_ADMIN_CREDS_KEY = 'brewmaster_admin_creds';
 const LS_BRANCH_CONFIG_KEY = 'brewmaster_branch_config';
 
+/**
+ * Persist a settings value through the explicit, whitelisted Electron settings
+ * channel (Issue 30). The main process validates keys against a whitelist, so
+ * only durable settings reach SQLite. localStorage stays as a fast read cache.
+ */
+function persistSetting(key: string, value: string): void {
+  localStorage.setItem(key, value);
+  if (typeof window !== 'undefined' && window.electronAPI && typeof window.electronAPI.saveSetting === 'function') {
+    // Fire-and-forget with debounce-free single write; IPC returns a promise we can await.
+    window.electronAPI.saveSetting(key, value).catch((err: unknown) => {
+      console.warn('[settings] Failed to persist setting to SQLite:', key, err);
+    });
+  }
+}
+
 export interface BranchConfig {
   branchId: string;
   branchName: string;
@@ -27,7 +42,7 @@ export function getTaxRate(): number {
 }
 
 export function setTaxRate(rate: number): void {
-  localStorage.setItem(LS_TAX_RATE_KEY, rate.toString());
+  persistSetting(LS_TAX_RATE_KEY, rate.toString());
 }
 
 export function getAdminCredentials() {
@@ -70,16 +85,16 @@ export function getBranchConfig(): BranchConfig {
 
 /**
  * Save the branch configuration.
- * This is automatically synced to the Electron SQLite settings table
- * via the Storage.prototype monkeypatch in main.tsx.
- * Also persists the branch_id separately so database.cjs getBranchId() picks it up.
+ * Persisted to the Electron SQLite settings table via the explicit whitelisted
+ * settings channel. Also persists the branch_id separately so database.cjs
+ * getBranchId() picks it up.
  */
 export function setBranchConfig(config: Partial<BranchConfig>): void {
   const current = getBranchConfig();
   const updated = { ...current, ...config };
-  localStorage.setItem(LS_BRANCH_CONFIG_KEY, JSON.stringify(updated));
+  persistSetting(LS_BRANCH_CONFIG_KEY, JSON.stringify(updated));
   // Also persist branch_id as a standalone key for database.cjs getBranchId()
-  localStorage.setItem('branch_id', updated.branchId);
+  persistSetting('branch_id', updated.branchId);
 }
 
 // ─── Telegram Config ────────────────────────────────────────────────────────
@@ -115,6 +130,6 @@ export function getTelegramConfig(): TelegramConfig {
 export function setTelegramConfig(config: Partial<TelegramConfig>): void {
   const current = getTelegramConfig();
   const updated = { ...current, ...config };
-  localStorage.setItem(LS_TELEGRAM_CONFIG_KEY, JSON.stringify(updated));
+  persistSetting(LS_TELEGRAM_CONFIG_KEY, JSON.stringify(updated));
 }
 
