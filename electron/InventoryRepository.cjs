@@ -1,4 +1,5 @@
 const database = require('./database.cjs');
+const { randomUUID } = require('crypto');
 
 class InventoryRepository {
   getDb() {
@@ -10,12 +11,18 @@ class InventoryRepository {
   }
 
   // ─── Inventory Items CRUD ───────────────────────────────────────────────────
-  
+
   getInventory(branchId) {
     const sqlite = this.getDb();
     const activeBranch = branchId || this.getBranchId();
-    // Get all items.
-    const rows = sqlite.prepare('SELECT * FROM inventory').all();
+    // Filter by branch in SQL when a concrete branch is known (Issue 22 + 41).
+    // 'manager' and 'default' see all (shared/global stock).
+    let rows;
+    if (activeBranch && activeBranch !== 'manager' && activeBranch !== 'default') {
+      rows = sqlite.prepare('SELECT * FROM inventory WHERE deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)').all(activeBranch);
+    } else {
+      rows = sqlite.prepare('SELECT * FROM inventory WHERE deleted_at IS NULL').all();
+    }
     return rows.map(row => ({
       id: row.id,
       name: row.name,
@@ -32,7 +39,7 @@ class InventoryRepository {
 
   createInventoryItem(item) {
     const sqlite = this.getDb();
-    const id = item.id || `inv-${Math.random().toString(36).substr(2, 9)}`;
+    const id = item.id || `inv-${randomUUID()}`;
     const now = new Date().toISOString();
     const branchId = item.branchId || this.getBranchId();
 
@@ -53,7 +60,7 @@ class InventoryRepository {
 
     // If initial stock is greater than 0, create an initial 'IN' transaction
     if (item.stock > 0) {
-      const txId = `tx-${Math.random().toString(36).substr(2, 9)}`;
+      const txId = `tx-${randomUUID()}`;
       sqlite.prepare(`
         INSERT INTO inventory_transactions (id, itemId, type, quantity, referenceId, createdAt, branch_id, is_synced, notes)
         VALUES (?, ?, 'IN', ?, 'INITIAL', ?, ?, 0, 'Initial stock setup')
@@ -115,26 +122,39 @@ class InventoryRepository {
 
   deleteInventoryItem(id) {
     const sqlite = this.getDb();
+    const now = new Date().toISOString();
     sqlite.transaction(() => {
-      sqlite.prepare('DELETE FROM inventory WHERE id = ?').run(id);
+      // Soft delete with tombstone (Issue 20); recipes are removed with the item
+      sqlite.prepare('UPDATE inventory SET deleted_at = ?, updated_at = ?, is_synced = 0 WHERE id = ?').run(now, now, id);
       sqlite.prepare('DELETE FROM menu_recipes WHERE inventoryItemId = ?').run(id);
-      sqlite.prepare('DELETE FROM inventory_transactions WHERE itemId = ?').run(id);
     })();
   }
 
   // ─── Inventory Transactions ────────────────────────────────────────────────
-  
+
   getInventoryTransactions(itemId, branchId) {
     const sqlite = this.getDb();
+    const activeBranch = branchId || this.getBranchId();
     let query = 'SELECT t.*, i.name as itemName, i.unit as itemUnit FROM inventory_transactions t JOIN inventory i ON t.itemId = i.id';
     const params = [];
+    const conditions = [];
 
     if (itemId) {
-      query += ' WHERE t.itemId = ?';
+      conditions.push('t.itemId = ?');
       params.push(itemId);
     }
+    // Branch isolation in SQL (Issue 22/42) unless manager/default view
+    if (activeBranch && activeBranch !== 'manager' && activeBranch !== 'default') {
+      conditions.push('t.branch_id = ?');
+      params.push(activeBranch);
+    }
 
-    query += itemId ? ' ORDER BY t.createdAt DESC' : ' ORDER BY t.createdAt DESC LIMIT 200';
+    if (conditions.length > 0) {
+      query += ' WHERE ' + conditions.join(' AND ');
+    }
+
+    query += ' ORDER BY t.createdAt DESC';
+    if (!itemId) query += ' LIMIT 200';
     const rows = sqlite.prepare(query).all(...params);
     return rows.map(row => ({
       id: row.id,
@@ -153,7 +173,7 @@ class InventoryRepository {
 
   createInventoryTransaction(tx) {
     const sqlite = this.getDb();
-    const id = tx.id || `tx-${Math.random().toString(36).substr(2, 9)}`;
+    const id = tx.id || `tx-${randomUUID()}`;
     const now = new Date().toISOString();
     const branchId = tx.branchId || this.getBranchId();
 
@@ -276,7 +296,7 @@ class InventoryRepository {
           `).run(qtyUsed, now, ing.inventoryItemId);
 
           // Log OUT transaction
-          const txId = `tx-${Math.random().toString(36).substr(2, 9)}`;
+          const txId = `tx-${randomUUID()}`;
           sqlite.prepare(`
             INSERT INTO inventory_transactions (id, itemId, type, quantity, referenceId, createdAt, branch_id, is_synced, notes)
             VALUES (?, ?, 'OUT', ?, ?, ?, ?, 0, ?)
@@ -315,7 +335,7 @@ class InventoryRepository {
         `).run(tx.quantity, now, tx.itemId);
 
         // Log compensating IN transaction
-        const revTxId = `tx-${Math.random().toString(36).substr(2, 9)}`;
+        const revTxId = `tx-${randomUUID()}`;
         sqlite.prepare(`
           INSERT INTO inventory_transactions (id, itemId, type, quantity, referenceId, createdAt, branch_id, is_synced, notes)
           VALUES (?, ?, 'IN', ?, ?, ?, ?, 0, ?)
@@ -335,6 +355,8 @@ class InventoryRepository {
   getUnsyncedInventory() {
     const sqlite = this.getDb();
     const rows = sqlite.prepare('SELECT * FROM inventory WHERE is_synced = 0').all();
+    // No silent 'branch_1' fallback (Issue 22): branchless (NULL) rows are shared
+    // stock and must stay branchless in the cloud too.
     return rows.map(row => ({
       id: row.id,
       name: row.name,
@@ -342,17 +364,46 @@ class InventoryRepository {
       stock: row.stock,
       minStock: row.minStock,
       costPerUnit: row.costPerUnit,
-      branch_id: row.branch_id || 'branch_1',
+      branch_id: row.branch_id || null,
+      deleted_at: row.deleted_at || null,
       is_synced: row.is_synced,
       created_at: row.created_at,
       updated_at: row.updated_at
     }));
   }
 
+  // ─── Inventory transaction sync (Issue 27): push movements, not just balances ─
+
+  getUnsyncedTransactions() {
+    const sqlite = this.getDb();
+    const rows = sqlite.prepare('SELECT * FROM inventory_transactions WHERE is_synced = 0').all();
+    return rows.map(row => ({
+      id: row.id,
+      itemId: row.itemId,
+      type: row.type,
+      quantity: row.quantity,
+      referenceId: row.referenceId || null,
+      createdAt: row.createdAt,
+      branch_id: row.branch_id || null,
+      notes: row.notes || null
+    }));
+  }
+
+  markTransactionsSynced(ids) {
+    if (!ids || ids.length === 0) return;
+    const sqlite = this.getDb();
+    const stmt = sqlite.prepare('UPDATE inventory_transactions SET is_synced = 1 WHERE id = ?');
+    sqlite.transaction(() => {
+      for (const id of ids) {
+        stmt.run(id);
+      }
+    })();
+  }
+
   markInventorySynced(ids) {
     if (ids.length === 0) return;
     const sqlite = this.getDb();
-    const stmt = sqlite.prepare('UPDATE inventory SET is_synced = 1 WHERE id = ?');
+    const stmt = sqlite.prepare('UPDATE inventory SET is_synced = 1, sync_attempts = 0, last_error = NULL WHERE id = ?');
     sqlite.transaction(() => {
       for (const id of ids) {
         stmt.run(id);

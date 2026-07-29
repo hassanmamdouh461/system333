@@ -24,9 +24,40 @@ function initDatabase() {
   // Enable WAL mode for better concurrency/performance
   db.pragma('journal_mode = WAL');
 
-  // Create menu table
+  // Settings table must exist before anything that reads/writes flags (seeded_*)
   db.prepare(`
-    CREATE TABLE IF NOT EXISTS menu (
+    CREATE TABLE IF NOT EXISTS settings (
+      key TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    )
+  `).run();
+
+  // Migration bookkeeping: every migration runs exactly once (Issue 29)
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS migrations (
+      name TEXT PRIMARY KEY,
+      appliedAt TEXT NOT NULL
+    )
+  `).run();
+
+  // One-time rename of the legacy `menu` table to `menu_items` (Issue 15).
+  // Must run BEFORE CREATE TABLE menu_items so existing installs keep their data.
+  if (!isMigrationApplied('0011_rename_menu_to_menu_items')) {
+    try {
+      const legacy = db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='menu'").get();
+      if (legacy) {
+        db.prepare('ALTER TABLE menu RENAME TO menu_items').run();
+        console.log('[database] Renamed legacy table "menu" to "menu_items".');
+      }
+      markMigrationApplied('0011_rename_menu_to_menu_items');
+    } catch (e) {
+      console.error('[database] Failed to rename menu table:', e);
+    }
+  }
+
+  // Create menu table (canonical local name: menu_items, unified with cloud D1 — Issue 15)
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS menu_items (
       id TEXT PRIMARY KEY,
       name TEXT NOT NULL,
       description TEXT,
@@ -37,18 +68,18 @@ function initDatabase() {
     )
   `).run();
 
-  // Auto-seed to 40 items if current database has fewer items
+  // Seed default menu ONCE on first install only (Issue 28 — no more destructive auto-reseed)
   try {
-    const count = db.prepare('SELECT COUNT(*) as count FROM menu').get().count;
-    if (count < 40) {
-      console.log('[database] SQLite menu has fewer than 40 items. Seeding/Updating to 40 items...');
+    const count = db.prepare('SELECT COUNT(*) as count FROM menu_items').get().count;
+    const alreadySeeded = db.prepare("SELECT value FROM settings WHERE key = 'seeded_menu_v1'").get();
+    if (count === 0 && !alreadySeeded) {
+      console.log('[database] First install: seeding default menu items...');
       const seedData = require('./seed_data.cjs');
       const insert = db.prepare(`
-        INSERT OR REPLACE INTO menu (id, name, description, price, category, image, available)
+        INSERT OR IGNORE INTO menu_items (id, name, description, price, category, image, available)
         VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
       db.transaction(() => {
-        db.prepare('DELETE FROM menu').run();
         for (const item of seedData) {
           insert.run(
             item.id,
@@ -61,10 +92,11 @@ function initDatabase() {
           );
         }
       })();
-      console.log('[database] Auto-seeding complete! Total menu items:', db.prepare('SELECT COUNT(*) as count FROM menu').get().count);
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('seeded_menu_v1', ?)").run(new Date().toISOString());
+      console.log('[database] Menu seeding complete! Total menu items:', db.prepare('SELECT COUNT(*) as count FROM menu_items').get().count);
     }
   } catch (err) {
-    console.error('[database] Auto-seeding SQLite database failed:', err);
+    console.error('[database] Seeding menu database failed:', err);
   }
 
   // Create orders table
@@ -91,14 +123,6 @@ function initDatabase() {
       phone TEXT UNIQUE NOT NULL,
       points REAL NOT NULL DEFAULT 0,
       createdAt TEXT NOT NULL
-    )
-  `).run();
-
-  // Create settings table for persistence of localStorage settings
-  db.prepare(`
-    CREATE TABLE IF NOT EXISTS settings (
-      key TEXT PRIMARY KEY,
-      value TEXT NOT NULL
     )
   `).run();
 
@@ -141,17 +165,17 @@ function initDatabase() {
     )
   `).run();
 
-  // Seed default inventory items if count is less than 30
+  // Seed default inventory items ONCE on first install only (Issue 28 — no destructive reseed)
   try {
     const invCount = db.prepare('SELECT COUNT(*) as count FROM inventory').get().count;
-    if (invCount < 30) {
-      console.log('[database] Seeding/Updating default inventory items for active branch...');
+    const alreadySeeded = db.prepare("SELECT value FROM settings WHERE key = 'seeded_inventory_v1'").get();
+    if (invCount === 0 && !alreadySeeded) {
+      console.log('[database] First install: seeding default inventory items for active branch...');
       const now = new Date().toISOString();
       const branchId = getBranchId();
-      db.prepare('DELETE FROM inventory').run();
-      
+
       const insertInv = db.prepare(`
-        INSERT INTO inventory (id, name, unit, stock, minStock, costPerUnit, branch_id, is_synced, created_at, updated_at)
+        INSERT OR IGNORE INTO inventory (id, name, unit, stock, minStock, costPerUnit, branch_id, is_synced, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
       `);
       
@@ -193,21 +217,22 @@ function initDatabase() {
           insertInv.run(item.id, item.name, item.unit, item.stock, item.minStock, item.cost, branchId, now, now);
         }
       })();
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('seeded_inventory_v1', ?)").run(now);
       console.log('[database] Seeded default inventory items for active branch successfully.');
     }
   } catch (err) {
     console.error('[database] Seeding default inventory items failed:', err);
   }
 
-  // Seed default recipes if count is less than 40
+  // Seed default recipes ONCE on first install only (Issue 28)
   try {
     const recCount = db.prepare('SELECT COUNT(*) as count FROM menu_recipes').get().count;
-    if (recCount < 40) {
-      console.log('[database] Seeding default menu recipes for all 40 items...');
-      db.prepare('DELETE FROM menu_recipes').run();
-      
+    const alreadySeeded = db.prepare("SELECT value FROM settings WHERE key = 'seeded_recipes_v1'").get();
+    if (recCount === 0 && !alreadySeeded) {
+      console.log('[database] First install: seeding default menu recipes...');
+
       const insertRec = db.prepare(`
-        INSERT INTO menu_recipes (menuItemId, inventoryItemId, quantity)
+        INSERT OR IGNORE INTO menu_recipes (menuItemId, inventoryItemId, quantity)
         VALUES (?, ?, ?)
       `);
       
@@ -437,6 +462,7 @@ function initDatabase() {
           insertRec.run(rec.menuItemId, rec.inventoryItemId, rec.quantity);
         }
       })();
+      db.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('seeded_recipes_v1', ?)").run(new Date().toISOString());
       console.log('[database] Seeded default menu recipes.');
     }
   } catch (err) {
@@ -469,10 +495,10 @@ function initDatabase() {
   // ═══════════════════════════════════════════════════════════════════════════
 
   // --- Menu table: add sync columns ---
-  try { db.prepare("ALTER TABLE menu ADD COLUMN branch_id TEXT DEFAULT NULL").run(); } catch (e) {}
-  try { db.prepare("ALTER TABLE menu ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 0").run(); } catch (e) {}
-  try { db.prepare("ALTER TABLE menu ADD COLUMN created_at TEXT").run(); } catch (e) {}
-  try { db.prepare("ALTER TABLE menu ADD COLUMN updated_at TEXT").run(); } catch (e) {}
+  try { db.prepare("ALTER TABLE menu_items ADD COLUMN branch_id TEXT DEFAULT NULL").run(); } catch (e) {}
+  try { db.prepare("ALTER TABLE menu_items ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 0").run(); } catch (e) {}
+  try { db.prepare("ALTER TABLE menu_items ADD COLUMN created_at TEXT").run(); } catch (e) {}
+  try { db.prepare("ALTER TABLE menu_items ADD COLUMN updated_at TEXT").run(); } catch (e) {}
 
   // --- Orders table: add sync columns (createdAt already exists) ---
   try { db.prepare("ALTER TABLE orders ADD COLUMN branch_id TEXT DEFAULT NULL").run(); } catch (e) {}
@@ -487,8 +513,8 @@ function initDatabase() {
   // Backfill: set timestamps on existing rows that have NULL created_at/updated_at
   try {
     const now = new Date().toISOString();
-    db.prepare("UPDATE menu SET created_at = ? WHERE created_at IS NULL").run(now);
-    db.prepare("UPDATE menu SET updated_at = ? WHERE updated_at IS NULL").run(now);
+    db.prepare("UPDATE menu_items SET created_at = ? WHERE created_at IS NULL").run(now);
+    db.prepare("UPDATE menu_items SET updated_at = ? WHERE updated_at IS NULL").run(now);
     db.prepare("UPDATE orders SET updated_at = ? WHERE updated_at IS NULL").run(now);
     db.prepare("UPDATE customers SET updated_at = ? WHERE updated_at IS NULL").run(now);
     console.log('[database] Phase 1 sync columns migration complete.');
@@ -496,40 +522,84 @@ function initDatabase() {
     console.error('[database] Failed to backfill sync timestamps:', e);
   }
 
-  // Migration: Update existing mock/legacy orders to Dine-in/Takeaway and reset them as new orders today
-  try {
-    const legacyCount = db.prepare("SELECT COUNT(*) as count FROM orders WHERE tableId LIKE 'Table %'").get().count;
-    if (legacyCount > 0) {
-      console.log('[database] Migrating legacy orders to Dine-in/Takeaway and resetting status...');
-      const rows = db.prepare("SELECT * FROM orders ORDER BY createdAt ASC").all();
-      
-      const updateStmt = db.prepare(`
-        UPDATE orders 
-        SET orderNumber = ?, tableId = ?, status = 'New', paymentStatus = 'Unpaid', paymentMethod = NULL, paidAt = NULL, createdAt = ? 
-        WHERE id = ?
-      `);
-      
-      const runTx = db.transaction(() => {
-        let i = 1;
-        const now = new Date();
-        for (const row of rows) {
-          const tableId = (i % 2 === 1) ? 'Dine-in' : 'Takeaway';
-          const orderTime = new Date(now.getTime() - 1000 * 60 * (rows.length - i) * 3).toISOString();
-          updateStmt.run(String(i), tableId, orderTime, row.id);
-          i++;
-        }
-      });
-      runTx();
+
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // Phase 2 Migrations: soft delete, retry tracking, tax snapshot, loyalty ledger,
+  // inventory transaction sync, indexes. Each runs exactly once (Issue 29).
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (!isMigrationApplied('0012_phase2_columns')) {
+    try {
+      const alter = (sql) => { try { db.prepare(sql).run(); } catch (e) { /* column exists */ } };
+
+      // Soft delete tombstones (Issue 20)
+      alter("ALTER TABLE orders ADD COLUMN deleted_at TEXT");
+      alter("ALTER TABLE customers ADD COLUMN deleted_at TEXT");
+      alter("ALTER TABLE menu_items ADD COLUMN deleted_at TEXT");
+      alter("ALTER TABLE inventory ADD COLUMN deleted_at TEXT");
+
+      // Sync retry tracking (Issue 19)
+      alter("ALTER TABLE orders ADD COLUMN sync_attempts INTEGER NOT NULL DEFAULT 0");
+      alter("ALTER TABLE orders ADD COLUMN last_error TEXT");
+      alter("ALTER TABLE customers ADD COLUMN sync_attempts INTEGER NOT NULL DEFAULT 0");
+      alter("ALTER TABLE customers ADD COLUMN last_error TEXT");
+      alter("ALTER TABLE menu_items ADD COLUMN sync_attempts INTEGER NOT NULL DEFAULT 0");
+      alter("ALTER TABLE menu_items ADD COLUMN last_error TEXT");
+      alter("ALTER TABLE inventory ADD COLUMN sync_attempts INTEGER NOT NULL DEFAULT 0");
+      alter("ALTER TABLE inventory ADD COLUMN last_error TEXT");
+
+      // Tax snapshot fields on orders (Issue 25)
+      alter("ALTER TABLE orders ADD COLUMN subtotal REAL");
+      alter("ALTER TABLE orders ADD COLUMN taxRate REAL");
+      alter("ALTER TABLE orders ADD COLUMN taxAmount REAL");
+      alter("ALTER TABLE orders ADD COLUMN grandTotal REAL");
+
+      // Inventory transactions: sync column naming (Issue 27) — add updated_at for tombstone sync
+      alter("ALTER TABLE inventory_transactions ADD COLUMN deleted_at TEXT");
+
+      db.transaction(() => {
+        // Loyalty points ledger (Issue 26)
+        db.prepare(`
+          CREATE TABLE IF NOT EXISTS points_transactions (
+            id TEXT PRIMARY KEY,
+            customerId TEXT NOT NULL,
+            orderId TEXT,
+            type TEXT NOT NULL,
+            points REAL NOT NULL,
+            balanceAfter REAL,
+            createdAt TEXT NOT NULL,
+            branch_id TEXT DEFAULT NULL,
+            is_synced INTEGER NOT NULL DEFAULT 0
+          )
+        `).run();
+
+        // Indexes on hot query columns (Issue 66 support)
+        const idx = (sql) => { try { db.prepare(sql).run(); } catch (e) {} };
+        idx("CREATE INDEX IF NOT EXISTS idx_orders_createdAt ON orders(createdAt)");
+        idx("CREATE INDEX IF NOT EXISTS idx_orders_branch ON orders(branch_id)");
+        idx("CREATE INDEX IF NOT EXISTS idx_orders_synced ON orders(is_synced)");
+        idx("CREATE INDEX IF NOT EXISTS idx_orders_deleted ON orders(deleted_at)");
+        idx("CREATE INDEX IF NOT EXISTS idx_inv_tx_ref ON inventory_transactions(referenceId)");
+        idx("CREATE INDEX IF NOT EXISTS idx_inv_tx_synced ON inventory_transactions(is_synced)");
+        idx("CREATE INDEX IF NOT EXISTS idx_menu_synced ON menu_items(is_synced)");
+        idx("CREATE INDEX IF NOT EXISTS idx_customers_synced ON customers(is_synced)");
+        idx("CREATE INDEX IF NOT EXISTS idx_points_tx_customer ON points_transactions(customerId)");
+      })();
+
+      markMigrationApplied('0012_phase2_columns');
+      console.log('[database] Phase 2 migration complete (soft delete, retry tracking, tax snapshot, loyalty ledger).');
+    } catch (e) {
+      console.error('[database] Phase 2 migration failed:', e);
     }
-  } catch (e) {
-    console.error('[database] Failed to run legacy orders migration:', e);
   }
 
   // Migration: Smart re-categorize all menu items to MenuCategory|PrepDestination format
   // This uses item names to determine the correct menu category for QR menu display
+  // Runs exactly once — never re-touches live menu data (Issue 29)
+  if (!isMigrationApplied('0010_menu_categories')) {
   try {
-    const allItems = db.prepare('SELECT id, name, category FROM menu').all();
-    const updateStmt = db.prepare('UPDATE menu SET category = ? WHERE id = ?');
+    const allItems = db.prepare('SELECT id, name, category FROM menu_items').all();
+    const updateStmt = db.prepare('UPDATE menu_items SET category = ? WHERE id = ?');
     
     db.transaction(() => {
       for (const item of allItems) {
@@ -588,9 +658,30 @@ function initDatabase() {
       }
     })();
     
+    markMigrationApplied('0010_menu_categories');
     console.log('[database] Successfully migrated menu categories to MenuCategory|PrepDestination format');
   } catch (e) {
     console.error('[database] Failed to run menu categories migration:', e);
+  }
+  }
+}
+
+// ─── Migration bookkeeping helpers (Issue 29) ────────────────────────────────
+function isMigrationApplied(name) {
+  try {
+    if (!db) return false;
+    const row = db.prepare('SELECT name FROM migrations WHERE name = ?').get(name);
+    return !!row;
+  } catch (e) {
+    return false;
+  }
+}
+
+function markMigrationApplied(name) {
+  try {
+    db.prepare('INSERT OR REPLACE INTO migrations (name, appliedAt) VALUES (?, ?)').run(name, new Date().toISOString());
+  } catch (e) {
+    console.error('[database] Failed to mark migration applied:', name, e);
   }
 }
 
@@ -640,20 +731,50 @@ function deleteSetting(key) {
 function getSyncStats() {
   const sqlite = getDb();
   try {
-    const menuCount = sqlite.prepare('SELECT COUNT(*) as count FROM menu WHERE is_synced = 0').get().count;
+    const menuCount = sqlite.prepare('SELECT COUNT(*) as count FROM menu_items WHERE is_synced = 0 AND deleted_at IS NULL').get().count;
     const ordersCount = sqlite.prepare('SELECT COUNT(*) as count FROM orders WHERE is_synced = 0').get().count;
     const customersCount = sqlite.prepare('SELECT COUNT(*) as count FROM customers WHERE is_synced = 0').get().count;
-    const inventoryCount = sqlite.prepare('SELECT COUNT(*) as count FROM inventory WHERE is_synced = 0').get().count;
+    const inventoryCount = sqlite.prepare('SELECT COUNT(*) as count FROM inventory WHERE is_synced = 0 AND deleted_at IS NULL').get().count;
+    const invTxCount = sqlite.prepare('SELECT COUNT(*) as count FROM inventory_transactions WHERE is_synced = 0').get().count;
     return {
       pendingMenu: menuCount,
       pendingOrders: ordersCount,
       pendingCustomers: customersCount,
-      pendingInventory: inventoryCount,
-      totalPending: menuCount + ordersCount + customersCount + inventoryCount
+      pendingInventory: inventoryCount + invTxCount,
+      totalPending: menuCount + ordersCount + customersCount + inventoryCount + invTxCount
     };
   } catch (e) {
     console.error('[database] Failed to get sync stats:', e);
     return { pendingMenu: 0, pendingOrders: 0, pendingCustomers: 0, pendingInventory: 0, totalPending: 0 };
+  }
+}
+
+// ─── Atomic daily order counter (Issue 23) ───────────────────────────────────
+// Counter lives in the settings table as daily_counter:YYYY-MM-DD (local date)
+// and is incremented atomically inside the order-creation transaction.
+function nextDailyOrderNumber(localDateStr) {
+  const sqlite = getDb();
+  const key = `daily_counter:${localDateStr}`;
+  const row = sqlite.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+  const next = (row ? parseInt(row.value, 10) || 0 : 0) + 1;
+  sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(next));
+  return next;
+}
+
+// ─── Sync metadata helpers (Issue 19) ────────────────────────────────────────
+const SYNCABLE_TABLES = new Set(['orders', 'customers', 'menu_items', 'inventory', 'inventory_transactions', 'points_transactions']);
+
+function markSyncFailure(table, ids, errorMessage) {
+  if (!SYNCABLE_TABLES.has(table) || !ids || ids.length === 0) return;
+  const sqlite = getDb();
+  try {
+    const stmt = sqlite.prepare(`UPDATE ${table} SET sync_attempts = sync_attempts + 1, last_error = ? WHERE id = ?`);
+    const runTx = sqlite.transaction((idList) => {
+      for (const id of idList) stmt.run(String(errorMessage || 'sync failed').slice(0, 500), id);
+    });
+    runTx(ids);
+  } catch (e) {
+    console.error(`[database] Failed to record sync failure for ${table}:`, e);
   }
 }
 
@@ -664,5 +785,7 @@ module.exports = {
   getSettings,
   saveSetting,
   deleteSetting,
-  getSyncStats
+  getSyncStats,
+  nextDailyOrderNumber,
+  markSyncFailure
 };

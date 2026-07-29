@@ -3,10 +3,8 @@ import { Order, OrderStatus } from '../../types/order';
 
 export class SqliteOrderRepository implements IOrderRepository {
   async getAll(branchId?: string): Promise<Order[]> {
-    const orders = await window.electronAPI.getOrders();
-    if (!branchId) return orders;
-    // Auto-filter by branch_id
-    return orders.filter(order => order.branchId === branchId);
+    // Branch filtering happens in SQL inside the main process (Issue 22)
+    return window.electronAPI.getOrders(branchId);
   }
 
   async create(order: Omit<Order, 'id'>, branchId?: string): Promise<Order> {

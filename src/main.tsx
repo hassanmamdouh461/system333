@@ -16,27 +16,10 @@ async function initApp() {
     }
   }
 
-  // 2. Monkeypatch Storage.prototype to sync localStorage changes back to SQLite
-  const originalSetItem = Storage.prototype.setItem;
-  const originalRemoveItem = Storage.prototype.removeItem;
-
-  Storage.prototype.setItem = function(this: Storage, key: string, value: string) {
-    originalSetItem.apply(this, [key, value]);
-    if (this === localStorage) {
-      if (window.electronAPI && typeof window.electronAPI.saveSetting === 'function') {
-        window.electronAPI.saveSetting(key, value);
-      }
-    }
-  };
-
-  Storage.prototype.removeItem = function(this: Storage, key: string) {
-    originalRemoveItem.apply(this, [key]);
-    if (this === localStorage) {
-      if (window.electronAPI && typeof window.electronAPI.deleteSetting === 'function') {
-        window.electronAPI.deleteSetting(key);
-      }
-    }
-  };
+  // 2. Persistent settings are synced through the explicit, whitelisted
+  // electronAPI settings channel (db:save-setting / db:delete-setting) — the
+  // main process decides which keys are durable. No global Storage monkeypatch:
+  // transient UI state (pos_*, session cache) never touches SQLite (Issue 30).
 
   // 3. Mount the React application
   ReactDOM.createRoot(document.getElementById('root')!).render(
