@@ -1,4 +1,6 @@
 {
+  "_comment": "DECISION NEEDED (issue #77): keep either vercel.json or netlify.toml, not both. HashRouter makes these rewrites unnecessary.",
+
   "rewrites": [
     { "source": "/(.*)", "destination": "/index.html" }
   ]

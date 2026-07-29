@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger';
 import { Customer } from '../types/customer';
 
 /**
@@ -11,7 +12,7 @@ export const customersService = {
     try {
       return await window.electronAPI.getCustomers();
     } catch (error) {
-      console.error('[customersService] Error fetching customers:', error);
+      logger.error('[customersService] Error fetching customers:', error);
       throw new Error('Failed to fetch customers');
     }
   },
@@ -23,7 +24,7 @@ export const customersService = {
     try {
       return await window.electronAPI.getCustomerByPhone(phone);
     } catch (error) {
-      console.error('[customersService] Error fetching customer by phone:', error);
+      logger.error('[customersService] Error fetching customer by phone:', error);
       throw new Error('Failed to fetch customer');
     }
   },
@@ -35,7 +36,7 @@ export const customersService = {
     try {
       return await window.electronAPI.saveCustomer(customer);
     } catch (error) {
-      console.error('[customersService] Error saving customer:', error);
+      logger.error('[customersService] Error saving customer:', error);
       throw new Error('Failed to save customer');
     }
   },
@@ -47,7 +48,7 @@ export const customersService = {
     try {
       await window.electronAPI.deleteCustomer(id);
     } catch (error) {
-      console.error('[customersService] Error deleting customer:', error);
+      logger.error('[customersService] Error deleting customer:', error);
       throw new Error('Failed to delete customer');
     }
   },

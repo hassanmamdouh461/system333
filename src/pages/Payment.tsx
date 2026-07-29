@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger';
 import React, { useState, useMemo } from 'react';
 import { Order, OrderStatus } from '../types/order';
 import { PaymentModal } from '../components/payment/PaymentModal';
@@ -42,7 +43,7 @@ export default function Payment() {
     try {
       await completeWithPayment(orderId, method);
     } catch (err) {
-      console.error('Failed to complete payment:', err);
+      logger.error('Failed to complete payment:', err);
       alert(t('Failed to complete payment'));
     }
   };

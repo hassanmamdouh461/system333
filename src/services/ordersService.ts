@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger';
 import { Order, OrderStatus, PaymentStatus } from '../types/order';
 
 /**
@@ -11,7 +12,7 @@ export const ordersService = {
     try {
       return await window.electronAPI.getOrders();
     } catch (error) {
-      console.error('[ordersService] Error fetching orders:', error);
+      logger.error('[ordersService] Error fetching orders:', error);
       throw new Error('Failed to fetch orders');
     }
   },
@@ -23,7 +24,7 @@ export const ordersService = {
     try {
       return await window.electronAPI.createOrder(order);
     } catch (error) {
-      console.error('[ordersService] Error creating order:', error);
+      logger.error('[ordersService] Error creating order:', error);
       throw new Error('Failed to create order');
     }
   },
@@ -35,7 +36,7 @@ export const ordersService = {
     try {
       return await window.electronAPI.updateOrderStatus(id, status);
     } catch (error) {
-      console.error('[ordersService] Error updating order status:', error);
+      logger.error('[ordersService] Error updating order status:', error);
       throw new Error('Failed to update order status');
     }
   },
@@ -47,7 +48,7 @@ export const ordersService = {
     try {
       return await window.electronAPI.updateOrder(id, data);
     } catch (error) {
-      console.error('[ordersService] Error updating order:', error);
+      logger.error('[ordersService] Error updating order:', error);
       throw new Error('Failed to update order');
     }
   },
@@ -59,7 +60,7 @@ export const ordersService = {
     try {
       return await window.electronAPI.completeOrderPayment(id, method);
     } catch (error) {
-      console.error('[ordersService] Error completing order with payment:', error);
+      logger.error('[ordersService] Error completing order with payment:', error);
       throw new Error('Failed to complete payment');
     }
   },
@@ -71,7 +72,7 @@ export const ordersService = {
     try {
       await window.electronAPI.deleteOrder(id);
     } catch (error) {
-      console.error('[ordersService] Error deleting order:', error);
+      logger.error('[ordersService] Error deleting order:', error);
       throw new Error('Failed to delete order');
     }
   },
@@ -83,7 +84,7 @@ export const ordersService = {
     try {
       return await window.electronAPI.resetOrders(defaultOrders);
     } catch (error) {
-      console.error('[ordersService] Error resetting orders to defaults:', error);
+      logger.error('[ordersService] Error resetting orders to defaults:', error);
       throw new Error('Failed to reset orders to defaults');
     }
   },
