@@ -30,10 +30,15 @@ export interface Order {
   paymentStatus: 'Unpaid' | 'Paid';
   paymentMethod?: 'Cash' | 'Card';
   totalAmount: number;
+  subtotal?: number;
+  taxRate?: number;
+  taxAmount?: number;
+  grandTotal?: number;
   createdAt: string;
   updatedAt?: string;
   paidAt?: string;
   customerPhone?: string;
+  customerName?: string;
   pointsEarned?: number;
   pointsRedeemed?: number;
   branchId?: string;
@@ -96,7 +101,7 @@ declare global {
       deleteMenuItem: (id: string) => Promise<void>;
       resetMenu: (defaults: Omit<MenuItem, 'id'>[]) => Promise<MenuItem[]>;
       
-      getOrders: () => Promise<Order[]>;
+      getOrders: (branchId?: string) => Promise<Order[]>;
       createOrder: (order: Omit<Order, 'id'>) => Promise<Order>;
       updateOrderStatus: (id: string, status: Order['status']) => Promise<Order>;
       completeOrderPayment: (id: string, method: 'Cash' | 'Card') => Promise<Order>;
