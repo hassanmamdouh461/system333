@@ -291,24 +291,28 @@ class OrderRepository {
     const sqlite = this.getDb();
     const branchId = this.getBranchId();
 
+    const existingStmt = sqlite.prepare('SELECT is_synced, updated_at FROM orders WHERE id = ?');
+
     const insert = sqlite.prepare(`
-      INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, createdAt, paidAt, branch_id, is_synced, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+      INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, is_synced, updated_at)
+      VALUES (@id, @orderNumber, @tableId, @items, @status, @paymentStatus, @paymentMethod, @totalAmount, @createdAt, @paidAt, @customerPhone, @pointsEarned, @pointsRedeemed, @branchId, 1, @updatedAt)
       ON CONFLICT(id) DO UPDATE SET
+        orderNumber = excluded.orderNumber,
+        tableId = excluded.tableId,
+        items = excluded.items,
         status = excluded.status,
         paymentStatus = excluded.paymentStatus,
         paymentMethod = excluded.paymentMethod,
         totalAmount = excluded.totalAmount,
-        items = excluded.items,
+        paidAt = excluded.paidAt,
+        customerPhone = excluded.customerPhone,
+        pointsEarned = excluded.pointsEarned,
+        pointsRedeemed = excluded.pointsRedeemed,
         branch_id = excluded.branch_id,
         updated_at = excluded.updated_at
     `);
 
     const runTx = sqlite.transaction((orders) => {
-      // Sort orders by $createdAt ascending to assign sequential order numbers
-      orders.sort((a, b) => new Date(a.$createdAt).getTime() - new Date(b.$createdAt).getTime());
-
-      let i = 1;
       for (const order of orders) {
         const orderBranchId = order.branch_id || 'default';
         // Filter by branch_id if we are logged in as a specific branch (manager sees all)
@@ -317,28 +321,41 @@ class OrderRepository {
         }
 
         const id = order.$id;
-        const createdAt = order.$createdAt;
-        const updatedAt = order.$updatedAt;
-        const totalAmount = Number(order.total_amount) || 0;
-        const paymentMethod = order.payment_method || 'Cash';
-        const items = order.items; // JSON string
+        const remoteUpdatedAt = order.$updatedAt || order.$createdAt;
 
-        const orderNumber = String(i++);
+        // ── Conflict protection (problem #5) ──
+        // Never clobber a local record that still has unsynced edits.
+        const existing = existingStmt.get(id);
+        if (existing) {
+          if (existing.is_synced === 0) {
+            // Local changes pending push — the local copy wins; skip the pull.
+            continue;
+          }
+          // Both copies are "clean" — only overwrite when the remote is newer.
+          if (existing.updated_at && remoteUpdatedAt && existing.updated_at >= remoteUpdatedAt) {
+            continue;
+          }
+        }
 
-        insert.run(
+        // Use the REAL fields from the cloud — never fabricate status/payment
+        // state or renumber orders (problem #5).
+        insert.run({
           id,
-          orderNumber,
-          'Takeaway', // default
-          items,
-          'Ready', // status
-          'Paid', // paymentStatus
-          paymentMethod,
-          totalAmount,
-          createdAt,
-          createdAt, // paidAt
-          orderBranchId,
-          updatedAt
-        );
+          orderNumber: order.orderNumber ? String(order.orderNumber) : '',
+          tableId: order.tableId || 'Takeaway',
+          items: order.items || '[]',
+          status: order.status || 'New',
+          paymentStatus: order.paymentStatus || 'Unpaid',
+          paymentMethod: order.payment_method || null,
+          totalAmount: Number(order.total_amount) || 0,
+          createdAt: order.$createdAt,
+          paidAt: order.paidAt || null,
+          customerPhone: order.customerPhone || null,
+          pointsEarned: Number(order.pointsEarned) || 0,
+          pointsRedeemed: Number(order.pointsRedeemed) || 0,
+          branchId: orderBranchId,
+          updatedAt: remoteUpdatedAt,
+        });
       }
     });
 
