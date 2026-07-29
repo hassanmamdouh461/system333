@@ -1,22 +1,9 @@
 const https = require('https');
 const mockApi = require('./mockApiService.cjs');
 
-function checkInternet() {
-  return new Promise((resolve) => {
-    // Light-weight DNS resolved check via Google public DNS over HTTPS
-    const req = https.get('https://dns.google', { timeout: 3000 }, (res) => {
-      resolve(res.statusCode === 200);
-    });
-    
-    req.on('error', () => {
-      resolve(false);
-    });
-    
-    req.on('timeout', () => {
-      req.destroy();
-      resolve(false);
-    });
-  });
+async function checkInternet() {
+  // Real connectivity check: can we actually reach our Worker? (Issue 34)
+  return mockApi.checkWorkerHealth();
 }
 
 class SyncEngine {
@@ -131,14 +118,25 @@ class SyncEngine {
         return;
       }
 
-      // 2. Pull updates from Appwrite database
+      // 2. Pull updates from the cloud incrementally (Issue 21)
       try {
-        console.log('[syncEngine] Pulling updates from Appwrite...');
-        const pulledOrders = await mockApi.pullOrders();
+        const dbModule = require('./database.cjs');
+        const branchId = dbModule.getBranchId();
+        const lastPulledAt = dbModule.getSettings()['last_pulled_orders_at'] || null;
+        console.log(`[syncEngine] Pulling updates from D1 (incremental since ${lastPulledAt || 'full pull'})...`);
+        const pulledOrders = await mockApi.pullOrders(lastPulledAt, branchId);
         if (pulledOrders && pulledOrders.length > 0) {
           const tempOrderRepository = require('./OrderRepository.cjs');
           tempOrderRepository.upsertPulledOrders(pulledOrders);
           console.log(`[syncEngine] Successfully integrated ${pulledOrders.length} remote orders into local database.`);
+          // Advance the high-water mark only after a successful upsert
+          const maxUpdatedAt = pulledOrders.reduce((max, o) => {
+            const t = o.$updatedAt || o.$createdAt;
+            return t && t > max ? t : max;
+          }, lastPulledAt || '');
+          if (maxUpdatedAt) {
+            dbModule.saveSetting('last_pulled_orders_at', maxUpdatedAt);
+          }
         }
       } catch (pullError) {
         console.error('[syncEngine] Failed to pull remote orders:', pullError.message);
@@ -170,42 +168,91 @@ class SyncEngine {
       const unsyncedCustomers = customerRepository.getUnsyncedCustomers();
       const unsyncedOrders = orderRepository.getUnsyncedOrders();
       
-      // Sync Menu Items
+      // Sync Menu Items — per-type failure tracking (Issue 19)
       if (unsyncedMenu.length > 0) {
-        await mockApi.pushMenuItems(unsyncedMenu);
-        const menuIds = unsyncedMenu.map(item => item.id);
-        menuRepository.markMenuSynced(menuIds);
-        console.log(`[syncEngine] Marked ${menuIds.length} menu items as synced in local DB.`);
+        const ids = unsyncedMenu.map(item => item.id);
+        try {
+          await mockApi.pushMenuItems(unsyncedMenu);
+          menuRepository.markMenuSynced(ids);
+          console.log(`[syncEngine] Marked ${ids.length} menu items as synced in local DB.`);
+        } catch (e) {
+          console.error('[syncEngine] Menu push failed:', e.message);
+          db.markSyncFailure('menu_items', ids, e.message);
+        }
       }
 
       // Sync Customers
       if (unsyncedCustomers.length > 0) {
-        await mockApi.pushCustomers(unsyncedCustomers);
-        const customerIds = unsyncedCustomers.map(c => c.id);
-        customerRepository.markCustomersSynced(customerIds);
-        console.log(`[syncEngine] Marked ${customerIds.length} customers as synced in local DB.`);
+        const ids = unsyncedCustomers.map(c => c.id);
+        try {
+          await mockApi.pushCustomers(unsyncedCustomers);
+          customerRepository.markCustomersSynced(ids);
+          console.log(`[syncEngine] Marked ${ids.length} customers as synced in local DB.`);
+        } catch (e) {
+          console.error('[syncEngine] Customers push failed:', e.message);
+          db.markSyncFailure('customers', ids, e.message);
+        }
       }
 
       // Sync Orders
       if (unsyncedOrders.length > 0) {
-        await mockApi.pushOrders(unsyncedOrders);
-        const orderIds = unsyncedOrders.map(o => o.id);
-        orderRepository.markOrdersSynced(orderIds);
-        console.log(`[syncEngine] Marked ${orderIds.length} orders as synced in local DB.`);
+        const ids = unsyncedOrders.map(o => o.id);
+        try {
+          await mockApi.pushOrders(unsyncedOrders);
+          orderRepository.markOrdersSynced(ids);
+          console.log(`[syncEngine] Marked ${ids.length} orders as synced in local DB.`);
+        } catch (e) {
+          console.error('[syncEngine] Orders push failed:', e.message);
+          db.markSyncFailure('orders', ids, e.message);
+        }
       }
 
-      // Sync Inventory (gracefully wrapped in try-catch to allow graceful bypass if collection is not created yet)
+      // Sync Inventory items + movements (Issue 27: transactions carry the audit trail)
       try {
         const inventoryRepository = require('./InventoryRepository.cjs');
         const unsyncedInventory = inventoryRepository.getUnsyncedInventory();
         if (unsyncedInventory.length > 0) {
-          await mockApi.pushInventory(unsyncedInventory);
-          const inventoryIds = unsyncedInventory.map(inv => inv.id);
-          inventoryRepository.markInventorySynced(inventoryIds);
-          console.log(`[syncEngine] Marked ${inventoryIds.length} inventory items as synced in local DB.`);
+          const ids = unsyncedInventory.map(inv => inv.id);
+          try {
+            await mockApi.pushInventory(unsyncedInventory);
+            inventoryRepository.markInventorySynced(ids);
+            console.log(`[syncEngine] Marked ${ids.length} inventory items as synced in local DB.`);
+          } catch (e) {
+            console.error('[syncEngine] Inventory push failed:', e.message);
+            db.markSyncFailure('inventory', ids, e.message);
+          }
+        }
+
+        const unsyncedTx = inventoryRepository.getUnsyncedTransactions();
+        if (unsyncedTx.length > 0) {
+          const txIds = unsyncedTx.map(t => t.id);
+          try {
+            await mockApi.pushInventoryTransactions(unsyncedTx);
+            inventoryRepository.markTransactionsSynced(txIds);
+            console.log(`[syncEngine] Marked ${txIds.length} inventory transactions as synced in local DB.`);
+          } catch (e) {
+            console.error('[syncEngine] Inventory transactions push failed:', e.message);
+            db.markSyncFailure('inventory_transactions', txIds, e.message);
+          }
+        }
+
+        // Loyalty points ledger (Issue 26)
+        const sqlite = db.getDb();
+        const unsyncedPtx = sqlite.prepare('SELECT * FROM points_transactions WHERE is_synced = 0').all();
+        if (unsyncedPtx.length > 0) {
+          const ptxIds = unsyncedPtx.map(p => p.id);
+          try {
+            await mockApi.pushPointsTransactions(unsyncedPtx);
+            const stmt = sqlite.prepare('UPDATE points_transactions SET is_synced = 1 WHERE id = ?');
+            sqlite.transaction(() => { for (const id of ptxIds) stmt.run(id); })();
+            console.log(`[syncEngine] Marked ${ptxIds.length} points transactions as synced in local DB.`);
+          } catch (e) {
+            console.error('[syncEngine] Points transactions push failed:', e.message);
+            db.markSyncFailure('points_transactions', ptxIds, e.message);
+          }
         }
       } catch (invError) {
-        console.warn('[syncEngine] Inventory sync bypassed (please create "inventory" collection in Appwrite console):', invError.message);
+        console.warn('[syncEngine] Inventory/points sync bypassed:', invError.message);
       }
 
       // 6. Update success status
@@ -245,28 +292,32 @@ class SyncEngine {
       if (!config.enabled || !config.botToken || !config.chatId) return;
 
       const now = new Date();
-      // Format time as "HH:MM" (local time)
-      const currentHours = String(now.getHours()).padStart(2, '0');
-      const currentMinutes = String(now.getMinutes()).padStart(2, '0');
-      const currentTimeStr = `${currentHours}:${currentMinutes}`;
-      
-      // Target scheduled time
+      // Compare minutes numerically, not "HH:MM" strings (Issue 36)
+      const currentMinutes = now.getHours() * 60 + now.getMinutes();
       const scheduledTimeStr = config.reportTime || '23:00';
-      
+      const [schedH, schedM] = scheduledTimeStr.split(':').map(Number);
+      const scheduledMinutes = (schedH || 0) * 60 + (schedM || 0);
+
       // Format today's date as "YYYY-MM-DD"
       const todayDateStr = now.toLocaleDateString('en-CA');
       const lastReportDate = settings['telegram_last_report_date'] || '';
 
-      // If current local time is at or after scheduled time, and we haven't sent it today
-      if (currentTimeStr >= scheduledTimeStr && lastReportDate !== todayDateStr) {
-        console.log(`[syncEngine] Triggering automatic daily Telegram report at ${currentTimeStr} (Scheduled: ${scheduledTimeStr})`);
-        
+      // If current local time is at or after scheduled time, and we haven't sent it today.
+      // Only window: within 30 minutes after the scheduled time — a device booted hours
+      // late must NOT fire the report at a random time; it will send the next day.
+      if (currentMinutes >= scheduledMinutes && (currentMinutes - scheduledMinutes) <= 30 && lastReportDate !== todayDateStr) {
+        console.log(`[syncEngine] Triggering automatic daily Telegram report (Scheduled: ${scheduledTimeStr})`);
+
         const telegramService = require('./telegramService.cjs');
-        await telegramService.sendDailyReport();
-        
-        // Save today's date as the last sent report to prevent double sends
-        db.saveSetting('telegram_last_report_date', todayDateStr);
-        console.log(`[syncEngine] Automatic daily Telegram report sent successfully for ${todayDateStr}.`);
+        try {
+          await telegramService.sendDailyReport();
+          // Record the date ONLY after a successful send (Issue 36)
+          db.saveSetting('telegram_last_report_date', todayDateStr);
+          console.log(`[syncEngine] Automatic daily Telegram report sent successfully for ${todayDateStr}.`);
+        } catch (sendErr) {
+          // Date is not recorded → next cycle will retry
+          console.error('[syncEngine] Telegram report send failed, will retry next cycle:', sendErr.message);
+        }
       }
     } catch (error) {
       console.error('[syncEngine] Failed to send automatic Telegram report:', error.message);
