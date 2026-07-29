@@ -100,16 +100,19 @@ class MenuRepository {
 
   deleteMenuItem(id) {
     const sqlite = this.getDb();
-    sqlite.prepare('DELETE FROM menu WHERE id = ?').run(id);
-    
-    // Try to delete from Appwrite database immediately
+    // Issue #13: soft-delete locally so the sync engine can propagate the
+    // tombstone; the immediate remote delete below is a best-effort shortcut.
+    const now = new Date().toISOString();
+    sqlite.prepare('UPDATE menu SET deleted_at = ?, updated_at = ?, is_synced = 0 WHERE id = ?').run(now, now, id);
+
+    // Try to delete from the cloud database immediately
     try {
       const mockApi = require('./mockApiService.cjs');
       mockApi.deleteMenuItem(id).catch(err => {
-        console.warn('[MenuRepository] Async delete from Appwrite failed:', err.message);
+        console.warn('[MenuRepository] Async remote delete failed:', err.message);
       });
     } catch (e) {
-      console.warn('[MenuRepository] Failed to initiate Appwrite delete:', e.message);
+      console.warn('[MenuRepository] Failed to initiate remote delete:', e.message);
     }
   }
 

@@ -129,8 +129,8 @@ async function pushOrders(orders) {
   console.log(`[D1 Sync API] Pushing ${orders.length} orders...`);
 
   const batch = orders.map(order => ({
-    sql: `INSERT OR REPLACE INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, createdAt, paidAt, branch_id) 
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT OR REPLACE INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, createdAt, paidAt, branch_id, updated_at, deleted_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     params: [
       order.id,
       order.orderNumber,
@@ -142,7 +142,9 @@ async function pushOrders(orders) {
       Number(order.totalAmount),
       order.createdAt,
       order.paidAt || null,
-      order.branchId || order.branch_id || "branch_1"
+      order.branchId || order.branch_id || "branch_1",
+      order.updatedAt || new Date().toISOString(),
+      order.deletedAt || order.deleted_at || null
     ]
   }));
 
@@ -158,15 +160,17 @@ async function pushCustomers(customers) {
   console.log(`[D1 Sync API] Pushing ${customers.length} customers...`);
 
   const batch = customers.map(c => ({
-    sql: `INSERT OR REPLACE INTO customers (id, name, phone, points, createdAt, branch_id) 
-          VALUES (?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT OR REPLACE INTO customers (id, name, phone, points, createdAt, branch_id, updated_at, deleted_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     params: [
       c.id,
       c.name,
       c.phone,
       Number(c.points) || 0,
       c.createdAt,
-      c.branchId || c.branch_id || "branch_1"
+      c.branchId || c.branch_id || "branch_1",
+      c.updatedAt || new Date().toISOString(),
+      c.deletedAt || c.deleted_at || null
     ]
   }));
 
@@ -182,8 +186,8 @@ async function pushInventory(items) {
   console.log(`[D1 Sync API] Pushing ${items.length} inventory items...`);
 
   const batch = items.map(item => ({
-    sql: `INSERT OR REPLACE INTO inventory (id, name, unit, stock, minStock, costPerUnit, branch_id, created_at, updated_at) 
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    sql: `INSERT OR REPLACE INTO inventory (id, name, unit, stock, minStock, costPerUnit, branch_id, created_at, updated_at, deleted_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
     params: [
       item.id,
       item.name,
@@ -193,7 +197,8 @@ async function pushInventory(items) {
       Number(item.costPerUnit) || 0,
       item.branchId || item.branch_id || "branch_1",
       item.createdAt || new Date().toISOString(),
-      item.updatedAt || new Date().toISOString()
+      item.updatedAt || new Date().toISOString(),
+      item.deletedAt || item.deleted_at || null
     ]
   }));
 
@@ -207,6 +212,7 @@ async function pushInventory(items) {
 async function pullOrders() {
   console.log('[D1 Sync API] Pulling orders from D1...');
   const res = await fetchWorker({
+    // Include tombstoned rows so deletions propagate to this device (issue #13).
     sql: "SELECT * FROM orders ORDER BY createdAt DESC LIMIT 1000"
   });
 
@@ -216,16 +222,23 @@ async function pullOrders() {
 
   // D1 query response: results is under res.result[0].results
   const rows = res.result[0]?.results || [];
-  
-  // Map back to Appwrite document structure format expected by upsertPulledOrders
+
+  // Map back to the document structure expected by upsertPulledOrders.
+  // Real synced fields are passed through — no fabricated status/numbers.
   return rows.map(row => ({
     $id: row.id,
     $createdAt: row.createdAt,
-    $updatedAt: row.createdAt, // fallback to createdAt since D1 orders doesn't have updated_at
+    $updatedAt: row.updated_at || row.createdAt,
+    orderNumber: row.orderNumber,
+    tableId: row.tableId,
+    status: row.status,
+    paymentStatus: row.paymentStatus,
     total_amount: Number(row.totalAmount),
     payment_method: row.paymentMethod || 'Cash',
     items: row.items, // JSON string
-    branch_id: row.branch_id
+    paidAt: row.paidAt || null,
+    branch_id: row.branch_id,
+    deleted_at: row.deleted_at || null
   }));
 }
 
@@ -263,7 +276,7 @@ async function getManagerOrders() {
 async function getManagerCustomers() {
   console.log('[D1 Sync API] Manager fetching all customers...');
   const res = await fetchWorker({
-    sql: "SELECT * FROM customers ORDER BY createdAt DESC LIMIT 1000"
+    sql: "SELECT * FROM customers WHERE deleted_at IS NULL ORDER BY createdAt DESC LIMIT 1000"
   });
   if (!res.success) {
     throw new Error(res.error || 'Failed to fetch manager customers');
@@ -283,7 +296,7 @@ async function getManagerCustomers() {
 async function getManagerInventory() {
   console.log('[D1 Sync API] Manager fetching all inventory...');
   const res = await fetchWorker({
-    sql: "SELECT * FROM inventory ORDER BY name ASC LIMIT 1000"
+    sql: "SELECT * FROM inventory WHERE deleted_at IS NULL ORDER BY name ASC LIMIT 1000"
   });
   if (!res.success) {
     throw new Error(res.error || 'Failed to fetch manager inventory');

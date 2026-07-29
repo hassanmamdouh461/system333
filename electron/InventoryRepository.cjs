@@ -14,8 +14,17 @@ class InventoryRepository {
   getInventory(branchId) {
     const sqlite = this.getDb();
     const activeBranch = branchId || this.getBranchId();
-    // Get all items.
-    const rows = sqlite.prepare('SELECT * FROM inventory').all();
+    // Issue #12: scope rows to the active branch — previously every branch saw
+    // every other branch's stock. Items with no branch set (legacy/shared
+    // catalog rows) stay visible to everyone; the manager sees all branches.
+    let rows;
+    if (activeBranch === 'manager' || activeBranch === 'all') {
+      rows = sqlite.prepare('SELECT * FROM inventory WHERE deleted_at IS NULL').all();
+    } else {
+      rows = sqlite.prepare(
+        'SELECT * FROM inventory WHERE deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)'
+      ).all(activeBranch);
+    }
     return rows.map(row => ({
       id: row.id,
       name: row.name,
@@ -115,10 +124,11 @@ class InventoryRepository {
 
   deleteInventoryItem(id) {
     const sqlite = this.getDb();
+    // Issue #13: soft-delete the item so the tombstone syncs; dependent rows
+    // (recipes/transactions) are kept as the historical record of the item.
+    const now = new Date().toISOString();
     sqlite.transaction(() => {
-      sqlite.prepare('DELETE FROM inventory WHERE id = ?').run(id);
-      sqlite.prepare('DELETE FROM menu_recipes WHERE inventoryItemId = ?').run(id);
-      sqlite.prepare('DELETE FROM inventory_transactions WHERE itemId = ?').run(id);
+      sqlite.prepare('UPDATE inventory SET deleted_at = ?, updated_at = ?, is_synced = 0 WHERE id = ?').run(now, now, id);
     })();
   }
 

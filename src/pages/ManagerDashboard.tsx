@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { getTaxRate } from '../utils/settingsConfig';
+import { getWorkerUrl, workerHeaders } from '../utils/workerConfig';
 import { useMenu } from '../hooks/useMenu';
 import SettingsPage from './Settings';
 
@@ -358,17 +359,13 @@ export default function ManagerDashboard() {
           recList = await window.electronAPI.getMenuRecipes();
         }
       } else {
-        // Browser — query Cloudflare D1 instead of Appwrite
-        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech';
-        const workerApiKey = import.meta.env.VITE_CF_WORKER_API_KEY || '';
-        
+        // Browser — query Cloudflare D1 via the central Worker proxy
+        const workerUrl = getWorkerUrl();
+
         const executeD1Query = async (sql: string, params: any[] = []) => {
           const res = await fetch(workerUrl, {
             method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
-            },
+            headers: workerHeaders(),
             body: JSON.stringify({ sql, params })
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -379,9 +376,9 @@ export default function ManagerDashboard() {
 
         try {
           const [d1Orders, d1Customers, d1Inventory] = await Promise.all([
-            executeD1Query('SELECT * FROM orders ORDER BY createdAt DESC LIMIT 1000'),
-            executeD1Query('SELECT * FROM customers ORDER BY createdAt DESC LIMIT 1000'),
-            executeD1Query('SELECT * FROM inventory ORDER BY name ASC LIMIT 1000')
+            executeD1Query('SELECT * FROM orders WHERE deleted_at IS NULL ORDER BY createdAt DESC LIMIT 1000'),
+            executeD1Query('SELECT * FROM customers WHERE deleted_at IS NULL ORDER BY createdAt DESC LIMIT 1000'),
+            executeD1Query('SELECT * FROM inventory WHERE deleted_at IS NULL ORDER BY name ASC LIMIT 1000')
           ]);
 
           ordersList = d1Orders.map((row: any) => ({

@@ -484,6 +484,28 @@ function initDatabase() {
   try { db.prepare("ALTER TABLE customers ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 0").run(); } catch (e) {}
   try { db.prepare("ALTER TABLE customers ADD COLUMN updated_at TEXT").run(); } catch (e) {}
 
+  // --- Orders table: tax snapshot columns (issue #7) ---
+  // Immutable financial record: tax rate/amount/total snapped at payment time.
+  try { db.prepare("ALTER TABLE orders ADD COLUMN taxRate REAL").run(); } catch (e) {}
+  try { db.prepare("ALTER TABLE orders ADD COLUMN taxAmount REAL").run(); } catch (e) {}
+  try { db.prepare("ALTER TABLE orders ADD COLUMN grandTotal REAL").run(); } catch (e) {}
+
+  // --- Soft-delete tombstones (issue #13) ---
+  // A deleted row leaves a tombstone that syncs to the cloud; pulls honour it.
+  try { db.prepare("ALTER TABLE orders ADD COLUMN deleted_at TEXT").run(); } catch (e) {}
+  try { db.prepare("ALTER TABLE customers ADD COLUMN deleted_at TEXT").run(); } catch (e) {}
+  try { db.prepare("ALTER TABLE menu ADD COLUMN deleted_at TEXT").run(); } catch (e) {}
+  try { db.prepare("ALTER TABLE inventory ADD COLUMN deleted_at TEXT").run(); } catch (e) {}
+
+  // --- Per-branch daily order counter (issue #11) ---
+  // Atomic sequence so two devices on the same branch never collide.
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS counters (
+      key TEXT PRIMARY KEY,
+      value INTEGER NOT NULL DEFAULT 0
+    )
+  `).run();
+
   // Backfill: set timestamps on existing rows that have NULL created_at/updated_at
   try {
     const now = new Date().toISOString();

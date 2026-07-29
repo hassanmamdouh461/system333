@@ -29,14 +29,9 @@ export function DatabaseStatus() {
     } else {
       // Running on Web: Check Cloudflare D1 Cloud Database connection
       try {
-        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech';
-        const workerApiKey = import.meta.env.VITE_CF_WORKER_API_KEY || '';
-        const response = await fetch(workerUrl, {
+        const response = await fetch(getWorkerUrl(), {
           method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
-          },
+          headers: workerHeaders(),
           body: JSON.stringify({
             sql: 'SELECT 1'
           })

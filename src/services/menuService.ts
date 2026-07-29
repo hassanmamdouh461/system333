@@ -1,8 +1,5 @@
 import { MenuItem } from '../types/menu';
-
-const APPWRITE_ENDPOINT = 'https://fra.cloud.appwrite.io/v1';
-const APPWRITE_PROJECT = '69879ae70002444f3f38';
-const APPWRITE_DB = '6a545eb00016d126bc82';
+import { getWorkerUrl, workerHeaders } from '../utils/workerConfig';
 
 /**
  * Menu Service - Handle all CRUD operations for Menu Items using SQLite via Electron IPC
@@ -32,7 +29,7 @@ export const menuService = {
             ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
           },
           body: JSON.stringify({
-            sql: 'SELECT * FROM menu_items ORDER BY category, name'
+            sql: 'SELECT * FROM menu_items WHERE deleted_at IS NULL ORDER BY category, name'
           })
         });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);

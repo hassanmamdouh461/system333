@@ -11,7 +11,9 @@ class OrderRepository {
 
   getOrders() {
     const sqlite = this.getDb();
-    const rows = sqlite.prepare('SELECT * FROM orders ORDER BY CAST(orderNumber AS INTEGER) ASC').all();
+    // Exclude tombstoned rows (issue #13). Order by creation time — orderNumber
+    // is now a per-branch display string, not a global integer (issue #11).
+    const rows = sqlite.prepare('SELECT * FROM orders WHERE deleted_at IS NULL ORDER BY createdAt ASC').all();
     return rows.map(row => {
       let items = [];
       try {
@@ -28,6 +30,9 @@ class OrderRepository {
         paymentStatus: row.paymentStatus,
         paymentMethod: row.paymentMethod || undefined,
         totalAmount: row.totalAmount,
+        taxRate: row.taxRate ?? undefined,
+        taxAmount: row.taxAmount ?? undefined,
+        grandTotal: row.grandTotal ?? undefined,
         createdAt: row.createdAt,
         updatedAt: row.updated_at || undefined,
         paidAt: row.paidAt || undefined,
@@ -57,6 +62,9 @@ class OrderRepository {
       paymentStatus: row.paymentStatus,
       paymentMethod: row.paymentMethod || undefined,
       totalAmount: row.totalAmount,
+      taxRate: row.taxRate ?? undefined,
+      taxAmount: row.taxAmount ?? undefined,
+      grandTotal: row.grandTotal ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updated_at || undefined,
       paidAt: row.paidAt || undefined,
@@ -74,13 +82,21 @@ class OrderRepository {
     const createdAt = order.createdAt || new Date().toISOString();
     const now = new Date().toISOString();
     const branchId = order.branchId || this.getBranchId();
-    
-    // Calculate sequential order number for today using efficient SQL COUNT
+
+    // Issue #11: atomic per-branch daily sequence via the counters table.
+    // Replaces COUNT(*)+1 which collided across devices/branches and broke
+    // after deletes. The order number is display-only, prefixed per branch.
     const todayLocal = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD
-    const countToday = sqlite.prepare(
-      "SELECT COUNT(*) as count FROM orders WHERE date(createdAt) = ?"
-    ).get(todayLocal).count;
-    const orderNumber = String(countToday + 1);
+    const branchNum = String(branchId || 'branch_1').replace(/\D/g, '') || '1';
+    const counterKey = `order_seq:${branchId}:${todayLocal}`;
+    let seq;
+    const runSeq = sqlite.transaction(() => {
+      sqlite.prepare('INSERT INTO counters (key, value) VALUES (?, 0) ON CONFLICT(key) DO NOTHING').run(counterKey);
+      const row = sqlite.prepare('UPDATE counters SET value = value + 1 WHERE key = ? RETURNING value').get(counterKey);
+      return row.value;
+    });
+    seq = runSeq();
+    const orderNumber = `${branchNum}-${todayLocal.replace(/-/g, '').slice(4)}-${String(seq).padStart(3, '0')}`;
 
     sqlite.prepare(`
       INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, is_synced, updated_at)
@@ -193,13 +209,40 @@ class OrderRepository {
   completeOrderPayment(id, method) {
     const sqlite = this.getDb();
     const now = new Date().toISOString();
-    sqlite.prepare("UPDATE orders SET paymentStatus = 'Paid', paymentMethod = ?, paidAt = ?, updated_at = ?, is_synced = 0 WHERE id = ?").run(method, now, now, id);
+
+    // Read the current tax rate from settings (same source as the UI), then
+    // snapshot it onto the order so historical records never change when the
+    // settings rate changes later (issue #7).
+    let taxRate = 0.1;
+    try {
+      const settings = database.getSettings();
+      const saved = settings['brewmaster_tax_rate'];
+      if (saved !== undefined && saved !== null) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed)) taxRate = parsed;
+      }
+    } catch (e) {}
+
+    const order = this.getOrder(id);
+    if (!order) throw new Error(`Order not found: ${id}`);
+    const taxAmount = order.totalAmount * taxRate;
+    const grandTotal = order.totalAmount + taxAmount;
+
+    sqlite.prepare(`
+      UPDATE orders
+      SET paymentStatus = 'Paid', paymentMethod = ?, paidAt = ?, updated_at = ?, is_synced = 0,
+          taxRate = ?, taxAmount = ?, grandTotal = ?
+      WHERE id = ?
+    `).run(method, now, now, taxRate, taxAmount, grandTotal, id);
     return this.getOrder(id);
   }
 
   deleteOrder(id) {
     const sqlite = this.getDb();
-    sqlite.prepare('DELETE FROM orders WHERE id = ?').run(id);
+    // Issue #13: soft-delete — leave a tombstone so the sync engine can push
+    // the deletion to the cloud instead of the record resurrecting on next pull.
+    const now = new Date().toISOString();
+    sqlite.prepare('UPDATE orders SET deleted_at = ?, updated_at = ?, is_synced = 0 WHERE id = ?').run(now, now, id);
   }
 
   resetOrders(defaults) {
@@ -292,8 +335,8 @@ class OrderRepository {
     const branchId = this.getBranchId();
 
     const insert = sqlite.prepare(`
-      INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, createdAt, paidAt, branch_id, is_synced, updated_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
+      INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, createdAt, paidAt, branch_id, is_synced, updated_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         status = excluded.status,
         paymentStatus = excluded.paymentStatus,
@@ -301,14 +344,19 @@ class OrderRepository {
         totalAmount = excluded.totalAmount,
         items = excluded.items,
         branch_id = excluded.branch_id,
-        updated_at = excluded.updated_at
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at
+      WHERE orders.is_synced = 1
+    `);
+
+    // Tombstone handling: a remote row flagged deleted must tombstone the local
+    // copy too (and a local tombstone must never be resurrected by a pull).
+    const softDelete = sqlite.prepare(`
+      UPDATE orders SET deleted_at = ?, updated_at = ?, is_synced = 1
+      WHERE id = ? AND deleted_at IS NULL AND is_synced = 1
     `);
 
     const runTx = sqlite.transaction((orders) => {
-      // Sort orders by $createdAt ascending to assign sequential order numbers
-      orders.sort((a, b) => new Date(a.$createdAt).getTime() - new Date(b.$createdAt).getTime());
-
-      let i = 1;
       for (const order of orders) {
         const orderBranchId = order.branch_id || 'default';
         // Filter by branch_id if we are logged in as a specific branch (manager sees all)
@@ -318,26 +366,41 @@ class OrderRepository {
 
         const id = order.$id;
         const createdAt = order.$createdAt;
-        const updatedAt = order.$updatedAt;
+        const updatedAt = order.$updatedAt || order.$createdAt;
+        const remoteDeletedAt = order.deleted_at || null;
+
+        // Issue #13: remote tombstone → tombstone local (skip local unsynced edits)
+        if (remoteDeletedAt) {
+          softDelete.run(remoteDeletedAt, updatedAt, id);
+          continue;
+        }
+
+        // Skip rows we already tombstoned locally — never resurrect them.
+        const local = sqlite.prepare('SELECT deleted_at, is_synced FROM orders WHERE id = ?').get(id);
+        if (local && local.deleted_at) continue;
+        // Issue #5: never overwrite a local record that has unsynced edits.
+        if (local && local.is_synced === 0) continue;
+
         const totalAmount = Number(order.total_amount) || 0;
-        const paymentMethod = order.payment_method || 'Cash';
+        const paymentMethod = order.payment_method || null;
         const items = order.items; // JSON string
 
-        const orderNumber = String(i++);
-
+        // Use the REAL fields synced from the cloud; only fall back to sane
+        // defaults for legacy cloud rows that predate the full schema.
         insert.run(
           id,
-          orderNumber,
-          'Takeaway', // default
+          order.orderNumber || order.order_number || id.slice(-6),
+          order.tableId || 'Takeaway',
           items,
-          'Ready', // status
-          'Paid', // paymentStatus
+          order.status || 'Ready',
+          order.paymentStatus || 'Paid',
           paymentMethod,
           totalAmount,
           createdAt,
-          createdAt, // paidAt
+          order.paidAt || null,
           orderBranchId,
-          updatedAt
+          updatedAt,
+          null
         );
       }
     });

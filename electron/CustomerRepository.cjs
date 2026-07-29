@@ -65,7 +65,9 @@ class CustomerRepository {
 
   deleteCustomer(id) {
     const sqlite = this.getDb();
-    sqlite.prepare('DELETE FROM customers WHERE id = ?').run(id);
+    // Issue #13: soft-delete with tombstone for sync.
+    const now = new Date().toISOString();
+    sqlite.prepare('UPDATE customers SET deleted_at = ?, updated_at = ?, is_synced = 0 WHERE id = ?').run(now, now, id);
   }
 
   getUnsyncedCustomers() {
