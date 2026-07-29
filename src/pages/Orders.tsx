@@ -11,6 +11,7 @@ import { AnimatePresence } from 'framer-motion';
 import { useLanguage } from '../context/LanguageContext';
 import { clsx } from 'clsx';
 import { POSView } from '../components/orders/POSView';
+import { getTaxRate } from '../utils/settingsConfig';
 
 import { filterItemsBySection, getOrderStatusForSection } from '../utils/orderSection';
 import { printKitchenReceipt, printDrinksReceipt } from '../utils/printReceipts';
@@ -35,9 +36,15 @@ export default function Orders({ type = 'all' }: OrdersProps) {
     paidAmount?: number,
     customerPhone?: string,
     pointsEarned?: number,
-    pointsRedeemed?: number
+    pointsRedeemed?: number,
+    customerName?: string
   ) => {
-    const totalAmount = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
+    // Snapshot the financial fields at creation time (Issue 25) so every screen
+    // and report reads stored values instead of re-computing tax retroactively.
+    const subtotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
+    const taxRate = getTaxRate();
+    const taxAmount = subtotal * taxRate;
+    const grandTotal = subtotal + taxAmount;
     const newOrder = await addOrder({
       orderNumber: '',
       tableId,
@@ -45,13 +52,18 @@ export default function Orders({ type = 'all' }: OrdersProps) {
       status: 'New',
       paymentStatus,
       paymentMethod,
-      totalAmount,
+      totalAmount: grandTotal,
+      subtotal,
+      taxRate,
+      taxAmount,
+      grandTotal,
       createdAt: new Date().toISOString(),
       paidAt: paymentStatus === 'Paid' ? new Date().toISOString() : undefined,
       customerPhone,
       pointsEarned,
-      pointsRedeemed
-    });
+      pointsRedeemed,
+      ...(customerName ? { customerName } : {})
+    } as Omit<Order, 'id'>);
     if (newOrder) {
       printKitchenReceipt(newOrder, language);
       printDrinksReceipt(newOrder, language);
