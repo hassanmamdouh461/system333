@@ -228,7 +228,7 @@ const SYNC_TABLES = {
 const MAX_BATCH_RECORDS = 200;
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const origin = request.headers.get('Origin') || '';
     const url = new URL(request.url);
     const path = url.pathname.replace(/\/+$/, '') || '/';
@@ -242,16 +242,27 @@ export default {
       return json({ ok: true, service: 'brewmaster-cloud-api', version: 2, time: new Date().toISOString() }, 200, origin);
     }
 
-    // ─── Public QR menu (read-only, branch-agnostic) ───
+    // ─── Public QR menu (read-only, branch-agnostic, edge-cached) ───
     if (path === '/menu/public' && request.method === 'GET') {
       if (!checkRateLimit(`pub:${request.headers.get('CF-Connecting-IP') || 'anon'}`)) {
         return json({ success: false, error: 'Rate limit exceeded' }, 429, origin);
       }
       try {
+        // Serve from the Cloudflare edge cache when fresh (60s), revalidate
+        // in the background for up to 5 minutes — keeps QR menus fast and
+        // shields D1 from every customer phone hitting it at once.
+        const cache = caches.default;
+        const cacheKey = new Request(url.toString(), { method: 'GET' });
+        const cached = await cache.match(cacheKey);
+        if (cached) return cached;
+
         const result = await env.DB.prepare(
           'SELECT id, name, description, price, category, image, available FROM menu_items ORDER BY category, name LIMIT 500'
         ).all();
-        return json({ success: true, result: result.results || [] }, 200, origin);
+        const response = json({ success: true, result: result.results || [] }, 200, origin);
+        response.headers.set('Cache-Control', 'public, max-age=60, stale-while-revalidate=300');
+        if (ctx && ctx.waitUntil) ctx.waitUntil(cache.put(cacheKey, response.clone()));
+        return response;
       } catch (err) {
         return json({ success: false, error: 'Failed to load menu' }, 500, origin);
       }

@@ -3,7 +3,59 @@ dns.setServers(['8.8.8.8', '1.1.1.1']);
 
 const { app, BrowserWindow, ipcMain, session } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const db = require('./database.cjs');
+
+// ─── File logging (survives silent VBS launches) ─────────────
+let logFilePath = null;
+function initFileLogging() {
+  try {
+    const logsDir = path.join(app.getPath('userData'), 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    const stamp = new Date().toISOString().slice(0, 10);
+    logFilePath = path.join(logsDir, `brewmaster-${stamp}.log`);
+    const stream = fs.createWriteStream(logFilePath, { flags: 'a' });
+    const write = (level, args) => {
+      const line = `[${new Date().toISOString()}] [${level}] ${args.map(a => (typeof a === 'string' ? a : JSON.stringify(a))).join(' ')}\n`;
+      stream.write(line);
+    };
+    const origLog = console.log, origWarn = console.warn, origErr = console.error;
+    console.log = (...a) => { write('INFO', a); origLog(...a); };
+    console.warn = (...a) => { write('WARN', a); origWarn(...a); };
+    console.error = (...a) => { write('ERROR', a); origErr(...a); };
+    // Keep the last 14 log files only
+    const files = fs.readdirSync(logsDir).filter(f => f.startsWith('brewmaster-') && f.endsWith('.log')).sort();
+    while (files.length > 14) {
+      fs.unlinkSync(path.join(logsDir, files.shift()));
+    }
+    console.log('[main] File logging enabled at', logFilePath);
+  } catch (e) {
+    console.error('[main] Failed to initialize file logging:', e);
+  }
+}
+
+// ─── SQLite backup (daily copy, keep 7) ──────────────────────
+function backupDatabase() {
+  try {
+    const dbPath = path.join(app.getPath('userData'), 'brewmaster.db');
+    if (!fs.existsSync(dbPath)) return;
+    const backupDir = path.join(app.getPath('userData'), 'backups');
+    fs.mkdirSync(backupDir, { recursive: true });
+    const stamp = new Date().toISOString().slice(0, 10);
+    const backupPath = path.join(backupDir, `brewmaster-${stamp}.db`);
+    if (!fs.existsSync(backupPath)) {
+      fs.copyFileSync(dbPath, backupPath);
+      console.log('[main] SQLite backup created:', backupPath);
+    }
+    // Retain only the newest 7 backups
+    const files = fs.readdirSync(backupDir).filter(f => f.startsWith('brewmaster-') && f.endsWith('.db')).sort();
+    while (files.length > 7) {
+      fs.unlinkSync(path.join(backupDir, files.shift()));
+    }
+  } catch (e) {
+    console.error('[main] SQLite backup failed:', e);
+  }
+}
 const SyncEngine = require('./syncEngine.cjs');
 const orderRepository = require('./OrderRepository.cjs');
 const menuRepository = require('./MenuRepository.cjs');
@@ -99,8 +151,12 @@ function createWindow() {
 }
 
 app.whenReady().then(() => {
-  // Initialize the local SQLite database on startup
+  // File logging first so every later step is captured to disk
+  initFileLogging();
+
+  // Initialize the local SQLite database on startup, then take the daily backup
   db.initDatabase();
+  backupDatabase();
 
   // Seed local users (first run only) and migrate legacy plaintext secrets
   authService.ensureSeedUsers();
@@ -179,6 +235,19 @@ app.whenReady().then(() => {
 
   // Start background syncing loop after window creation
   syncEngine.start();
+
+  // Automatic updates (packaged builds only — requires publish config + signed artifacts)
+  if (app.isPackaged) {
+    try {
+      const { autoUpdater } = require('electron-updater');
+      autoUpdater.on('update-downloaded', () => {
+        console.log('[updater] Update downloaded; will install on next restart.');
+      });
+      autoUpdater.checkForUpdatesAndNotify();
+    } catch (e) {
+      console.log('[updater] electron-updater not available; skipping auto-update check.');
+    }
+  }
 
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();

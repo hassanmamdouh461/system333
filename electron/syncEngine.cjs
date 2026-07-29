@@ -31,21 +31,37 @@ class SyncEngine {
       lastError: null,
     };
     this.isSyncing = false;
+    // Adaptive scheduling: poll frequently while there's work to push,
+    // back off when idle to avoid hammering the cloud API all night.
+    this.activeIntervalMs = 30000;   // 30s when records are pending
+    this.idleIntervalMs = 5 * 60000; // 5min when fully synced
   }
 
   /**
-   * Start the sync background loop
+   * Start the sync background loop (adaptive interval).
    */
-  start(intervalMs = 30000) {
-    console.log('[syncEngine] Starting Background Sync Worker...');
-    
+  start() {
+    console.log('[syncEngine] Starting Background Sync Worker (adaptive schedule)...');
+
     // Initial stats check and sync
     this.updatePendingCount();
     this.runSyncCycle();
 
     this.intervalId = setInterval(() => {
       this.runSyncCycle();
-    }, intervalMs);
+    }, this.activeIntervalMs);
+  }
+
+  /**
+   * Reschedule the loop with a new interval (used for adaptive pacing).
+   */
+  reschedule(intervalMs) {
+    if (this.intervalId) {
+      clearInterval(this.intervalId);
+      this.intervalId = setInterval(() => {
+        this.runSyncCycle();
+      }, intervalMs);
+    }
   }
 
   /**
@@ -216,13 +232,18 @@ class SyncEngine {
       this.status.state = 'synced';
       this.status.lastError = null;
       this.updatePendingCount(); // Updates pending count and calls emitStatus()
-      
+
+      // Adaptive pacing: idle → back off; pending → stay on the fast cadence
+      this.reschedule(this.status.pendingCount > 0 ? this.activeIntervalMs : this.idleIntervalMs);
+
       console.log('[syncEngine] Sync cycle completed successfully.');
     } catch (error) {
       console.error('[syncEngine] Sync cycle failed with error:', error.message);
       this.status.state = 'error';
       this.status.lastError = error.message || 'Unknown synchronization error';
       this.updatePendingCount(); // Updates pending count and calls emitStatus()
+      // Errors also back off a bit to avoid log/invoice flooding on a dead network
+      this.reschedule(this.idleIntervalMs);
     } finally {
       this.isSyncing = false;
     }

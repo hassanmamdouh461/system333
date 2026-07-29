@@ -1,3 +1,8 @@
+# ─────────────────────────────────────────────────────────────
+# LOCAL PREVIEW ONLY — serves the production build (dist/) on :8080
+# without TLS, compression, or caching. For real previews prefer:
+#     npm run preview        (Vite's built-in preview server)
+# ─────────────────────────────────────────────────────────────
 $port = 8080
 $localPath = (Resolve-Path "dist").Path
 $url = "http://localhost:$port/"

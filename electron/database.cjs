@@ -512,6 +512,22 @@ function initDatabase() {
     console.error('[database] Failed to backfill sync timestamps:', e);
   }
 
+  // ─── Indexes for the hot query paths (idempotent) ───
+  try {
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_orders_createdAt ON orders (createdAt)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_orders_branch ON orders (branch_id)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_orders_synced ON orders (is_synced)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_menu_branch ON menu (branch_id)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_menu_synced ON menu (is_synced)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_customers_branch ON customers (branch_id)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_customers_synced ON customers (is_synced)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_inventory_branch ON inventory (branch_id)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_invtx_reference ON inventory_transactions (referenceId)").run();
+    db.prepare("CREATE INDEX IF NOT EXISTS idx_invtx_item ON inventory_transactions (itemId)").run();
+  } catch (e) {
+    console.error('[database] Failed to create indexes:', e);
+  }
+
   // Migration: Update existing mock/legacy orders to Dine-in/Takeaway and reset them as new orders today
   try {
     const legacyCount = db.prepare("SELECT COUNT(*) as count FROM orders WHERE tableId LIKE 'Table %'").get().count;
