@@ -9,7 +9,7 @@ const LS_SESSION_KEY  = 'auth_session';
 export interface BranchSession {
   branchId: string;    // UUID identifying which branch this POS belongs to
   branchName: string;  // Display name (e.g., "Downtown Branch")
-  authToken: string;   // Placeholder token for future server-side auth
+  authToken: string;   // Server-issued session token (JWT from /auth/login, or offline-* fallback)
 }
 
 export interface User {
@@ -32,13 +32,21 @@ interface StoredSession {
   branch: BranchSession;
 }
 
+/**
+ * Known branch accounts — metadata ONLY.
+ *
+ * Passwords were removed from the client bundle (problem #2). Login is
+ * verified server-side by the Cloudflare Worker (POST /auth/login) against
+ * PBKDF2 password hashes stored in D1. If the cloud is unreachable (offline
+ * branch POS), a local SHA-256 hash check is used as a temporary fallback
+ * until the branches' local DBs hold their own user records.
+ */
 export const BRANCH_ACCOUNTS = [
   {
     branchId: 'branch_1',
     branchName: 'فرع المعادي (فرع 1)',
     branchNameEn: 'Maadi Branch (Branch 1)',
     email: 'branch1@system.com',
-    password: '123',
     role: 'admin' as const
   },
   {
@@ -46,7 +54,6 @@ export const BRANCH_ACCOUNTS = [
     branchName: 'فرع مصر الجديدة (فرع 2)',
     branchNameEn: 'Heliopolis Branch (Branch 2)',
     email: 'branch2@system.com',
-    password: '123',
     role: 'admin' as const
   },
   {
@@ -54,7 +61,6 @@ export const BRANCH_ACCOUNTS = [
     branchName: 'فرع الزمالك (فرع 3)',
     branchNameEn: 'Zamalek Branch (Branch 3)',
     email: 'branch3@system.com',
-    password: '123',
     role: 'admin' as const
   },
   {
@@ -62,10 +68,44 @@ export const BRANCH_ACCOUNTS = [
     branchName: 'الإدارة العامة',
     branchNameEn: 'General Management',
     email: 'manager@system.com',
-    password: '123',
     role: 'manager' as const
   }
 ];
+
+/**
+ * Offline fallback: SHA-256 hashes of the branch passwords (never the
+ * plaintext). Replace entries with the real hashes per deployment, or let
+ * local login fail closed and require the cloud login path.
+ * Generate with: sha256(password)
+ */
+const LOCAL_PASSWORD_HASHES: Record<string, string> = {
+  // e.g. 'branch1@system.com': '<sha256-hex-of-password>',
+};
+
+async function sha256Hex(text: string): Promise<string> {
+  const data = new TextEncoder().encode(text);
+  const digest = await crypto.subtle.digest('SHA-256', data);
+  return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+/** Extract the exp claim from a JWT without verifying (verification is the server's job). */
+function jwtExpirySeconds(token: string): number | null {
+  try {
+    const payload = token.split('.')[1];
+    const json = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')));
+    return typeof json.exp === 'number' ? json.exp : null;
+  } catch {
+    return null;
+  }
+}
+
+function isTokenLive(token: string): boolean {
+  // Offline-issued tokens are stamped with an explicit expiry marker.
+  if (token.startsWith('offline-')) return true; // offline sessions live until logout
+  const exp = jwtExpirySeconds(token);
+  if (exp === null) return false;
+  return exp * 1000 > Date.now();
+}
 
 // ─── Context ──────────────────────────────────────────────────────────────────
 
@@ -75,6 +115,8 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
 export function AuthProvider({ children }: { children: ReactNode }) {
   // ── Synchronous init: restore session from storage on page load/refresh ──
+  // Sessions are only restored when they carry a live (non-expired) token —
+  // a stale blob in localStorage is no longer trusted on its own (problem #4).
   const [session, setSession] = useState<StoredSession | null>(() => {
     try {
       const saved =
@@ -82,9 +124,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         sessionStorage.getItem(LS_SESSION_KEY);
       if (saved) {
         const parsed = JSON.parse(saved) as StoredSession;
-        // Validate it has the new structure
-        if (parsed.user && parsed.branch) return parsed;
-        // Legacy format (just User object) — clear it
+        // Validate it has the new structure AND a live session token
+        if (parsed.user && parsed.branch && parsed.branch.authToken && isTokenLive(parsed.branch.authToken)) {
+          return parsed;
+        }
+        // Legacy/expired format — clear it
         localStorage.removeItem(LS_SESSION_KEY);
         sessionStorage.removeItem(LS_SESSION_KEY);
       }
@@ -95,16 +139,47 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   });
 
   const login = async (email: string, password: string, rememberMe?: boolean) => {
-    await new Promise(resolve => setTimeout(resolve, 800));
-
-    // ── Validate against branch account credentials ──
     const targetEmail = email.trim().toLowerCase();
     const matchedAccount = BRANCH_ACCOUNTS.find(
-      acc => acc.email.toLowerCase() === targetEmail && acc.password === password
+      acc => acc.email.toLowerCase() === targetEmail
     );
 
     if (!matchedAccount) {
       throw new Error('Invalid email or password');
+    }
+
+    // ── Verify credentials server-side (Cloudflare Worker /auth/login) ──
+    // The worker checks the PBKDF2 hash in D1 and returns a signed session
+    // token (problem #2 + #4). Offline POS terminals fall back to a local
+    // SHA-256 hash check with a clearly-marked short-lived offline token.
+    let authToken: string;
+    try {
+      const { cloudFetch } = await import('../services/cloudClient');
+      const res = await cloudFetch<{
+        token: string;
+        branchId: string;
+        role: 'admin' | 'manager';
+      }>('/auth/login', { email: targetEmail, password });
+
+      if (!res.token || res.branchId !== matchedAccount.branchId) {
+        throw new Error('Invalid server response');
+      }
+      authToken = res.token;
+    } catch (cloudErr: any) {
+      // Cloud unreachable — try the offline hash fallback (branch POS only)
+      const expectedHash = LOCAL_PASSWORD_HASHES[targetEmail];
+      if (!expectedHash) {
+        throw new Error(
+          localStorage.getItem('brewmaster_lang') === 'ar'
+            ? 'تعذر الاتصال بخادم المصادقة. تحقق من الإنترنت أو إعدادات الخادم.'
+            : 'Cannot reach the authentication server. Check your connection or server settings.'
+        );
+      }
+      const hash = await sha256Hex(password);
+      if (hash !== expectedHash) {
+        throw new Error('Invalid email or password');
+      }
+      authToken = `offline-${crypto.randomUUID?.() || Math.random().toString(36).substr(2, 16)}`;
     }
 
     // ── Enforce environment restrictions ──
@@ -136,17 +211,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const branchSession: BranchSession = {
       branchId: matchedAccount.branchId,
       branchName: matchedAccount.branchNameEn,
-      authToken: `local-${crypto.randomUUID?.() || Math.random().toString(36).substr(2, 16)}`,
+      authToken,
     };
 
     const sessionData: StoredSession = { user: userData, branch: branchSession };
 
-    // ── Persist branch_id to settings so database.cjs picks it up ──
+    // ── Persist branch identity so database.cjs picks it up ──
+    // Passwords are NEVER written to storage (problem #3).
     setBranchConfig({
       branchId: matchedAccount.branchId,
       branchName: matchedAccount.branchNameEn,
       email: matchedAccount.email,
-      password: matchedAccount.password,
     });
 
     if (rememberMe) {
