@@ -7,14 +7,12 @@ export interface BranchConfig {
   branchId: string;
   branchName: string;
   email: string;
-  password: string;
 }
 
 const DEFAULT_BRANCH_CONFIG: BranchConfig = {
   branchId: 'default',
   branchName: 'Main Branch',
   email: 'admin@branch.local',
-  password: '123',
 };
 
 export function getTaxRate(): number {
@@ -30,23 +28,18 @@ export function setTaxRate(rate: number): void {
   localStorage.setItem(LS_TAX_RATE_KEY, rate.toString());
 }
 
+/**
+ * @deprecated Admin credentials must NOT live in localStorage (problem #2/#3).
+ * Kept as a fail-closed stub so legacy callers compile; the settings store no
+ * longer contains any usable credential.
+ */
 export function getAdminCredentials() {
-  const saved = localStorage.getItem(LS_ADMIN_CREDS_KEY);
-  if (saved) {
-    try {
-      const parsed = JSON.parse(saved);
-      if (parsed.username && parsed.password) {
-        return parsed;
-      }
-    } catch {
-      // JSON parse error, ignore and fallback
-    }
-  }
-  return { username: 'admin', password: '123' }; // Default credentials
+  return { username: '', password: '' };
 }
 
-export function setAdminCredentials(username: string, password: string): void {
-  localStorage.setItem(LS_ADMIN_CREDS_KEY, JSON.stringify({ username, password }));
+/** @deprecated No-op — credential changes must happen server-side. */
+export function setAdminCredentials(_username: string, _password: string): void {
+  localStorage.removeItem(LS_ADMIN_CREDS_KEY);
 }
 
 /**
@@ -58,8 +51,10 @@ export function getBranchConfig(): BranchConfig {
   if (saved) {
     try {
       const parsed = JSON.parse(saved);
-      if (parsed.branchId && parsed.email && parsed.password) {
-        return { ...DEFAULT_BRANCH_CONFIG, ...parsed };
+      // Strip any legacy persisted password field — it must never survive (problem #3)
+      const { password: _droppedPassword, ...rest } = parsed;
+      if (rest.branchId && rest.email) {
+        return { ...DEFAULT_BRANCH_CONFIG, ...rest };
       }
     } catch {
       // JSON parse error, ignore and fallback

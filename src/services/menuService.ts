@@ -1,8 +1,5 @@
 import { MenuItem } from '../types/menu';
-
-const APPWRITE_ENDPOINT = 'https://fra.cloud.appwrite.io/v1';
-const APPWRITE_PROJECT = '69879ae70002444f3f38';
-const APPWRITE_DB = '6a545eb00016d126bc82';
+import { cloudFetch } from './cloudClient';
 
 /**
  * Menu Service - Handle all CRUD operations for Menu Items using SQLite via Electron IPC
@@ -21,25 +18,10 @@ export const menuService = {
         throw new Error('Failed to fetch menu items');
       }
     } else {
-      // Browser/Web fallback — fetch from central Cloudflare D1 database
+      // Browser/Web fallback — fetch via the secured worker endpoint (problem #1)
       try {
-        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech';
-        const workerApiKey = import.meta.env.VITE_CF_WORKER_API_KEY || '';
-        const res = await fetch(workerUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
-          },
-          body: JSON.stringify({
-            sql: 'SELECT * FROM menu_items ORDER BY category, name'
-          })
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error || 'D1 query failed');
-        const docs = data.result[0]?.results || [];
-        return docs.map((doc: any) => ({
+        const data = await cloudFetch<{ items: any[] }>('/menu/list', {});
+        return (data.items || []).map((doc: any) => ({
           id: doc.id,
           name: doc.name,
           price: Number(doc.price),

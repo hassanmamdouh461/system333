@@ -332,11 +332,9 @@ export default function ManagerDashboard() {
 
   const taxRate = getTaxRate();
 
-  // ── Fetch orders and customers from Appwrite ──
-  // Uses Electron IPC when running as desktop app, direct REST fetch when in browser
-  const APPWRITE_ENDPOINT = 'https://fra.cloud.appwrite.io/v1';
-  const APPWRITE_PROJECT = '69879ae70002444f3f38';
-  const APPWRITE_DB = '6a545eb00016d126bc82';
+  // ── Fetch orders and customers from the central cloud database ──
+  // Uses Electron IPC when running as desktop app, secured worker endpoints
+  // (with the session bearer token — problem #1/#4) when in browser.
 
   const fetchOrders = async () => {
     setLoading(true);
@@ -358,36 +356,28 @@ export default function ManagerDashboard() {
           recList = await window.electronAPI.getMenuRecipes();
         }
       } else {
-        // Browser — query Cloudflare D1 instead of Appwrite
-        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech';
-        const workerApiKey = import.meta.env.VITE_CF_WORKER_API_KEY || '';
-        
-        const executeD1Query = async (sql: string, params: any[] = []) => {
-          const res = await fetch(workerUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
-            },
-            body: JSON.stringify({ sql, params })
-          });
-          if (!res.ok) throw new Error(`HTTP ${res.status}`);
-          const data = await res.json();
-          if (!data.success) throw new Error(data.error || 'D1 query failed');
-          return data.result[0]?.results || [];
+        // Browser — fetch via secured worker endpoints with the session token
+        const { cloudFetch } = await import('../services/cloudClient');
+
+        const callManager = async (path: string, key: string) => {
+          const data = await cloudFetch<any>(path, {}, { auth: true });
+          return data[key] || [];
         };
 
         try {
           const [d1Orders, d1Customers, d1Inventory] = await Promise.all([
-            executeD1Query('SELECT * FROM orders ORDER BY createdAt DESC LIMIT 1000'),
-            executeD1Query('SELECT * FROM customers ORDER BY createdAt DESC LIMIT 1000'),
-            executeD1Query('SELECT * FROM inventory ORDER BY name ASC LIMIT 1000')
+            callManager('/manager/orders', 'orders'),
+            callManager('/manager/customers', 'customers'),
+            callManager('/manager/inventory', 'inventory')
           ]);
 
           ordersList = d1Orders.map((row: any) => ({
             $id: row.id,
             $createdAt: row.createdAt,
+            $updatedAt: row.updated_at || row.createdAt,
             branch_id: row.branch_id,
+            orderNumber: row.orderNumber,
+            status: row.status,
             total_amount: Number(row.totalAmount),
             payment_method: row.paymentMethod,
             items: row.items,
@@ -455,12 +445,12 @@ export default function ManagerDashboard() {
     try {
       config = JSON.parse(configRaw);
     } catch(e) {}
-    if (!config || !config.botToken || !config.chatId) {
-      alert(language === 'ar' ? 'يرجى إدخال التوكن ومعرف المحادثة في الإعدادات أولاً!' : 'Please enter Bot Token and Chat ID in Settings!');
+    if (!config || !config.chatId) {
+      alert(language === 'ar' ? 'يرجى إدخال معرف المحادثة في الإعدادات أولاً!' : 'Please enter the Chat ID in Settings first!');
       return;
     }
 
-    const { botToken, chatId } = config;
+    const { chatId } = config;
 
     if (activeTab === 'settings') {
       alert(language === 'ar' ? 'يرجى فتح لوحة الإحصائيات أو المخزون أو العملاء لإرسال تقرير تليجرام المخصص لها!' : 'Please open the Analytics, Inventory, or Customers tab to send its report!');
@@ -643,24 +633,12 @@ export default function ManagerDashboard() {
       message += `✅ تم تصدير تقرير العملاء من لوحة الإشراف المركزية`;
     }
 
-    // 6. Send message to Telegram
+    // 6. Send message to Telegram — proxied through the worker so the bot
+    // token never lives in the browser bundle or network logs (problem #1/#20).
     try {
-      const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          chat_id: chatId,
-          text: message,
-          parse_mode: 'HTML'
-        })
-      });
-      const data = await res.json();
-      if (data.ok) {
-        alert(language === 'ar' ? 'تم إرسال تقرير الفترة المحددة للتليجرام بنجاح!' : 'Report for the selected period sent successfully to Telegram!');
-      } else {
-        throw new Error(data.description);
-      }
+      const { cloudFetch } = await import('../services/cloudClient');
+      await cloudFetch('/telegram/send', { chatId, text: message }, { auth: true });
+      alert(language === 'ar' ? 'تم إرسال تقرير الفترة المحددة للتليجرام بنجاح!' : 'Report for the selected period sent successfully to Telegram!');
     } catch(err: any) {
       alert(`${language === 'ar' ? 'فشل الإرسال: ' : 'Send failed: '}${err.message || 'خطأ غير معروف'}`);
     }

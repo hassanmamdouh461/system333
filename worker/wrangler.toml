@@ -1,0 +1,16 @@
+name = "brewmaster-d1-proxy"
+main = "index.js"
+compatibility_date = "2024-06-01"
+
+# Set your D1 database binding:
+#   wrangler d1 create brewmaster-db
+# then paste the database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "brewmaster-db"
+database_id = "REPLACE_WITH_YOUR_D1_DATABASE_ID"
+
+# Secrets — NEVER commit these values. Set them with:
+#   wrangler secret put API_KEY            (shared branch/client key)
+#   wrangler secret put JWT_SECRET         (session-token HMAC key)
+#   wrangler secret put TELEGRAM_BOT_TOKEN (telegram bot token)
