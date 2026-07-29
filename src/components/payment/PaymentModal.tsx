@@ -113,6 +113,14 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
           <div className="p-6 overflow-y-auto flex-1">
             {!showReceipt ? (
               <div className="space-y-6">
+                 {/* Manual recording notice — no live payment terminal is integrated */}
+                 <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold px-3 py-2 rounded-lg flex items-center gap-2">
+                   <span>ℹ️</span>
+                   <span>{language === 'ar'
+                     ? 'تسجيل دفع يدوي — أكّد استلام المبلغ من العميل (نقداً أو بجهاز البطاقة الخاص بالفرع) قبل الاعتماد.'
+                     : 'Manual payment recording — confirm the amount was collected from the customer (cash or the branch card terminal) before approving.'}</span>
+                 </div>
+
                  {/* Order Summary */}
                  <div className="bg-gray-50 p-4 rounded-xl border border-gray-100">
                     <div className="flex justify-between items-center mb-2">

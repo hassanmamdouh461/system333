@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger';
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -55,7 +56,7 @@ export default function Inventory() {
       setMenuItems(menuData);
       setRecipes(recipeData);
     } catch (error) {
-      console.error('Failed to load inventory data:', error);
+      logger.error('Failed to load inventory data:', error);
     } finally {
       setLoading(false);
     }

@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger';
 import React, { useState, useMemo } from 'react';
 import { Order, OrderStatus, OrderItem } from '../types/order';
 import { OrderCard } from '../components/orders/OrderCard';
@@ -133,7 +134,7 @@ export default function Orders({ type = 'all' }: OrdersProps) {
         });
       }
     } catch (err) {
-      console.error('Failed to update order status:', err);
+      logger.error('Failed to update order status:', err);
       alert('Failed to update order status');
     }
   };

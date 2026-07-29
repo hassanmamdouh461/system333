@@ -112,7 +112,7 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
       {/* User Mini Profile */}
       <div className="p-4 border-t border-gray-800">
         <div className={clsx("flex items-center gap-3 p-2 rounded-lg bg-gray-800/50", (!isMobile && collapsed) && "justify-center")}>
-          <img 
+          <img loading="lazy"
             src="https://api.dicebear.com/7.x/avataaars/svg?seed=Felix" 
             alt="User" 
             className="w-8 h-8 rounded-full bg-gray-700"

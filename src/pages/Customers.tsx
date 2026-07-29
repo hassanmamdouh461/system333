@@ -1,3 +1,5 @@
+import { logger } from '../utils/logger';
+import { normalizeEgyptPhone } from '../utils/format';
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
@@ -46,7 +48,7 @@ export default function Customers() {
       const data = await customersService.getAll();
       setCustomers(data);
     } catch (err) {
-      console.error(err);
+      logger.error(err);
       setError(t('Failed to load customers'));
     } finally {
       setLoading(false);
@@ -76,11 +78,11 @@ export default function Customers() {
   // Handlers
   const handleAddCustomer = async (e: React.FormEvent) => {
     e.preventDefault();
-    const phone = newPhone.trim();
+    const phone = normalizeEgyptPhone(newPhone);
     const name = newName.trim() || 'Customer';
 
-    if (phone.length !== 11) {
-      alert(t('Phone number must be exactly 11 digits'));
+    if (!phone) {
+      alert(t('Enter a valid Egyptian mobile number (11 digits starting with 01)'));
       return;
     }
 
@@ -91,7 +93,7 @@ export default function Customers() {
       setNewName('');
       loadCustomers();
     } catch (err) {
-      console.error(err);
+      logger.error(err);
       alert(t('Failed to save customer'));
     }
   };
@@ -116,7 +118,7 @@ export default function Customers() {
       setSelectedCustomer(null);
       loadCustomers();
     } catch (err) {
-      console.error(err);
+      logger.error(err);
       alert(t('Failed to adjust points'));
     }
   };
@@ -128,7 +130,7 @@ export default function Customers() {
       await customersService.delete(customer.id);
       loadCustomers();
     } catch (err) {
-      console.error(err);
+      logger.error(err);
       alert(t('Failed to delete customer'));
     }
   };

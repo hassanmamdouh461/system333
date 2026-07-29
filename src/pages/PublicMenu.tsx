@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger';
 import React, { useState, useEffect } from 'react';
 import { Coffee, Search, AlertCircle, ArrowRight, ChevronLeft } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -169,7 +170,7 @@ export default function PublicMenu() {
         const categorizedItems = fetchedItems.map(smartCategorize);
         setItems(categorizedItems);
       } catch (err) {
-        console.error('Error fetching public menu:', err);
+        logger.error('Error fetching public menu:', err);
         setError('تعذر تحميل القائمة. يرجى المحاولة مرة أخرى.');
       } finally {
         setLoading(false);

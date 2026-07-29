@@ -1,3 +1,4 @@
+import { logger } from '../../utils/logger';
 import React, { useState } from 'react';
 import { X, Copy, Check, Printer, Download, QrCode } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -21,7 +22,7 @@ export function QrMenuModal({ isOpen, onClose }: QrMenuModalProps) {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch (err) {
-      console.error('Failed to copy link:', err);
+      logger.error('Failed to copy link:', err);
     }
   };
 
@@ -38,7 +39,7 @@ export function QrMenuModal({ isOpen, onClose }: QrMenuModalProps) {
       document.body.removeChild(a);
       window.URL.revokeObjectURL(url);
     } catch (error) {
-      console.error('Failed to download QR code:', error);
+      logger.error('Failed to download QR code:', error);
       // Fallback: open in new window for direct save
       window.open(qrCodeImageUrl, '_blank');
     }

@@ -1,3 +1,4 @@
+import { logger } from '../../utils/logger';
 import React, { useState, useEffect, useMemo } from 'react';
 import { X, Plus, Trash2, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
@@ -71,7 +72,7 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
           setMappedIngredients([]);
         }
       } catch (err) {
-        console.error('Failed to load recipe/inventory items:', err);
+        logger.error('Failed to load recipe/inventory items:', err);
       } finally {
         setLoading(false);
       }
@@ -180,7 +181,7 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
       
       onClose();
     } catch (err) {
-      console.error('Failed to save menu item:', err);
+      logger.error('Failed to save menu item:', err);
       alert(t('Failed to save item. Please try again.'));
     }
   };

@@ -1,3 +1,4 @@
+import { logger } from '../../utils/logger';
 import React, { useState, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { X, Plus, Minus, ShoppingBag, Search, Trash2 } from 'lucide-react';
@@ -66,7 +67,7 @@ export function NewOrderModal({ isOpen, onClose, menuItems, onSubmit }: NewOrder
       setActiveCategory('All');
       onClose();
     } catch (e) {
-      console.error('Failed to create order:', e);
+      logger.error('Failed to create order:', e);
       alert('Failed to create order. Please try again.');
     } finally {
       setIsSubmitting(false);

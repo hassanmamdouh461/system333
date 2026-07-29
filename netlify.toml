@@ -1,3 +1,9 @@
+# ─────────────────────────────────────────────────────────────
+# DECISION NEEDED (issue #77): this project currently carries BOTH
+# Netlify and Vercel configs. Pick ONE platform for the manager web
+# portal and delete the other file. The app uses HashRouter, so the
+# SPA redirects/rewrites below are not strictly required.
+# ─────────────────────────────────────────────────────────────
 [build]
   command = "npm run build"
   publish = "dist"

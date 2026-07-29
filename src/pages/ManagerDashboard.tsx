@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger';
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import {
@@ -407,7 +408,7 @@ export default function ManagerDashboard() {
             branch_id: row.branch_id
           }));
         } catch (d1Err) {
-          console.error('[ManagerDashboard] Failed to fetch analytics:', d1Err);
+          logger.error('[ManagerDashboard] Failed to fetch analytics:', d1Err);
           throw d1Err;
         }
       }
@@ -418,7 +419,7 @@ export default function ManagerDashboard() {
       setDbRecipes(recList);
       setIsDemoMode(false);
     } catch (err: any) {
-      console.warn("Cloud analytics fetch failed. Switching to demo fallback mode.", err);
+      logger.warn("Cloud analytics fetch failed. Switching to demo fallback mode.", err);
       setErrorInfo(err.message || "Network Timeout");
       
       // Load Dynamic Fallback orders
@@ -724,7 +725,7 @@ export default function ManagerDashboard() {
           });
         }
       } catch (e) {
-        console.error("Failed to parse order items JSON:", e);
+        logger.error("Failed to parse order items JSON:", e);
       }
     });
 

@@ -1,3 +1,4 @@
+import { logger } from '../../utils/logger';
 import React, { useState, useEffect } from 'react';
 import { Database, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import { menuService } from '../../services/menuService';
@@ -22,7 +23,7 @@ export function DatabaseStatus() {
         setStatus('connected');
         setLastChecked(new Date());
       } catch (error) {
-        console.error('SQLite connection error:', error);
+        logger.error('SQLite connection error:', error);
         setStatus('error');
         setLastChecked(new Date());
       }
@@ -41,7 +42,7 @@ export function DatabaseStatus() {
         setStatus('connected');
         setLastChecked(new Date());
       } catch (error) {
-        console.error('Cloud API connection error:', error);
+        logger.error('Cloud API connection error:', error);
         setStatus('error');
         setLastChecked(new Date());
       }

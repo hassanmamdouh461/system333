@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger';
 import { InventoryItem, InventoryTransaction, RecipeIngredient } from '../global';
 
 /**
@@ -11,7 +12,7 @@ export const inventoryService = {
     try {
       return await window.electronAPI.getInventory(branchId);
     } catch (error) {
-      console.error('[inventoryService] Error fetching inventory:', error);
+      logger.error('[inventoryService] Error fetching inventory:', error);
       throw new Error('Failed to fetch inventory');
     }
   },
@@ -23,7 +24,7 @@ export const inventoryService = {
     try {
       return await window.electronAPI.createInventoryItem(item);
     } catch (error) {
-      console.error('[inventoryService] Error creating inventory item:', error);
+      logger.error('[inventoryService] Error creating inventory item:', error);
       throw new Error('Failed to create inventory item');
     }
   },
@@ -35,7 +36,7 @@ export const inventoryService = {
     try {
       return await window.electronAPI.updateInventoryItem(id, data);
     } catch (error) {
-      console.error('[inventoryService] Error updating inventory item:', error);
+      logger.error('[inventoryService] Error updating inventory item:', error);
       throw new Error('Failed to update inventory item');
     }
   },
@@ -47,7 +48,7 @@ export const inventoryService = {
     try {
       await window.electronAPI.deleteInventoryItem(id);
     } catch (error) {
-      console.error('[inventoryService] Error deleting inventory item:', error);
+      logger.error('[inventoryService] Error deleting inventory item:', error);
       throw new Error('Failed to delete inventory item');
     }
   },
@@ -59,7 +60,7 @@ export const inventoryService = {
     try {
       return await window.electronAPI.getInventoryTransactions(itemId, branchId);
     } catch (error) {
-      console.error('[inventoryService] Error fetching transactions:', error);
+      logger.error('[inventoryService] Error fetching transactions:', error);
       throw new Error('Failed to fetch inventory transactions');
     }
   },
@@ -71,7 +72,7 @@ export const inventoryService = {
     try {
       return await window.electronAPI.createInventoryTransaction(tx);
     } catch (error) {
-      console.error('[inventoryService] Error creating stock transaction:', error);
+      logger.error('[inventoryService] Error creating stock transaction:', error);
       throw new Error('Failed to create stock transaction');
     }
   },
@@ -83,7 +84,7 @@ export const inventoryService = {
     try {
       return await window.electronAPI.getMenuRecipes();
     } catch (error) {
-      console.error('[inventoryService] Error fetching all recipes:', error);
+      logger.error('[inventoryService] Error fetching all recipes:', error);
       throw new Error('Failed to fetch recipes');
     }
   },
@@ -95,7 +96,7 @@ export const inventoryService = {
     try {
       return await window.electronAPI.getMenuItemRecipe(menuItemId);
     } catch (error) {
-      console.error('[inventoryService] Error fetching recipe for item:', menuItemId, error);
+      logger.error('[inventoryService] Error fetching recipe for item:', menuItemId, error);
       return [];
     }
   },
@@ -107,7 +108,7 @@ export const inventoryService = {
     try {
       return await window.electronAPI.saveMenuRecipe(menuItemId, ingredients);
     } catch (error) {
-      console.error('[inventoryService] Error saving recipe for item:', menuItemId, error);
+      logger.error('[inventoryService] Error saving recipe for item:', menuItemId, error);
       throw new Error('Failed to save item recipe');
     }
   },
@@ -119,7 +120,7 @@ export const inventoryService = {
     try {
       return await window.electronAPI.getRecipeCost(menuItemId);
     } catch (error) {
-      console.error('[inventoryService] Error getting recipe cost:', menuItemId, error);
+      logger.error('[inventoryService] Error getting recipe cost:', menuItemId, error);
       return 0;
     }
   }

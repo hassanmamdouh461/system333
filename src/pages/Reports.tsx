@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger';
 import React, { useState, useEffect, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
@@ -59,10 +60,10 @@ export default function Reports() {
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
 
   useEffect(() => {
-    customersService.getAll().then(setCustomers).catch(console.error);
-    inventoryService.getAll().then(setInventory).catch(console.error);
-    inventoryService.getMenuRecipes().then(setRecipes).catch(console.error);
-    menuService.getAll().then(setMenuItems).catch(console.error);
+    customersService.getAll().then(setCustomers).catch(logger.error);
+    inventoryService.getAll().then(setInventory).catch(logger.error);
+    inventoryService.getMenuRecipes().then(setRecipes).catch(logger.error);
+    menuService.getAll().then(setMenuItems).catch(logger.error);
   }, []);
 
   // Precompute average selling yield for each inventory item ID
