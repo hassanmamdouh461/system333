@@ -1,6 +1,15 @@
 /**
- * Cloudflare D1 Sync API Service
- * Replaces the Appwrite REST API with standard HTTP requests to our Cloudflare Worker Proxy.
+ * BrewMaster Cloud Sync API Service (v2)
+ * ─────────────────────────────────────────────────────────────
+ * Talks to the secure Cloudflare Worker endpoints (cloudflare/d1-proxy-worker.js):
+ *   • /sync/push               — batch upserts scoped to THIS branch's API key
+ *   • /sync/pull-orders        — incremental pull of this branch's orders
+ *   • /sync/delete-menu-item   — branch-scoped delete
+ *   • /analytics/*             — manager reads (JWT; used on the web portal)
+ *
+ * No raw SQL ever leaves this process. The branch API key is read from the
+ * OS-keychain-encrypted settings store (secure_worker_api_key) with a legacy
+ * plaintext fallback for upgrades.
  */
 
 const fs = require('fs');
@@ -8,9 +17,8 @@ const path = require('path');
 const https = require('https');
 const database = require('./database.cjs');
 
-// 1. Resolve Worker URL + API key from .env file or local database settings
+// 1. Resolve Worker URL from .env file or local database settings
 let WORKER_URL = "";
-let WORKER_API_KEY = "";
 try {
   const envPath = path.join(__dirname, '..', '.env');
   if (fs.existsSync(envPath)) {
@@ -19,22 +27,40 @@ try {
     if (urlMatch && urlMatch[1]) {
       WORKER_URL = urlMatch[1].trim();
     }
-    const keyMatch = envContent.match(/VITE_CF_WORKER_API_KEY\s*=\s*(.*)/);
-    if (keyMatch && keyMatch[1]) {
-      WORKER_API_KEY = keyMatch[1].trim();
-    }
   }
 } catch (e) {
-  console.error('[D1 Sync API] Failed to load .env file:', e.message);
+  console.error('[Cloud Sync API] Failed to load .env file:', e.message);
+}
+
+// Branch API key: encrypted secret store first, then legacy plaintext settings,
+// then .env fallback for old installs (to be rotated out).
+function getApiKey() {
+  try {
+    const secure = database.getSecret('secure_worker_api_key');
+    if (secure) return secure;
+  } catch (e) {}
+  try {
+    const settings = database.getSettings();
+    if (settings['brewmaster_d1_worker_api_key']) {
+      return settings['brewmaster_d1_worker_api_key'];
+    }
+  } catch (e) {}
+  try {
+    const envPath = path.join(__dirname, '..', '.env');
+    if (fs.existsSync(envPath)) {
+      const keyMatch = fs.readFileSync(envPath, 'utf8').match(/VITE_CF_WORKER_API_KEY\s*=\s*(.*)/);
+      if (keyMatch && keyMatch[1]) return keyMatch[1].trim();
+    }
+  } catch (e) {}
+  return "";
 }
 
 try {
-  const settings = database.getSettings();
-  if (!WORKER_URL && settings['brewmaster_d1_worker_url']) {
-    WORKER_URL = settings['brewmaster_d1_worker_url'];
-  }
-  if (!WORKER_API_KEY && settings['brewmaster_d1_worker_api_key']) {
-    WORKER_API_KEY = settings['brewmaster_d1_worker_api_key'];
+  if (!WORKER_URL) {
+    const settings = database.getSettings();
+    if (settings['brewmaster_d1_worker_url']) {
+      WORKER_URL = settings['brewmaster_d1_worker_url'];
+    }
   }
 } catch (e) {}
 
@@ -42,20 +68,22 @@ if (!WORKER_URL) {
   WORKER_URL = "https://api.engaz.tech"; // default: BrewMaster central API
 }
 
-console.log('[D1 Sync API] Configured Worker URL:', WORKER_URL);
+console.log('[Cloud Sync API] Configured Worker URL:', WORKER_URL);
 
 /**
  * Custom fetch implementation using standard Node.js https module
  */
-function fetchWorker(payload) {
+function fetchWorker(endpoint, payload, extraHeaders = {}) {
   return new Promise((resolve, reject) => {
-    if (!WORKER_URL || WORKER_URL.includes('your-username')) {
+    if (!WORKER_URL || WORKER_URL.includes('your-worker')) {
       return reject(new Error('Cloudflare Worker URL is not configured'));
     }
 
-    const parsedUrl = new URL(WORKER_URL);
-    const bodyStr = JSON.stringify(payload);
+    const base = WORKER_URL.replace(/\/+$/, '');
+    const parsedUrl = new URL(base + endpoint);
+    const bodyStr = JSON.stringify(payload || {});
 
+    const apiKey = getApiKey();
     const options = {
       hostname: parsedUrl.hostname,
       port: parsedUrl.port || 443,
@@ -64,7 +92,8 @@ function fetchWorker(payload) {
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(bodyStr),
-        ...(WORKER_API_KEY ? { 'X-API-Key': WORKER_API_KEY } : {})
+        ...(apiKey ? { 'X-API-Key': apiKey } : {}),
+        ...extraHeaders
       },
       timeout: 15000 // 15 seconds
     };
@@ -96,208 +125,116 @@ function fetchWorker(payload) {
   });
 }
 
-// ─── API Sync Methods ──────────────────────────────────────────────────────────
-
-async function pushMenuItems(items) {
-  if (items.length === 0) return { success: true };
-  console.log(`[D1 Sync API] Pushing ${items.length} menu items...`);
-
-  const batch = items.map(item => ({
-    sql: `INSERT OR REPLACE INTO menu_items (id, name, description, price, category, image, available, branch_id) 
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    params: [
-      item.id,
-      item.name,
-      item.description || "",
-      Number(item.price),
-      item.category,
-      item.image || "",
-      item.available ? 1 : 0,
-      item.branchId || item.branch_id || "branch_1"
-    ]
-  }));
-
-  const res = await fetchWorker({ batch });
+// ─── Sync push (table-scoped batch upserts) ──────────────────
+async function pushTable(table, records, label) {
+  if (!records || records.length === 0) return { success: true };
+  console.log(`[Cloud Sync API] Pushing ${records.length} ${label}...`);
+  const res = await fetchWorker('/sync/push', { table, records });
   if (!res.success) {
-    throw new Error(res.error || 'Failed to push menu items to D1');
+    throw new Error(res.error || `Failed to push ${label}`);
   }
   return { success: true };
+}
+
+async function pushMenuItems(items) {
+  return pushTable('menu_items', items.map(item => ({
+    id: item.id,
+    name: item.name,
+    description: item.description || "",
+    price: Number(item.price),
+    category: item.category,
+    image: item.image || "",
+    available: item.available ? 1 : 0
+  })), 'menu items');
 }
 
 async function pushOrders(orders) {
-  if (orders.length === 0) return { success: true };
-  console.log(`[D1 Sync API] Pushing ${orders.length} orders...`);
-
-  const batch = orders.map(order => ({
-    sql: `INSERT OR REPLACE INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, createdAt, paidAt, branch_id) 
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    params: [
-      order.id,
-      order.orderNumber,
-      order.tableId,
-      typeof order.items === 'string' ? order.items : JSON.stringify(order.items),
-      order.status,
-      order.paymentStatus || 'Unpaid',
-      order.paymentMethod || null,
-      Number(order.totalAmount),
-      order.createdAt,
-      order.paidAt || null,
-      order.branchId || order.branch_id || "branch_1"
-    ]
-  }));
-
-  const res = await fetchWorker({ batch });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to push orders to D1');
-  }
-  return { success: true };
+  return pushTable('orders', orders.map(order => ({
+    id: order.id,
+    orderNumber: order.orderNumber,
+    tableId: order.tableId,
+    items: typeof order.items === 'string' ? order.items : JSON.stringify(order.items),
+    status: order.status,
+    paymentStatus: order.paymentStatus || 'Unpaid',
+    paymentMethod: order.paymentMethod || null,
+    totalAmount: Number(order.totalAmount),
+    createdAt: order.createdAt,
+    paidAt: order.paidAt || null
+  })), 'orders');
 }
 
 async function pushCustomers(customers) {
-  if (customers.length === 0) return { success: true };
-  console.log(`[D1 Sync API] Pushing ${customers.length} customers...`);
-
-  const batch = customers.map(c => ({
-    sql: `INSERT OR REPLACE INTO customers (id, name, phone, points, createdAt, branch_id) 
-          VALUES (?, ?, ?, ?, ?, ?)`,
-    params: [
-      c.id,
-      c.name,
-      c.phone,
-      Number(c.points) || 0,
-      c.createdAt,
-      c.branchId || c.branch_id || "branch_1"
-    ]
-  }));
-
-  const res = await fetchWorker({ batch });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to push customers to D1');
-  }
-  return { success: true };
+  return pushTable('customers', customers.map(c => ({
+    id: c.id,
+    name: c.name,
+    phone: c.phone,
+    points: Number(c.points) || 0,
+    createdAt: c.createdAt
+  })), 'customers');
 }
 
 async function pushInventory(items) {
-  if (items.length === 0) return { success: true };
-  console.log(`[D1 Sync API] Pushing ${items.length} inventory items...`);
-
-  const batch = items.map(item => ({
-    sql: `INSERT OR REPLACE INTO inventory (id, name, unit, stock, minStock, costPerUnit, branch_id, created_at, updated_at) 
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    params: [
-      item.id,
-      item.name,
-      item.unit,
-      Number(item.stock) || 0,
-      Number(item.minStock) || 0,
-      Number(item.costPerUnit) || 0,
-      item.branchId || item.branch_id || "branch_1",
-      item.createdAt || new Date().toISOString(),
-      item.updatedAt || new Date().toISOString()
-    ]
-  }));
-
-  const res = await fetchWorker({ batch });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to push inventory to D1');
-  }
-  return { success: true };
+  return pushTable('inventory', items.map(item => ({
+    id: item.id,
+    name: item.name,
+    unit: item.unit,
+    stock: Number(item.stock) || 0,
+    minStock: Number(item.minStock) || 0,
+    costPerUnit: Number(item.costPerUnit) || 0,
+    created_at: item.created_at || item.createdAt || new Date().toISOString(),
+    updated_at: item.updated_at || item.updatedAt || new Date().toISOString()
+  })), 'inventory items');
 }
 
-async function pullOrders() {
-  console.log('[D1 Sync API] Pulling orders from D1...');
-  const res = await fetchWorker({
-    sql: "SELECT * FROM orders ORDER BY createdAt DESC LIMIT 1000"
-  });
-
+// ─── Incremental pull of this branch's orders ────────────────
+async function pullOrders(since) {
+  console.log('[Cloud Sync API] Pulling orders from cloud...');
+  const res = await fetchWorker('/sync/pull-orders', since ? { since } : {});
   if (!res.success) {
-    throw new Error(res.error || 'Failed to pull orders from D1');
+    throw new Error(res.error || 'Failed to pull orders');
   }
-
-  // D1 query response: results is under res.result[0].results
-  const rows = res.result[0]?.results || [];
-  
-  // Map back to Appwrite document structure format expected by upsertPulledOrders
+  const rows = res.result || [];
   return rows.map(row => ({
-    $id: row.id,
-    $createdAt: row.createdAt,
-    $updatedAt: row.createdAt, // fallback to createdAt since D1 orders doesn't have updated_at
-    total_amount: Number(row.totalAmount),
-    payment_method: row.paymentMethod || 'Cash',
-    items: row.items, // JSON string
+    id: row.id,
+    orderNumber: row.orderNumber,
+    tableId: row.tableId,
+    items: row.items,
+    status: row.status,
+    paymentStatus: row.paymentStatus,
+    paymentMethod: row.paymentMethod,
+    totalAmount: Number(row.totalAmount),
+    createdAt: row.createdAt,
+    paidAt: row.paidAt,
     branch_id: row.branch_id
   }));
 }
 
 async function deleteMenuItem(id) {
-  console.log(`[D1 Sync API] Deleting menu item ${id}...`);
-  const res = await fetchWorker({
-    sql: "DELETE FROM menu_items WHERE id = ?",
-    params: [id]
-  });
-  if (!res.success) {
-    console.error(`[D1 Sync API] Failed to delete menu item ${id}:`, res.error);
+  console.log(`[Cloud Sync API] Deleting menu item ${id}...`);
+  try {
+    const res = await fetchWorker('/sync/delete-menu-item', { id });
+    if (!res.success) {
+      console.error(`[Cloud Sync API] Failed to delete menu item ${id}:`, res.error);
+    }
+  } catch (e) {
+    console.error(`[Cloud Sync API] Delete request failed for ${id}:`, e.message);
   }
 }
 
-async function getManagerOrders() {
-  console.log('[D1 Sync API] Manager fetching all orders...');
-  const res = await fetchWorker({
-    sql: "SELECT * FROM orders ORDER BY createdAt DESC LIMIT 1000"
-  });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to fetch manager orders');
+// ─── Last-pull watermark (incremental sync) ──────────────────
+function getLastPullAt() {
+  try {
+    const settings = database.getSettings();
+    return settings['sync_last_pull_at'] || null;
+  } catch (e) {
+    return null;
   }
-  const rows = res.result[0]?.results || [];
-  return rows.map(row => ({
-    $id: row.id,
-    $createdAt: row.createdAt,
-    $updatedAt: row.createdAt,
-    total_amount: Number(row.totalAmount),
-    payment_method: row.paymentMethod || 'Cash',
-    items: row.items,
-    branch_id: row.branch_id
-  }));
 }
 
-async function getManagerCustomers() {
-  console.log('[D1 Sync API] Manager fetching all customers...');
-  const res = await fetchWorker({
-    sql: "SELECT * FROM customers ORDER BY createdAt DESC LIMIT 1000"
-  });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to fetch manager customers');
-  }
-  const rows = res.result[0]?.results || [];
-  return rows.map(row => ({
-    $id: row.id,
-    $createdAt: row.createdAt,
-    $updatedAt: row.createdAt,
-    name: row.name,
-    phone: row.phone,
-    points: Number(row.points),
-    branchId: row.branch_id
-  }));
-}
-
-async function getManagerInventory() {
-  console.log('[D1 Sync API] Manager fetching all inventory...');
-  const res = await fetchWorker({
-    sql: "SELECT * FROM inventory ORDER BY name ASC LIMIT 1000"
-  });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to fetch manager inventory');
-  }
-  const rows = res.result[0]?.results || [];
-  return rows.map(row => ({
-    $id: row.id,
-    name: row.name,
-    unit: row.unit,
-    stock: Number(row.stock),
-    minStock: Number(row.minStock),
-    costPerUnit: Number(row.costPerUnit),
-    branch_id: row.branch_id
-  }));
+function setLastPullAt(isoTimestamp) {
+  try {
+    database.saveSetting('sync_last_pull_at', isoTimestamp);
+  } catch (e) {}
 }
 
 module.exports = {
@@ -307,7 +244,6 @@ module.exports = {
   pushInventory,
   pullOrders,
   deleteMenuItem,
-  getManagerOrders,
-  getManagerCustomers,
-  getManagerInventory
+  getLastPullAt,
+  setLastPullAt
 };

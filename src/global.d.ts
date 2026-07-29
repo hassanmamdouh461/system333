@@ -146,6 +146,23 @@ declare global {
       
       getManagerOrders: () => Promise<any[]>;
       getManagerCustomers: () => Promise<any[]>;
+
+      // Auth APIs
+      authLogin: (email: string, password: string) => Promise<{
+        token: string;
+        user: { id: string; name: string; email: string; role: 'admin' | 'staff' | 'manager' };
+        branch: { branchId: string; branchName: string };
+        mustChangePassword: boolean;
+      }>;
+      authValidateToken: (token: string) => Promise<{
+        user: { id: string; name: string; email: string; role: 'admin' | 'staff' | 'manager' };
+        branch: { branchId: string; branchName: string };
+      } | null>;
+      authChangePassword: (token: string, currentPassword: string, newPassword: string) => Promise<{ success: boolean }>;
+
+      // Secret settings APIs (OS-keychain encrypted at rest)
+      getSecret: (key: string) => Promise<string | null>;
+      saveSecret: (key: string, value: string) => Promise<void>;
     };
   }
 }

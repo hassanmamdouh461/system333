@@ -22,18 +22,39 @@ export function TelegramConfigModal({ isOpen, onClose }: TelegramConfigModalProp
 
   useEffect(() => {
     if (isOpen) {
-      const config = getTelegramConfig();
-      setBotToken(config.botToken);
-      setChatId(config.chatId);
-      setReportTime(config.reportTime);
-      setEnabled(config.enabled);
-      setSuccess(false);
-      setTestSuccess(false);
-      setError('');
+      const loadConfig = async () => {
+        // Prefer the OS-keychain-encrypted secret store (Electron); fall back
+        // to the legacy localStorage copy for upgrades.
+        if (window.electronAPI && typeof window.electronAPI.getSecret === 'function') {
+          try {
+            const raw = await window.electronAPI.getSecret('secure_telegram_config');
+            if (raw) {
+              const config = { ...getTelegramConfig(), ...JSON.parse(raw) };
+              setBotToken(config.botToken);
+              setChatId(config.chatId);
+              setReportTime(config.reportTime);
+              setEnabled(config.enabled);
+              setSuccess(false);
+              setTestSuccess(false);
+              setError('');
+              return;
+            }
+          } catch {}
+        }
+        const config = getTelegramConfig();
+        setBotToken(config.botToken);
+        setChatId(config.chatId);
+        setReportTime(config.reportTime);
+        setEnabled(config.enabled);
+        setSuccess(false);
+        setTestSuccess(false);
+        setError('');
+      };
+      loadConfig();
     }
   }, [isOpen]);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setError('');
     setSuccess(false);
 
@@ -48,12 +69,32 @@ export function TelegramConfigModal({ isOpen, onClose }: TelegramConfigModalProp
       }
     }
 
-    setTelegramConfig({
+    const configJson = JSON.stringify({
       botToken: botToken.trim(),
       chatId: chatId.trim(),
       reportTime: reportTime.trim(),
       enabled: enabled,
     });
+
+    // Store encrypted via safeStorage when running under Electron; otherwise
+    // fall back to the legacy localStorage path (web manager portal).
+    if (window.electronAPI && typeof window.electronAPI.saveSecret === 'function') {
+      try {
+        await window.electronAPI.saveSecret('secure_telegram_config', configJson);
+        // Remove any legacy plaintext copy so the token no longer sits in localStorage
+        localStorage.removeItem('brewmaster_telegram_config');
+      } catch (e: any) {
+        setError(e.message || 'Failed to save configuration securely');
+        return;
+      }
+    } else {
+      setTelegramConfig({
+        botToken: botToken.trim(),
+        chatId: chatId.trim(),
+        reportTime: reportTime.trim(),
+        enabled: enabled,
+      });
+    }
 
     setSuccess(true);
     setTimeout(() => {

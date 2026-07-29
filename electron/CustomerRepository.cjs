@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const database = require('./database.cjs');
 
 class CustomerRepository {
@@ -54,7 +55,7 @@ class CustomerRepository {
       );
       return this.getCustomerByPhone(customer.phone);
     } else {
-      const id = customer.id || `cust-${Math.random().toString(36).substr(2, 9)}`;
+      const id = customer.id || `cust-${crypto.randomUUID()}`;
       const createdAt = customer.createdAt || now;
       const branchId = customer.branchId || this.getBranchId();
       sqlite.prepare('INSERT INTO customers (id, name, phone, points, createdAt, branch_id, is_synced, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)')

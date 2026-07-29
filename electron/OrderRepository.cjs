@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const database = require('./database.cjs');
 
 class OrderRepository {
@@ -70,7 +71,7 @@ class OrderRepository {
 
   createOrder(order) {
     const sqlite = this.getDb();
-    const id = order.id || `ord-${Math.random().toString(36).substr(2, 9)}`;
+    const id = order.id || `ord-${crypto.randomUUID()}`;
     const createdAt = order.createdAt || new Date().toISOString();
     const now = new Date().toISOString();
     const branchId = order.branchId || this.getBranchId();
@@ -216,7 +217,7 @@ class OrderRepository {
       
       const created = [];
       for (const order of orders) {
-        const id = order.id || `ord-${Math.random().toString(36).substr(2, 9)}`;
+        const id = order.id || `ord-${crypto.randomUUID()}`;
         const createdAt = order.createdAt || now;
         insert.run(
           id,
@@ -291,6 +292,8 @@ class OrderRepository {
     const sqlite = this.getDb();
     const branchId = this.getBranchId();
 
+    // Upsert pulled orders while preserving their REAL field values.
+    // Never overwrite a local record that has unsynced local changes.
     const insert = sqlite.prepare(`
       INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, createdAt, paidAt, branch_id, is_synced, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)
@@ -302,13 +305,10 @@ class OrderRepository {
         items = excluded.items,
         branch_id = excluded.branch_id,
         updated_at = excluded.updated_at
+      WHERE orders.is_synced = 1
     `);
 
     const runTx = sqlite.transaction((orders) => {
-      // Sort orders by $createdAt ascending to assign sequential order numbers
-      orders.sort((a, b) => new Date(a.$createdAt).getTime() - new Date(b.$createdAt).getTime());
-
-      let i = 1;
       for (const order of orders) {
         const orderBranchId = order.branch_id || 'default';
         // Filter by branch_id if we are logged in as a specific branch (manager sees all)
@@ -316,26 +316,26 @@ class OrderRepository {
           continue;
         }
 
-        const id = order.$id;
-        const createdAt = order.$createdAt;
-        const updatedAt = order.$updatedAt;
-        const totalAmount = Number(order.total_amount) || 0;
-        const paymentMethod = order.payment_method || 'Cash';
-        const items = order.items; // JSON string
+        const id = order.id || order.$id;
+        const createdAt = order.createdAt || order.$createdAt;
+        const updatedAt = order.updatedAt || order.updated_at || createdAt;
+        const totalAmount = Number(order.totalAmount ?? order.total_amount) || 0;
+        const paymentMethod = order.paymentMethod || order.payment_method || null;
+        const items = typeof order.items === 'string' ? order.items : JSON.stringify(order.items || []);
 
-        const orderNumber = String(i++);
-
+        // Preserve the real values coming from the cloud — never renumber
+        // or force status/payment onto pulled orders.
         insert.run(
           id,
-          orderNumber,
-          'Takeaway', // default
+          order.orderNumber || '',
+          order.tableId || 'Takeaway',
           items,
-          'Ready', // status
-          'Paid', // paymentStatus
+          order.status || 'New',
+          order.paymentStatus || 'Unpaid',
           paymentMethod,
           totalAmount,
           createdAt,
-          createdAt, // paidAt
+          order.paidAt || null,
           orderBranchId,
           updatedAt
         );
