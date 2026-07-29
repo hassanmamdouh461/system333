@@ -1,6 +1,16 @@
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  // Auth APIs
+  authLogin: (email, password) => ipcRenderer.invoke('auth:login', email, password),
+  authValidateToken: (token) => ipcRenderer.invoke('auth:validate-token', token),
+  authChangePassword: (token, currentPassword, newPassword) =>
+    ipcRenderer.invoke('auth:change-password', token, currentPassword, newPassword),
+
+  // Secret settings APIs (OS-keychain encrypted at rest)
+  getSecret: (key) => ipcRenderer.invoke('secrets:get', key),
+  saveSecret: (key, value) => ipcRenderer.invoke('secrets:save', key, value),
+
   getMenu: () => ipcRenderer.invoke('db:get-menu'),
   createMenuItem: (item) => ipcRenderer.invoke('db:create-menu-item', item),
   updateMenuItem: (id, data) => ipcRenderer.invoke('db:update-menu-item', id, data),

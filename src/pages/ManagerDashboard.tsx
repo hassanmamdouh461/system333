@@ -19,7 +19,7 @@ interface OrderItem {
   price: number;
 }
 
-interface AppwriteOrderDoc {
+interface CloudOrderDoc {
   $id: string;
   $createdAt: string;
   branch_id: string;
@@ -101,7 +101,7 @@ function inPeriod(dateStr: string, period: AnalyticsPeriod): boolean {
 }
 
 // ─── Dynamic Mock Data Generator (Fallback) ───────────────────────────────────
-const generateMockOrders = (): AppwriteOrderDoc[] => {
+const generateMockOrders = (): CloudOrderDoc[] => {
   const now = new Date();
   
   // Custom items list to randomly pick from
@@ -322,7 +322,7 @@ export default function ManagerDashboard() {
   const [customerSearchTerm, setCustomerSearchTerm] = useState('');
 
   // Data Fetching State
-  const [orders, setOrders] = useState<AppwriteOrderDoc[]>([]);
+  const [orders, setOrders] = useState<CloudOrderDoc[]>([]);
   const [customers, setCustomers] = useState<any[]>([]);
   const [dbInventory, setDbInventory] = useState<any[]>([]);
   const [dbRecipes, setDbRecipes] = useState<any[]>([]);
@@ -332,12 +332,8 @@ export default function ManagerDashboard() {
 
   const taxRate = getTaxRate();
 
-  // ── Fetch orders and customers from Appwrite ──
-  // Uses Electron IPC when running as desktop app, direct REST fetch when in browser
-  const APPWRITE_ENDPOINT = 'https://fra.cloud.appwrite.io/v1';
-  const APPWRITE_PROJECT = '69879ae70002444f3f38';
-  const APPWRITE_DB = '6a545eb00016d126bc82';
-
+  // ── Fetch orders and customers from the cloud ──
+  // Uses Electron IPC when running as desktop app, authenticated REST API when in browser
   const fetchOrders = async () => {
     setLoading(true);
     setErrorInfo(null);
@@ -358,30 +354,27 @@ export default function ManagerDashboard() {
           recList = await window.electronAPI.getMenuRecipes();
         }
       } else {
-        // Browser — query Cloudflare D1 instead of Appwrite
+        // Browser — authenticated manager analytics API (no raw SQL, no shared keys)
         const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech';
-        const workerApiKey = import.meta.env.VITE_CF_WORKER_API_KEY || '';
-        
-        const executeD1Query = async (sql: string, params: any[] = []) => {
-          const res = await fetch(workerUrl, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
-            },
-            body: JSON.stringify({ sql, params })
+        const authToken = sessionStorage.getItem('auth_token') || localStorage.getItem('auth_token') || '';
+        if (!authToken) throw new Error('Not authenticated — please log in again');
+
+        const authedGet = async (endpoint: string) => {
+          const res = await fetch(`${workerUrl.replace(/\/+$/, '')}${endpoint}`, {
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${authToken}` }
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
           const data = await res.json();
-          if (!data.success) throw new Error(data.error || 'D1 query failed');
-          return data.result[0]?.results || [];
+          if (!data.success) throw new Error(data.error || 'Analytics query failed');
+          return data.result || [];
         };
 
         try {
           const [d1Orders, d1Customers, d1Inventory] = await Promise.all([
-            executeD1Query('SELECT * FROM orders ORDER BY createdAt DESC LIMIT 1000'),
-            executeD1Query('SELECT * FROM customers ORDER BY createdAt DESC LIMIT 1000'),
-            executeD1Query('SELECT * FROM inventory ORDER BY name ASC LIMIT 1000')
+            authedGet('/analytics/orders'),
+            authedGet('/analytics/customers'),
+            authedGet('/analytics/inventory')
           ]);
 
           ordersList = d1Orders.map((row: any) => ({
@@ -414,7 +407,7 @@ export default function ManagerDashboard() {
             branch_id: row.branch_id
           }));
         } catch (d1Err) {
-          console.error('[ManagerDashboard] Failed to fetch data from D1:', d1Err);
+          console.error('[ManagerDashboard] Failed to fetch analytics:', d1Err);
           throw d1Err;
         }
       }
@@ -425,7 +418,7 @@ export default function ManagerDashboard() {
       setDbRecipes(recList);
       setIsDemoMode(false);
     } catch (err: any) {
-      console.warn("Appwrite central database fetch failed. Switching to demo fallback mode.", err);
+      console.warn("Cloud analytics fetch failed. Switching to demo fallback mode.", err);
       setErrorInfo(err.message || "Network Timeout");
       
       // Load Dynamic Fallback orders
@@ -778,7 +771,7 @@ export default function ManagerDashboard() {
       .sort((a, b) => new Date(b.$createdAt).getTime() - new Date(a.$createdAt).getTime())
       .slice(0, 5);
 
-    // 11. Real Loyalty values from Appwrite database
+    // 11. Real Loyalty values from the cloud database
     const branchCustomers = customers.filter(c => {
       if (selectedBranch === 'all') return true;
       return c.branchId === selectedBranch;
@@ -1136,7 +1129,7 @@ export default function ManagerDashboard() {
       {/* ── Header Area with Live Status & Filters ─────────────────────────────────── */}
       <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4 bg-white/50 backdrop-blur-md p-4 rounded-2xl border border-gray-200/40 shadow-sm relative z-30">
         
-        {/* Title and Appwrite Sync Connection Badge */}
+        {/* Title and Cloud Sync Connection Badge */}
         <div className="space-y-1.5 flex-1 min-w-0">
           <div className="flex flex-wrap items-center gap-3">
             <h1 className="text-xl md:text-2xl font-black text-gray-900 tracking-tight">

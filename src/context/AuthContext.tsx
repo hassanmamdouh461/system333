@@ -1,15 +1,15 @@
 import React, { createContext, useContext, useState, ReactNode } from 'react';
-import { getBranchConfig, setBranchConfig } from '../utils/settingsConfig';
 
+// ─── Storage keys ────────────────────────────────────────────────────────────
 const LS_EMAIL_KEY = 'brewmaster_remembered_email';
-const LS_SESSION_KEY  = 'auth_session';
+const LS_SESSION_KEY = 'auth_session'; // legacy display snapshot (user + branch only)
+const LS_TOKEN_KEY = 'auth_token';     // HMAC-signed session token (Electron) / JWT (web)
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface BranchSession {
-  branchId: string;    // UUID identifying which branch this POS belongs to
-  branchName: string;  // Display name (e.g., "Downtown Branch")
-  authToken: string;   // Placeholder token for future server-side auth
+  branchId: string;
+  branchName: string;
 }
 
 export interface User {
@@ -25,6 +25,9 @@ interface AuthContextType {
   login: (email: string, password: string, rememberMe?: boolean) => Promise<User>;
   logout: () => void;
   isAuthenticated: boolean;
+  authToken: string | null;
+  mustChangePassword: boolean;
+  changePassword: (currentPassword: string, newPassword: string) => Promise<void>;
 }
 
 interface StoredSession {
@@ -32,159 +35,151 @@ interface StoredSession {
   branch: BranchSession;
 }
 
-export const BRANCH_ACCOUNTS = [
-  {
-    branchId: 'branch_1',
-    branchName: 'فرع المعادي (فرع 1)',
-    branchNameEn: 'Maadi Branch (Branch 1)',
-    email: 'branch1@system.com',
-    password: '123',
-    role: 'admin' as const
-  },
-  {
-    branchId: 'branch_2',
-    branchName: 'فرع مصر الجديدة (فرع 2)',
-    branchNameEn: 'Heliopolis Branch (Branch 2)',
-    email: 'branch2@system.com',
-    password: '123',
-    role: 'admin' as const
-  },
-  {
-    branchId: 'branch_3',
-    branchName: 'فرع الزمالك (فرع 3)',
-    branchNameEn: 'Zamalek Branch (Branch 3)',
-    email: 'branch3@system.com',
-    password: '123',
-    role: 'admin' as const
-  },
-  {
-    branchId: 'manager',
-    branchName: 'الإدارة العامة',
-    branchNameEn: 'General Management',
-    email: 'manager@system.com',
-    password: '123',
-    role: 'manager' as const
-  }
-];
-
 // ─── Context ──────────────────────────────────────────────────────────────────
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+function isElectron(): boolean {
+  return typeof window !== 'undefined' && !!window.electronAPI && typeof window.electronAPI.authLogin === 'function';
+}
+
+function getWorkerUrl(): string {
+  return (import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech').replace(/\/+$/, '');
+}
+
+function readStoredToken(): string | null {
+  try {
+    // Session-first: sessionStorage survives refresh but dies with the app;
+    // localStorage is only used when the user chose "remember me".
+    return sessionStorage.getItem(LS_TOKEN_KEY) || localStorage.getItem(LS_TOKEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function readStoredSession(): StoredSession | null {
+  try {
+    const raw = sessionStorage.getItem(LS_SESSION_KEY) || localStorage.getItem(LS_SESSION_KEY);
+    return raw ? (JSON.parse(raw) as StoredSession) : null;
+  } catch {
+    return null;
+  }
+}
+
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
 export function AuthProvider({ children }: { children: ReactNode }) {
-  // ── Synchronous init: restore session from storage on page load/refresh ──
-  const [session, setSession] = useState<StoredSession | null>(() => {
-    try {
-      const saved =
-        localStorage.getItem(LS_SESSION_KEY) ||
-        sessionStorage.getItem(LS_SESSION_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved) as StoredSession;
-        // Validate it has the new structure
-        if (parsed.user && parsed.branch) return parsed;
-        // Legacy format (just User object) — clear it
-        localStorage.removeItem(LS_SESSION_KEY);
-        sessionStorage.removeItem(LS_SESSION_KEY);
-      }
-      return null;
-    } catch {
-      return null;
-    }
-  });
+  // Restore session snapshot + token on page load/refresh
+  const [session, setSession] = useState<StoredSession | null>(() => readStoredSession());
+  const [authToken, setAuthToken] = useState<string | null>(() => readStoredToken());
+  const [mustChangePassword, setMustChangePassword] = useState<boolean>(false);
 
-  const login = async (email: string, password: string, rememberMe?: boolean) => {
-    await new Promise(resolve => setTimeout(resolve, 800));
-
-    // ── Validate against branch account credentials ──
-    const targetEmail = email.trim().toLowerCase();
-    const matchedAccount = BRANCH_ACCOUNTS.find(
-      acc => acc.email.toLowerCase() === targetEmail && acc.password === password
-    );
-
-    if (!matchedAccount) {
-      throw new Error('Invalid email or password');
+  const login = async (email: string, password: string, rememberMe = false): Promise<User> => {
+    if (isElectron()) {
+      // ── Desktop: verify against local SQLite users table (scrypt hashes) ──
+      const result = await window.electronAPI.authLogin(email.trim(), password);
+      const next: StoredSession = {
+        user: { id: result.user.id, name: result.user.name, email: result.user.email, role: result.user.role },
+        branch: { branchId: result.branch.branchId, branchName: result.branch.branchName },
+      };
+      applySession(next, result.token, Boolean(result.mustChangePassword), rememberMe, email);
+      return next.user;
     }
 
-    // ── Enforce environment restrictions ──
-    const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
-    if (isElectron && matchedAccount.role === 'manager') {
-      throw new Error(
-        localStorage.getItem('brewmaster_lang') === 'ar'
-          ? 'حساب المدير يمكنه تسجيل الدخول فقط من خلال موقع الإدارة الإلكتروني (الويب).'
-          : 'Manager account can only log in through the online management portal (Web).'
-      );
-    }
-
-    if (!isElectron && matchedAccount.role !== 'manager') {
-      throw new Error(
-        localStorage.getItem('brewmaster_lang') === 'ar'
-          ? 'حسابات الفروع يمكنها تسجيل الدخول فقط من خلال برنامج الكاشير المكتبي (Desktop POS).'
-          : 'Branch accounts can only log in through the desktop POS application.'
-      );
-    }
-
-    // ── Build user & branch session ──
-    const userData: User = {
-      id: matchedAccount.branchId,
-      name: matchedAccount.branchNameEn,
-      email: matchedAccount.email,
-      role: matchedAccount.role,
-    };
-
-    const branchSession: BranchSession = {
-      branchId: matchedAccount.branchId,
-      branchName: matchedAccount.branchNameEn,
-      authToken: `local-${crypto.randomUUID?.() || Math.random().toString(36).substr(2, 16)}`,
-    };
-
-    const sessionData: StoredSession = { user: userData, branch: branchSession };
-
-    // ── Persist branch_id to settings so database.cjs picks it up ──
-    setBranchConfig({
-      branchId: matchedAccount.branchId,
-      branchName: matchedAccount.branchNameEn,
-      email: matchedAccount.email,
-      password: matchedAccount.password,
+    // ── Web (manager portal): verify against the cloud auth API ──
+    const res = await fetch(`${getWorkerUrl()}/auth/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email.trim(), password }),
     });
-
-    if (rememberMe) {
-      // Persist across browser restarts
-      localStorage.setItem(LS_SESSION_KEY, JSON.stringify(sessionData));
-      localStorage.setItem(LS_EMAIL_KEY, email.trim());
-      sessionStorage.removeItem(LS_SESSION_KEY);
-    } else {
-      // Persist only for the current tab/session
-      sessionStorage.setItem(LS_SESSION_KEY, JSON.stringify(sessionData));
-      localStorage.removeItem(LS_SESSION_KEY);
-      localStorage.removeItem(LS_EMAIL_KEY);
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      throw new Error(data.error || 'Invalid credentials');
     }
+    const next: StoredSession = {
+      user: { id: data.user.id, name: data.user.name, email: data.user.email, role: data.user.role },
+      branch: { branchId: data.user.branchId, branchName: data.user.branchName },
+    };
+    applySession(next, data.token, Boolean(data.user.mustChangePassword), rememberMe, email);
+    return next.user;
+  };
 
-    setSession(sessionData);
-    return userData;
+  const applySession = (
+    next: StoredSession,
+    token: string,
+    mustChange: boolean,
+    rememberMe: boolean,
+    email: string
+  ) => {
+    setSession(next);
+    setAuthToken(token);
+    setMustChangePassword(mustChange);
+
+    // Clear both stores first, then write to the right one
+    try {
+      localStorage.removeItem(LS_SESSION_KEY);
+      localStorage.removeItem(LS_TOKEN_KEY);
+      sessionStorage.removeItem(LS_SESSION_KEY);
+      sessionStorage.removeItem(LS_TOKEN_KEY);
+
+      const store = rememberMe ? localStorage : sessionStorage;
+      store.setItem(LS_SESSION_KEY, JSON.stringify(next));
+      store.setItem(LS_TOKEN_KEY, token);
+
+      if (rememberMe) {
+        localStorage.setItem(LS_EMAIL_KEY, email.trim());
+      } else {
+        localStorage.removeItem(LS_EMAIL_KEY);
+      }
+    } catch {
+      // Storage unavailable (private mode) — session lives in memory only
+    }
+  };
+
+  const changePassword = async (currentPassword: string, newPassword: string): Promise<void> => {
+    const token = readStoredToken();
+    if (!token) throw new Error('Session expired — please log in again');
+
+    if (isElectron()) {
+      await window.electronAPI.authChangePassword(token, currentPassword, newPassword);
+    } else {
+      const res = await fetch(`${getWorkerUrl()}/auth/change-password`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${token}` },
+        body: JSON.stringify({ currentPassword, newPassword }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || 'Password change failed');
+      }
+    }
+    setMustChangePassword(false);
   };
 
   const logout = () => {
-    localStorage.removeItem(LS_SESSION_KEY);
-    localStorage.removeItem(LS_EMAIL_KEY);
-    sessionStorage.removeItem(LS_SESSION_KEY);
+    try {
+      sessionStorage.removeItem(LS_SESSION_KEY);
+      sessionStorage.removeItem(LS_TOKEN_KEY);
+      localStorage.removeItem(LS_SESSION_KEY);
+      localStorage.removeItem(LS_TOKEN_KEY);
+    } catch {}
     setSession(null);
+    setAuthToken(null);
+    setMustChangePassword(false);
   };
 
-  return (
-    <AuthContext.Provider
-      value={{
-        user: session?.user ?? null,
-        branch: session?.branch ?? null,
-        login,
-        logout,
-        isAuthenticated: !!session,
-      }}
-    >
-      {children}
-    </AuthContext.Provider>
-  );
+  const value: AuthContextType = {
+    user: session?.user ?? null,
+    branch: session?.branch ?? null,
+    login,
+    logout,
+    isAuthenticated: !!session && !!authToken,
+    authToken,
+    mustChangePassword,
+    changePassword,
+  };
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 // ─── Hook ─────────────────────────────────────────────────────────────────────

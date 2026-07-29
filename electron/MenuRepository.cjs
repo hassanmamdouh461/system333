@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const database = require('./database.cjs');
 
 class MenuRepository {
@@ -29,7 +30,7 @@ class MenuRepository {
 
   createMenuItem(item) {
     const sqlite = this.getDb();
-    const id = item.id || `menu-${Math.random().toString(36).substr(2, 9)}`;
+    const id = item.id || `menu-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const branchId = item.branchId || this.getBranchId();
 
@@ -102,14 +103,14 @@ class MenuRepository {
     const sqlite = this.getDb();
     sqlite.prepare('DELETE FROM menu WHERE id = ?').run(id);
     
-    // Try to delete from Appwrite database immediately
+    // Try to delete from the cloud database immediately
     try {
       const mockApi = require('./mockApiService.cjs');
       mockApi.deleteMenuItem(id).catch(err => {
-        console.warn('[MenuRepository] Async delete from Appwrite failed:', err.message);
+        console.warn('[MenuRepository] Async cloud delete failed:', err.message);
       });
     } catch (e) {
-      console.warn('[MenuRepository] Failed to initiate Appwrite delete:', e.message);
+      console.warn('[MenuRepository] Failed to initiate cloud delete:', e.message);
     }
   }
 
@@ -127,7 +128,7 @@ class MenuRepository {
       
       const created = [];
       for (const item of items) {
-        const id = item.id || `menu-${Math.random().toString(36).substr(2, 9)}`;
+        const id = item.id || `menu-${crypto.randomUUID()}`;
         insert.run(
           id,
           item.name,

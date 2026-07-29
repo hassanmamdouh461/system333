@@ -102,6 +102,22 @@ function initDatabase() {
     )
   `).run();
 
+  // Create users table for local authentication (scrypt-hashed passwords)
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      email TEXT UNIQUE NOT NULL,
+      name TEXT,
+      role TEXT NOT NULL,
+      branch_id TEXT,
+      branch_name TEXT,
+      password_hash TEXT NOT NULL,
+      password_salt TEXT NOT NULL,
+      must_change_password INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT
+    )
+  `).run();
+
   // Create inventory tables
   db.prepare(`
     CREATE TABLE IF NOT EXISTS inventory (
@@ -657,6 +673,64 @@ function getSyncStats() {
   }
 }
 
+// --- Secret settings (encrypted at rest via Electron safeStorage) ---
+// Secrets (Telegram bot token, worker API key, ...) are stored AES-encrypted
+// by the OS keychain when safeStorage is available. Values are stored as
+// "v1:<base64 ciphertext>". Legacy plaintext values are transparently
+// re-encrypted on first read and migrated to the secure_* keys.
+const SECRET_PREFIX = 'v1:';
+
+function saveSecret(key, plaintext) {
+  const sqlite = getDb();
+  try {
+    const { safeStorage } = require('electron');
+    if (safeStorage && safeStorage.isEncryptionAvailable()) {
+      const encrypted = safeStorage.encryptString(String(plaintext)).toString('base64');
+      sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, SECRET_PREFIX + encrypted);
+    } else {
+      // OS keychain unavailable (rare Linux setups) — store plaintext but flag it
+      console.warn('[database] safeStorage unavailable; storing secret without encryption for key:', key);
+      sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, String(plaintext));
+    }
+  } catch (e) {
+    console.error('[database] Failed to save secret:', e);
+  }
+}
+
+function getSecret(key) {
+  const sqlite = getDb();
+  try {
+    const row = sqlite.prepare('SELECT value FROM settings WHERE key = ?').get(key);
+    if (!row) return null;
+    if (typeof row.value === 'string' && row.value.startsWith(SECRET_PREFIX)) {
+      const { safeStorage } = require('electron');
+      if (safeStorage) {
+        return safeStorage.decryptString(Buffer.from(row.value.slice(SECRET_PREFIX.length), 'base64'));
+      }
+      return null;
+    }
+    return row.value;
+  } catch (e) {
+    console.error('[database] Failed to read secret:', e);
+    return null;
+  }
+}
+
+// Migrate a legacy plaintext setting into an encrypted secure_* key (once).
+function migrateSecret(legacyKey, secureKey) {
+  const sqlite = getDb();
+  try {
+    const existing = sqlite.prepare('SELECT value FROM settings WHERE key = ?').get(secureKey);
+    if (existing) return;
+    const legacy = sqlite.prepare('SELECT value FROM settings WHERE key = ?').get(legacyKey);
+    if (legacy && legacy.value) {
+      saveSecret(secureKey, legacy.value);
+    }
+  } catch (e) {
+    console.error('[database] Secret migration failed:', e);
+  }
+}
+
 module.exports = {
   initDatabase,
   getDb,
@@ -664,5 +738,8 @@ module.exports = {
   getSettings,
   saveSetting,
   deleteSetting,
-  getSyncStats
+  getSyncStats,
+  saveSecret,
+  getSecret,
+  migrateSecret
 };

@@ -3,6 +3,12 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <!-- Content Security Policy: allow only what the app actually uses.
+         'unsafe-inline' on style-src is required for Vite/Tailwind runtime styles. -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://images.unsplash.com https://api.qrserver.com; font-src 'self' data:; connect-src 'self' http://localhost:5173 http://localhost:4173 https://api.engaz.tech https://api.telegram.org https://api.qrserver.com; frame-ancestors 'none'; base-uri 'self'; form-action 'self'"
+    />
     <title>نظام إدارة وتشغيل الكافيهات والمطاعم</title>
   </head>
   <body>

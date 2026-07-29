@@ -1,7 +1,7 @@
 const dns = require('dns');
 dns.setServers(['8.8.8.8', '1.1.1.1']);
 
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, session } = require('electron');
 const path = require('path');
 const db = require('./database.cjs');
 const SyncEngine = require('./syncEngine.cjs');
@@ -11,9 +11,57 @@ const customerRepository = require('./CustomerRepository.cjs');
 const inventoryRepository = require('./InventoryRepository.cjs');
 const mockApi = require('./mockApiService.cjs');
 const telegramService = require('./telegramService.cjs');
+const authService = require('./authService.cjs');
 
 let mainWindow;
 let syncEngine;
+
+// ─── Security guards ─────────────────────────────────────────
+// Origins the POS window is allowed to navigate to / open.
+function isAllowedAppUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol === 'file:') return true; // packaged build
+    if (parsed.protocol === 'http:' && (parsed.hostname === 'localhost' || parsed.hostname === '127.0.0.1')) return true; // dev server
+    return false;
+  } catch {
+    return false;
+  }
+}
+
+// External hosts that may be opened in the system browser only.
+function isAllowedExternalUrl(rawUrl) {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'https:') return false;
+    return ['api.telegram.org', 'api.qrserver.com', 'images.unsplash.com'].includes(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function hardenWindow(win) {
+  // Block navigation away from the app origin
+  win.webContents.on('will-navigate', (event, targetUrl) => {
+    if (!isAllowedAppUrl(targetUrl)) {
+      event.preventDefault();
+    }
+  });
+  // Deny all permission requests (camera, mic, notifications, ...) by default
+  win.webContents.session.setPermissionRequestHandler((webContents, permission, callback) => {
+    callback(false);
+  });
+}
+
+// Deny new windows; allow-list a few external https hosts to open in the system browser
+app.on('web-contents-created', (event, contents) => {
+  contents.setWindowOpenHandler(({ url }) => {
+    if (isAllowedExternalUrl(url)) {
+      require('electron').shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+});
 
 function createWindow() {
   mainWindow = new BrowserWindow({
@@ -29,6 +77,8 @@ function createWindow() {
       contextIsolation: true
     }
   });
+
+  hardenWindow(mainWindow);
 
   const isDev = !app.isPackaged;
 
@@ -51,6 +101,21 @@ function createWindow() {
 app.whenReady().then(() => {
   // Initialize the local SQLite database on startup
   db.initDatabase();
+
+  // Seed local users (first run only) and migrate legacy plaintext secrets
+  authService.ensureSeedUsers();
+  db.migrateSecret('brewmaster_telegram_config', 'secure_telegram_config');
+  db.migrateSecret('brewmaster_d1_worker_api_key', 'secure_worker_api_key');
+
+  // ─── Auth IPC Handlers ───
+  ipcMain.handle('auth:login', (event, email, password) => authService.login(email, password));
+  ipcMain.handle('auth:validate-token', (event, token) => authService.validateToken(token));
+  ipcMain.handle('auth:change-password', (event, token, currentPassword, newPassword) =>
+    authService.changePassword(token, currentPassword, newPassword));
+
+  // ─── Secret settings IPC Handlers (OS-keychain encrypted at rest) ───
+  ipcMain.handle('secrets:get', (event, key) => db.getSecret(key));
+  ipcMain.handle('secrets:save', (event, key, value) => db.saveSecret(key, value));
 
   // Initialize the Sync Engine background worker
   syncEngine = new SyncEngine(db, (status) => {
@@ -79,9 +144,10 @@ app.whenReady().then(() => {
   ipcMain.handle('db:save-customer', (event, customer) => customerRepository.saveCustomer(customer));
   ipcMain.handle('db:delete-customer', (event, id) => customerRepository.deleteCustomer(id));
   
-  // Manager Dashboard cloud fetch handlers
-  ipcMain.handle('db:get-manager-orders', () => mockApi.getManagerOrders());
-  ipcMain.handle('db:get-manager-customers', () => mockApi.getManagerCustomers());
+  // Manager Dashboard analytics handlers
+  // Desktop: read the local synced SQLite (managers run the same app).
+  ipcMain.handle('db:get-manager-orders', () => orderRepository.getOrders());
+  ipcMain.handle('db:get-manager-customers', () => customerRepository.getCustomers());
 
   ipcMain.handle('db:get-settings', () => db.getSettings());
   ipcMain.handle('db:save-setting', (event, key, value) => db.saveSetting(key, value));

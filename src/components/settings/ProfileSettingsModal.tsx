@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { X, User, ShieldCheck, AlertCircle } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
-import { getAdminCredentials, setAdminCredentials } from '../../utils/settingsConfig';
 import { useAuth } from '../../context/AuthContext';
 
 interface ProfileSettingsModalProps {
@@ -11,57 +10,58 @@ interface ProfileSettingsModalProps {
 
 export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalProps) {
   const { t } = useLanguage();
-  const { logout } = useAuth();
-  
-  const [username, setUsername] = useState('');
-  const [password, setPassword] = useState('');
+  const { user, changePassword } = useAuth();
+
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
-  
+
   const [error, setError] = useState('');
   const [success, setSuccess] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     if (isOpen) {
-      const creds = getAdminCredentials();
-      setUsername(creds.username);
-      setPassword('');
+      setCurrentPassword('');
+      setNewPassword('');
       setConfirmPassword('');
       setError('');
       setSuccess(false);
+      setSaving(false);
     }
   }, [isOpen]);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setError('');
     setSuccess(false);
 
-    if (username.trim().length < 3) {
-      setError(t('Username must be at least 3 characters'));
+    if (!currentPassword) {
+      setError(t('Enter your current password'));
+      return;
+    }
+    if (newPassword.length < 8) {
+      setError(t('New password must be at least 8 characters'));
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      setError(t('Passwords do not match'));
+      return;
+    }
+    if (newPassword === currentPassword) {
+      setError(t('New password must be different from the current password'));
       return;
     }
 
-    if (password.length > 0) {
-      if (password.length < 3) {
-        setError(t('Password must be at least 3 characters'));
-        return;
-      }
-      if (password !== confirmPassword) {
-        setError(t('Passwords do not match'));
-        return;
-      }
+    setSaving(true);
+    try {
+      await changePassword(currentPassword, newPassword);
+      setSuccess(true);
+      setTimeout(() => onClose(), 1500);
+    } catch (err: any) {
+      setError(err.message || t('Failed to change password'));
+    } finally {
+      setSaving(false);
     }
-
-    const currentCreds = getAdminCredentials();
-    const finalPassword = password.length > 0 ? password : currentCreds.password;
-
-    setAdminCredentials(username.trim(), finalPassword);
-    setSuccess(true);
-    
-    setTimeout(() => {
-      onClose();
-      // Force logout so they login with new credentials
-      logout();
-    }, 1500);
   };
 
   if (!isOpen) return null;
@@ -69,7 +69,7 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={onClose} />
-      
+
       <div className="relative bg-white w-full max-w-md rounded-2xl shadow-xl overflow-hidden">
         {/* Header */}
         <div className="bg-blue-600 px-6 py-4 flex items-center justify-between">
@@ -79,7 +79,7 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
             </div>
             <div>
               <h2 className="text-lg font-bold text-white">{t('Profile Settings')}</h2>
-              <p className="text-blue-100 text-xs">{t('Update password and user settings')}</p>
+              <p className="text-blue-100 text-xs">{t('Change your account password')}</p>
             </div>
           </div>
           <button onClick={onClose} className="text-white/80 hover:text-white p-2 rounded-lg hover:bg-white/10 transition-colors">
@@ -89,15 +89,22 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
 
         {/* Content */}
         <div className="p-6 space-y-5 text-gray-800">
+          {/* Account (read-only — password is verified against the server/local DB) */}
+          <div className="bg-gray-50 border border-gray-200 rounded-xl px-4 py-3">
+            <span className="text-xs text-gray-500 block">{t('Signed in as')}</span>
+            <span className="font-bold text-gray-800">{user?.name || user?.email || '—'}</span>
+          </div>
+
           <div className="space-y-4">
             <div className="space-y-1">
-              <label className="text-sm font-bold text-gray-700 block">{t('Admin Username')}</label>
+              <label className="text-sm font-bold text-gray-700 block">{t('Current Password')}</label>
               <input
-                type="text"
-                value={username}
-                onChange={(e) => setUsername(e.target.value)}
+                type="password"
+                value={currentPassword}
+                onChange={(e) => setCurrentPassword(e.target.value)}
                 className="w-full bg-gray-50 border border-gray-300 rounded-xl px-4 py-3 font-semibold focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                placeholder="admin"
+                placeholder="••••••••"
+                autoComplete="current-password"
               />
             </div>
 
@@ -105,14 +112,15 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
               <label className="text-sm font-bold text-gray-700 block">{t('New Password')}</label>
               <input
                 type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
+                value={newPassword}
+                onChange={(e) => setNewPassword(e.target.value)}
                 className="w-full bg-gray-50 border border-gray-300 rounded-xl px-4 py-3 font-semibold focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                placeholder={t('Leave blank to keep current password')}
+                placeholder={t('At least 8 characters')}
+                autoComplete="new-password"
               />
             </div>
 
-            {password.length > 0 && (
+            {newPassword.length > 0 && (
               <div className="space-y-1">
                 <label className="text-sm font-bold text-gray-700 block">{t('Confirm New Password')}</label>
                 <input
@@ -120,7 +128,8 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
                   className="w-full bg-gray-50 border border-gray-300 rounded-xl px-4 py-3 font-semibold focus:ring-2 focus:ring-blue-500 focus:border-blue-500 outline-none transition-all"
-                  placeholder="••••"
+                  placeholder="••••••••"
+                  autoComplete="new-password"
                 />
               </div>
             )}
@@ -134,21 +143,19 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
           )}
 
           {success && (
-            <div className="flex flex-col gap-1 text-blue-700 text-sm font-bold bg-blue-50 p-3 rounded-lg border border-blue-100">
-              <div className="flex items-center gap-2">
-                <ShieldCheck size={16} />
-                <p>{t('Profile updated successfully!')}</p>
-              </div>
-              <p className="text-xs text-blue-600 ml-6">{t('Logging you out to apply changes...')}</p>
+            <div className="flex items-center gap-2 text-green-700 text-sm font-bold bg-green-50 p-3 rounded-lg border border-green-100">
+              <ShieldCheck size={16} />
+              <p>{t('Password changed successfully!')}</p>
             </div>
           )}
 
           <div className="pt-2">
             <button
               onClick={handleSave}
-              className="w-full bg-blue-600 hover:bg-blue-700 active:scale-95 text-white font-bold py-3.5 rounded-xl transition-all shadow-sm flex justify-center items-center gap-2"
+              disabled={saving}
+              className="w-full bg-blue-600 hover:bg-blue-700 active:scale-95 disabled:opacity-60 text-white font-bold py-3.5 rounded-xl transition-all shadow-sm flex justify-center items-center gap-2"
             >
-              {t('Save Changes')}
+              {saving ? t('Saving...') : t('Change Password')}
             </button>
           </div>
         </div>

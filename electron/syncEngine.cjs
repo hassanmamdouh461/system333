@@ -131,13 +131,17 @@ class SyncEngine {
         return;
       }
 
-      // 2. Pull updates from Appwrite database
+      // 2. Pull updates from the cloud (incremental — only orders newer than last watermark)
       try {
-        console.log('[syncEngine] Pulling updates from Appwrite...');
-        const pulledOrders = await mockApi.pullOrders();
+        const lastPullAt = mockApi.getLastPullAt();
+        console.log(`[syncEngine] Pulling updates from cloud (since ${lastPullAt || 'the beginning'})...`);
+        const pulledOrders = await mockApi.pullOrders(lastPullAt);
         if (pulledOrders && pulledOrders.length > 0) {
           const tempOrderRepository = require('./OrderRepository.cjs');
           tempOrderRepository.upsertPulledOrders(pulledOrders);
+          // Advance the watermark to the newest pulled record
+          const newest = pulledOrders.reduce((max, o) => (o.createdAt > max ? o.createdAt : max), lastPullAt || '');
+          mockApi.setLastPullAt(newest);
           console.log(`[syncEngine] Successfully integrated ${pulledOrders.length} remote orders into local database.`);
         }
       } catch (pullError) {
@@ -205,7 +209,7 @@ class SyncEngine {
           console.log(`[syncEngine] Marked ${inventoryIds.length} inventory items as synced in local DB.`);
         }
       } catch (invError) {
-        console.warn('[syncEngine] Inventory sync bypassed (please create "inventory" collection in Appwrite console):', invError.message);
+        console.warn('[syncEngine] Inventory sync bypassed (please verify the cloud inventory table exists):', invError.message);
       }
 
       // 6. Update success status
@@ -230,9 +234,15 @@ class SyncEngine {
   async checkAndSendTelegramReport() {
     try {
       const db = require('./database.cjs');
-      const settings = db.getSettings();
-      
-      const configRaw = settings['brewmaster_telegram_config'];
+
+      let configRaw = null;
+      try {
+        configRaw = db.getSecret('secure_telegram_config');
+      } catch (e) {}
+      if (!configRaw) {
+        const settings = db.getSettings();
+        configRaw = settings['brewmaster_telegram_config'];
+      }
       if (!configRaw) return;
 
       let config;

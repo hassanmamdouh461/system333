@@ -14,6 +14,7 @@ export function BranchConfigModal({ isOpen, onClose }: BranchConfigModalProps) {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [branchId, setBranchId] = useState('');
+  const [workerApiKey, setWorkerApiKey] = useState('');
   const [success, setSuccess] = useState(false);
   const [error, setError] = useState('');
 
@@ -26,10 +27,17 @@ export function BranchConfigModal({ isOpen, onClose }: BranchConfigModalProps) {
       setBranchId(config.branchId);
       setSuccess(false);
       setError('');
+      // Load the branch cloud-sync API key from the encrypted secret store
+      setWorkerApiKey('');
+      if (window.electronAPI && typeof window.electronAPI.getSecret === 'function') {
+        window.electronAPI.getSecret('secure_worker_api_key')
+          .then((key) => { if (key) setWorkerApiKey(key); })
+          .catch(() => {});
+      }
     }
   }, [isOpen]);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setError('');
 
     if (!branchName.trim()) {
@@ -51,6 +59,17 @@ export function BranchConfigModal({ isOpen, onClose }: BranchConfigModalProps) {
       password: password,
       branchId: branchId,
     });
+
+    // Persist the branch cloud-sync API key via the OS-keychain-encrypted
+    // store (Electron) — never in localStorage or plaintext settings.
+    if (workerApiKey.trim() && window.electronAPI && typeof window.electronAPI.saveSecret === 'function') {
+      try {
+        await window.electronAPI.saveSecret('secure_worker_api_key', workerApiKey.trim());
+      } catch (e: any) {
+        setError(e.message || 'Failed to save API key securely');
+        return;
+      }
+    }
 
     setSuccess(true);
     setTimeout(() => {
@@ -151,6 +170,27 @@ export function BranchConfigModal({ isOpen, onClose }: BranchConfigModalProps) {
               />
             </div>
           </div>
+
+          {/* Cloud Sync API Key (stored encrypted) */}
+          {typeof window !== 'undefined' && !!window.electronAPI && (
+            <div className="space-y-1">
+              <label className="text-sm font-bold text-gray-700 block">{t('Cloud Sync API Key')}</label>
+              <div className="relative">
+                <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
+                  <ShieldCheck size={18} />
+                </div>
+                <input
+                  type="password"
+                  value={workerApiKey}
+                  onChange={(e) => setWorkerApiKey(e.target.value)}
+                  className="w-full bg-gray-50 border border-gray-300 rounded-xl pl-11 pr-4 py-3 text-sm font-semibold focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition-all"
+                  placeholder="bm-••••••••••••"
+                  autoComplete="off"
+                />
+              </div>
+              <p className="text-xs text-gray-500 mt-1">{t('Per-branch key from the manager — stored encrypted on this device')}</p>
+            </div>
+          )}
 
           {/* Error */}
           {error && (

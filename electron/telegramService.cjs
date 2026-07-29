@@ -58,10 +58,16 @@ function sendTelegramMessage(botToken, chatId, text) {
  * Compile and send the daily sales report for the current branch to Telegram
  */
 async function sendDailyReport() {
-  const settings = db.getSettings();
-  
-  // 1. Check if Telegram configuration exists
-  const telegramConfigRaw = settings['brewmaster_telegram_config'];
+  // 1. Read Telegram configuration from the OS-keychain-encrypted secret
+  //    store, falling back to the legacy plaintext settings key on upgrades.
+  let telegramConfigRaw = null;
+  try {
+    telegramConfigRaw = db.getSecret('secure_telegram_config');
+  } catch (e) {}
+  if (!telegramConfigRaw) {
+    const settings = db.getSettings();
+    telegramConfigRaw = settings['brewmaster_telegram_config'];
+  }
   if (!telegramConfigRaw) {
     throw new Error('Telegram is not configured in settings');
   }

@@ -1,15 +1,11 @@
 import { MenuItem } from '../types/menu';
 
-const APPWRITE_ENDPOINT = 'https://fra.cloud.appwrite.io/v1';
-const APPWRITE_PROJECT = '69879ae70002444f3f38';
-const APPWRITE_DB = '6a545eb00016d126bc82';
-
 /**
  * Menu Service - Handle all CRUD operations for Menu Items using SQLite via Electron IPC
  */
 export const menuService = {
   /**
-   * Fetch all menu items from local SQLite DB or Appwrite fallback
+   * Fetch all menu items from local SQLite DB, or the public cloud menu on web
    */
   async getAll(): Promise<MenuItem[]> {
     const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
@@ -21,24 +17,14 @@ export const menuService = {
         throw new Error('Failed to fetch menu items');
       }
     } else {
-      // Browser/Web fallback — fetch from central Cloudflare D1 database
+      // Browser/Web fallback — public read-only menu endpoint (no credentials in the bundle)
       try {
         const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech';
-        const workerApiKey = import.meta.env.VITE_CF_WORKER_API_KEY || '';
-        const res = await fetch(workerUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
-          },
-          body: JSON.stringify({
-            sql: 'SELECT * FROM menu_items ORDER BY category, name'
-          })
-        });
+        const res = await fetch(`${workerUrl.replace(/\/+$/, '')}/menu/public`);
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        if (!data.success) throw new Error(data.error || 'D1 query failed');
-        const docs = data.result[0]?.results || [];
+        if (!data.success) throw new Error(data.error || 'Menu query failed');
+        const docs = data.result || [];
         return docs.map((doc: any) => ({
           id: doc.id,
           name: doc.name,
@@ -50,7 +36,7 @@ export const menuService = {
           isSynced: true
         }));
       } catch (error) {
-        console.error('[menuService] Error fetching menu items from D1:', error);
+        console.error('[menuService] Error fetching menu items from cloud:', error);
         throw new Error('Failed to fetch menu items');
       }
     }

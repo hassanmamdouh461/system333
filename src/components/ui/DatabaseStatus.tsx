@@ -27,31 +27,21 @@ export function DatabaseStatus() {
         setLastChecked(new Date());
       }
     } else {
-      // Running on Web: Check Cloudflare D1 Cloud Database connection
+      // Running on Web: check the cloud API liveness endpoint (no credentials needed)
       try {
         const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech';
-        const workerApiKey = import.meta.env.VITE_CF_WORKER_API_KEY || '';
-        const response = await fetch(workerUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
-          },
-          body: JSON.stringify({
-            sql: 'SELECT 1'
-          })
-        });
+        const response = await fetch(`${workerUrl.replace(/\/+$/, '')}/health`);
         if (!response.ok) {
-          throw new Error(`Cloud database returned status ${response.status}`);
+          throw new Error(`Cloud API returned status ${response.status}`);
         }
         const data = await response.json();
-        if (!data.success) {
-          throw new Error(data.error || 'D1 query failed');
+        if (!data.ok) {
+          throw new Error('Cloud API health check failed');
         }
         setStatus('connected');
         setLastChecked(new Date());
       } catch (error) {
-        console.error('D1 connection error:', error);
+        console.error('Cloud API connection error:', error);
         setStatus('error');
         setLastChecked(new Date());
       }

@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const database = require('./database.cjs');
 
 class InventoryRepository {
@@ -32,7 +33,7 @@ class InventoryRepository {
 
   createInventoryItem(item) {
     const sqlite = this.getDb();
-    const id = item.id || `inv-${Math.random().toString(36).substr(2, 9)}`;
+    const id = item.id || `inv-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const branchId = item.branchId || this.getBranchId();
 
@@ -53,7 +54,7 @@ class InventoryRepository {
 
     // If initial stock is greater than 0, create an initial 'IN' transaction
     if (item.stock > 0) {
-      const txId = `tx-${Math.random().toString(36).substr(2, 9)}`;
+      const txId = `tx-${crypto.randomUUID()}`;
       sqlite.prepare(`
         INSERT INTO inventory_transactions (id, itemId, type, quantity, referenceId, createdAt, branch_id, is_synced, notes)
         VALUES (?, ?, 'IN', ?, 'INITIAL', ?, ?, 0, 'Initial stock setup')
@@ -153,7 +154,7 @@ class InventoryRepository {
 
   createInventoryTransaction(tx) {
     const sqlite = this.getDb();
-    const id = tx.id || `tx-${Math.random().toString(36).substr(2, 9)}`;
+    const id = tx.id || `tx-${crypto.randomUUID()}`;
     const now = new Date().toISOString();
     const branchId = tx.branchId || this.getBranchId();
 
@@ -276,7 +277,7 @@ class InventoryRepository {
           `).run(qtyUsed, now, ing.inventoryItemId);
 
           // Log OUT transaction
-          const txId = `tx-${Math.random().toString(36).substr(2, 9)}`;
+          const txId = `tx-${crypto.randomUUID()}`;
           sqlite.prepare(`
             INSERT INTO inventory_transactions (id, itemId, type, quantity, referenceId, createdAt, branch_id, is_synced, notes)
             VALUES (?, ?, 'OUT', ?, ?, ?, ?, 0, ?)
@@ -315,7 +316,7 @@ class InventoryRepository {
         `).run(tx.quantity, now, tx.itemId);
 
         // Log compensating IN transaction
-        const revTxId = `tx-${Math.random().toString(36).substr(2, 9)}`;
+        const revTxId = `tx-${crypto.randomUUID()}`;
         sqlite.prepare(`
           INSERT INTO inventory_transactions (id, itemId, type, quantity, referenceId, createdAt, branch_id, is_synced, notes)
           VALUES (?, ?, 'IN', ?, ?, ?, ?, 0, ?)
