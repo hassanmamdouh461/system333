@@ -1,3 +1,5 @@
+import { logger } from '../../utils/logger';
+import { normalizeEgyptPhone } from '../../utils/format';
 import React, { useState, useMemo, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { getTaxRate } from '../../utils/settingsConfig';
@@ -271,7 +273,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
           setLoyaltyName('');
         }
       } catch (err) {
-        console.error(err);
+        logger.error(err);
       }
     } else {
       setExistingCustomer(null);
@@ -284,13 +286,13 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     let pointsEarned = 0;
     let pointsRedeemed = 0;
 
-    const trimmedPhone = loyaltyPhone.trim();
-    if (trimmedPhone) {
-      if (trimmedPhone.length !== 11) {
-        alert(t('Phone number must be exactly 11 digits'));
+    const normalizedPhone = normalizeEgyptPhone(loyaltyPhone);
+    if (loyaltyPhone.trim()) {
+      if (!normalizedPhone) {
+        alert(t('Enter a valid Egyptian mobile number (11 digits starting with 01)'));
         return;
       }
-      customerPhone = trimmedPhone;
+      customerPhone = normalizedPhone;
       
       if (redeemPoints && existingCustomer) {
         pointsRedeemed = Math.min(existingCustomer.points, grandTotal);
@@ -307,7 +309,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
           points: newPoints
         });
       } catch (err) {
-        console.error('Failed to save customer loyalty points:', err);
+        logger.error('Failed to save customer loyalty points:', err);
       }
     }
 
@@ -340,7 +342,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       setSuccessMessage(t('Successfully saved order'));
       setTimeout(() => setSuccessMessage(null), 3000);
     } catch (err) {
-      console.error(err);
+      logger.error(err);
       alert('Failed to save order');
     }
   };
@@ -362,7 +364,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       setSuccessMessage(t('Successfully saved order'));
       setTimeout(() => setSuccessMessage(null), 3050);
     } catch (err) {
-      console.error(err);
+      logger.error(err);
       alert('Failed to process print and save');
     }
   };

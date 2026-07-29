@@ -1,3 +1,4 @@
+import { logger } from '../../utils/logger';
 import React, { useState, useEffect } from 'react';
 import { X, Send, Key, Hash, Clock, ShieldCheck, AlertCircle, ToggleLeft, ToggleRight } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
@@ -135,7 +136,7 @@ export function TelegramConfigModal({ isOpen, onClose }: TelegramConfigModalProp
         throw new Error(data.description || 'Failed to send message');
       }
     } catch (err: any) {
-      console.error('[TelegramConfig] Test message failed:', err);
+      logger.error('[TelegramConfig] Test message failed:', err);
       setError(`خطأ أثناء الإرسال: ${err.message || 'يرجى التحقق من صحة التوكن والمعرف'}`);
     } finally {
       setTesting(false);
