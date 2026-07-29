@@ -23,10 +23,14 @@ export const menuService = {
     } else {
       // Browser/Web fallback — fetch from central Cloudflare D1 database
       try {
-        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://brewmaster-d1-proxy.hassanmamdouh461.workers.dev';
+        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech';
+        const workerApiKey = import.meta.env.VITE_CF_WORKER_API_KEY || '';
         const res = await fetch(workerUrl, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
+          },
           body: JSON.stringify({
             sql: 'SELECT * FROM menu_items ORDER BY category, name'
           })

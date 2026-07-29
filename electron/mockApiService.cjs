@@ -8,32 +8,38 @@ const path = require('path');
 const https = require('https');
 const database = require('./database.cjs');
 
-// 1. Resolve Worker URL from .env file or local database settings
+// 1. Resolve Worker URL + API key from .env file or local database settings
 let WORKER_URL = "";
+let WORKER_API_KEY = "";
 try {
   const envPath = path.join(__dirname, '..', '.env');
   if (fs.existsSync(envPath)) {
     const envContent = fs.readFileSync(envPath, 'utf8');
-    const match = envContent.match(/VITE_CF_WORKER_URL\s*=\s*(.*)/);
-    if (match && match[1]) {
-      WORKER_URL = match[1].trim();
+    const urlMatch = envContent.match(/VITE_CF_WORKER_URL\s*=\s*(.*)/);
+    if (urlMatch && urlMatch[1]) {
+      WORKER_URL = urlMatch[1].trim();
+    }
+    const keyMatch = envContent.match(/VITE_CF_WORKER_API_KEY\s*=\s*(.*)/);
+    if (keyMatch && keyMatch[1]) {
+      WORKER_API_KEY = keyMatch[1].trim();
     }
   }
 } catch (e) {
   console.error('[D1 Sync API] Failed to load .env file:', e.message);
 }
 
-if (!WORKER_URL) {
-  try {
-    const settings = database.getSettings();
-    if (settings['brewmaster_d1_worker_url']) {
-      WORKER_URL = settings['brewmaster_d1_worker_url'];
-    }
-  } catch (e) {}
-}
+try {
+  const settings = database.getSettings();
+  if (!WORKER_URL && settings['brewmaster_d1_worker_url']) {
+    WORKER_URL = settings['brewmaster_d1_worker_url'];
+  }
+  if (!WORKER_API_KEY && settings['brewmaster_d1_worker_api_key']) {
+    WORKER_API_KEY = settings['brewmaster_d1_worker_api_key'];
+  }
+} catch (e) {}
 
 if (!WORKER_URL) {
-  WORKER_URL = "https://your-worker.your-username.workers.dev"; // default placeholder
+  WORKER_URL = "https://api.engaz.tech"; // default: BrewMaster central API
 }
 
 console.log('[D1 Sync API] Configured Worker URL:', WORKER_URL);
@@ -57,7 +63,8 @@ function fetchWorker(payload) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Content-Length': Buffer.byteLength(bodyStr)
+        'Content-Length': Buffer.byteLength(bodyStr),
+        ...(WORKER_API_KEY ? { 'X-API-Key': WORKER_API_KEY } : {})
       },
       timeout: 15000 // 15 seconds
     };

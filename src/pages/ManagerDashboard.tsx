@@ -359,12 +359,16 @@ export default function ManagerDashboard() {
         }
       } else {
         // Browser — query Cloudflare D1 instead of Appwrite
-        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://brewmaster-d1-proxy.hassanmamdouh461.workers.dev';
+        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech';
+        const workerApiKey = import.meta.env.VITE_CF_WORKER_API_KEY || '';
         
         const executeD1Query = async (sql: string, params: any[] = []) => {
           const res = await fetch(workerUrl, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: {
+              'Content-Type': 'application/json',
+              ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
+            },
             body: JSON.stringify({ sql, params })
           });
           if (!res.ok) throw new Error(`HTTP ${res.status}`);
