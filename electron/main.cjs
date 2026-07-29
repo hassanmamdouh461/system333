@@ -66,7 +66,7 @@ app.whenReady().then(() => {
   ipcMain.handle('db:delete-menu-item', (event, id) => menuRepository.deleteMenuItem(id));
   ipcMain.handle('db:reset-menu', (event, defaults) => menuRepository.resetMenu(defaults));
 
-  ipcMain.handle('db:get-orders', () => orderRepository.getOrders());
+  ipcMain.handle('db:get-orders', (event, branchId) => orderRepository.getOrders(branchId));
   ipcMain.handle('db:create-order', (event, order) => orderRepository.createOrder(order));
   ipcMain.handle('db:update-order-status', (event, id, status) => orderRepository.updateOrderStatus(id, status));
   ipcMain.handle('db:complete-order-payment', (event, id, method) => orderRepository.completeOrderPayment(id, method));
@@ -83,9 +83,38 @@ app.whenReady().then(() => {
   ipcMain.handle('db:get-manager-orders', () => mockApi.getManagerOrders());
   ipcMain.handle('db:get-manager-customers', () => mockApi.getManagerCustomers());
 
-  ipcMain.handle('db:get-settings', () => db.getSettings());
-  ipcMain.handle('db:save-setting', (event, key, value) => db.saveSetting(key, value));
-  ipcMain.handle('db:delete-setting', (event, key) => db.deleteSetting(key));
+  // Explicit settings channel (Issue 30): only whitelisted persistent settings keys
+  // are readable/writable — transient UI state (pos_*, session data) stays out of SQLite.
+  const SETTINGS_WHITELIST = [
+    /^brewmaster_tax_rate$/,
+    /^brewmaster_branch_config$/,
+    /^brewmaster_telegram_config$/,
+    /^brewmaster_admin_creds$/,
+    /^brewmaster_d1_worker_url$/,
+    /^brewmaster_d1_worker_api_key$/,
+    /^branch_id$/,
+    /^brewmaster_language$/,
+  ];
+  const isAllowedSettingKey = (key) => typeof key === 'string' && SETTINGS_WHITELIST.some(re => re.test(key));
+
+  ipcMain.handle('db:get-settings', () => {
+    const all = db.getSettings();
+    const filtered = {};
+    for (const [key, value] of Object.entries(all)) {
+      if (isAllowedSettingKey(key)) filtered[key] = value;
+    }
+    return filtered;
+  });
+  ipcMain.handle('db:save-setting', (event, key, value) => {
+    if (!isAllowedSettingKey(key)) return false;
+    db.saveSetting(key, value);
+    return true;
+  });
+  ipcMain.handle('db:delete-setting', (event, key) => {
+    if (!isAllowedSettingKey(key)) return false;
+    db.deleteSetting(key);
+    return true;
+  });
 
   // Inventory & Recipe handlers
   ipcMain.handle('db:get-inventory', (event, branchId) => inventoryRepository.getInventory(branchId));
