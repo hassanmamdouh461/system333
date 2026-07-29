@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger';
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { MenuItem, INITIAL_MENU_ITEMS } from '../types/menu';
 import { Order, OrderStatus } from '../types/order';
@@ -64,7 +65,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       const data = await menuRepository.getAll(branch?.branchId);
       setMenuItems(data);
     } catch (err) {
-      console.warn('[DataContext] Failed to fetch menu from repository, using default initial items:', err);
+      logger.warn('[DataContext] Failed to fetch menu from repository, using default initial items:', err);
       setMenuItems(INITIAL_MENU_ITEMS);
     } finally {
       setMenuLoading(false);
@@ -80,7 +81,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       const data = await orderRepository.getAll(branch?.branchId);
       setOrdersList(data);
     } catch (err) {
-      console.warn('[DataContext] Failed to fetch orders from repository:', err);
+      logger.warn('[DataContext] Failed to fetch orders from repository:', err);
       setOrdersList([]);
     } finally {
       setOrdersLoading(false);
@@ -101,7 +102,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       setMenuItems(prev => [newItem, ...prev]);
       return newItem;
     } catch (err) {
-      console.error('[DataContext] Failed to create item in repository:', err);
+      logger.error('[DataContext] Failed to create item in repository:', err);
       return null;
     }
   }, [branch?.branchId]);
@@ -111,7 +112,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       const updatedItem = await menuRepository.update(id, data);
       setMenuItems(prev => prev.map(i => i.id === id ? updatedItem : i));
     } catch (err) {
-      console.error('[DataContext] Failed to update item in repository:', err);
+      logger.error('[DataContext] Failed to update item in repository:', err);
     }
   }, []);
 
@@ -120,7 +121,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       await menuRepository.delete(id);
       setMenuItems(prev => prev.filter(i => i.id !== id));
     } catch (err) {
-      console.error('[DataContext] Failed to delete item in repository:', err);
+      logger.error('[DataContext] Failed to delete item in repository:', err);
     }
   }, []);
 
@@ -131,7 +132,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       const updatedItem = await menuRepository.update(id, { available: !item.available });
       setMenuItems(prev => prev.map(i => i.id === id ? updatedItem : i));
     } catch (err) {
-      console.error('[DataContext] Failed to toggle availability in repository:', err);
+      logger.error('[DataContext] Failed to toggle availability in repository:', err);
     }
   }, [menuItems]);
 
@@ -142,7 +143,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       const seeded = await menuRepository.resetToDefaults(INITIAL_MENU_ITEMS, branch?.branchId);
       setMenuItems(seeded);
     } catch (err) {
-      console.error('[DataContext] Failed to reset menu to defaults:', err);
+      logger.error('[DataContext] Failed to reset menu to defaults:', err);
       setMenuError(err as Error);
     } finally {
       setMenuLoading(false);
@@ -157,7 +158,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       setOrdersList(prev => [newOrder, ...prev]);
       return newOrder;
     } catch (err) {
-      console.error('[DataContext] Failed to create order in repository:', err);
+      logger.error('[DataContext] Failed to create order in repository:', err);
       return null;
     }
   }, [branch?.branchId]);
@@ -167,7 +168,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       const updatedOrder = await orderRepository.updateStatus(id, status);
       setOrdersList(prev => prev.map(o => o.id === id ? updatedOrder : o));
     } catch (err) {
-      console.error('[DataContext] Failed to update order status in repository:', err);
+      logger.error('[DataContext] Failed to update order status in repository:', err);
     }
   }, []);
 
@@ -176,7 +177,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       const updatedOrder = await orderRepository.completeWithPayment(id, method);
       setOrdersList(prev => prev.map(o => o.id === id ? updatedOrder : o));
     } catch (err) {
-      console.error('[DataContext] Failed to complete payment in repository:', err);
+      logger.error('[DataContext] Failed to complete payment in repository:', err);
     }
   }, []);
 
@@ -185,7 +186,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       const updatedOrder = await orderRepository.update(id, data);
       setOrdersList(prev => prev.map(o => o.id === id ? updatedOrder : o));
     } catch (err) {
-      console.error('[DataContext] Failed to update order in repository:', err);
+      logger.error('[DataContext] Failed to update order in repository:', err);
     }
   }, []);
 
@@ -194,7 +195,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       await orderRepository.delete(id);
       setOrdersList(prev => prev.filter(o => o.id !== id));
     } catch (err) {
-      console.error('[DataContext] Failed to delete order in repository:', err);
+      logger.error('[DataContext] Failed to delete order in repository:', err);
     }
   }, []);
 

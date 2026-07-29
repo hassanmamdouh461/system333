@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger';
 import { useState, useCallback } from 'react';
 
 /**
@@ -24,7 +25,7 @@ export function useLocalStorage<T>(key: string, initialValue: T) {
         return initialValue;
       }
     } catch (error) {
-      console.error(`[useLocalStorage] Error reading [${key}]:`, error);
+      logger.error(`[useLocalStorage] Error reading [${key}]:`, error);
       return initialValue;
     }
   });
@@ -44,7 +45,7 @@ export function useLocalStorage<T>(key: string, initialValue: T) {
         return valueToStore;
       });
     } catch (error) {
-      console.error(`[useLocalStorage] Error saving [${key}]:`, error);
+      logger.error(`[useLocalStorage] Error saving [${key}]:`, error);
     }
   }, [key]);
 

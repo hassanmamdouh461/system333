@@ -1,3 +1,4 @@
+import { logger } from '../../utils/logger';
 import React, { useState, useEffect } from 'react';
 import { Database, Cloud, CloudOff, RefreshCw, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -25,7 +26,7 @@ export function SyncStatus() {
         const status = await window.electronAPI.getSyncStatus();
         setSyncStatus(status);
       } catch (err) {
-        console.error('Failed to get sync status:', err);
+        logger.error('Failed to get sync status:', err);
       }
     }
   };
@@ -37,7 +38,7 @@ export function SyncStatus() {
         const status = await window.electronAPI.triggerSync();
         setSyncStatus(status);
       } catch (err) {
-        console.error('Failed to trigger sync:', err);
+        logger.error('Failed to trigger sync:', err);
       }
     }
   };

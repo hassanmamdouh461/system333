@@ -1,3 +1,4 @@
+import { logger } from './utils/logger';
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App.tsx'
@@ -25,7 +26,7 @@ async function initApp() {
         }
       }
     } catch (e) {
-      console.error('[Settings] Failed to restore settings from DB:', e);
+      logger.error('[Settings] Failed to restore settings from DB:', e);
     }
   }
 
