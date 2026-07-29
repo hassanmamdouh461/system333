@@ -20,10 +20,16 @@ export interface Order {
   paymentMethod?: 'Cash' | 'Card';
   items: OrderItem[];
   totalAmount: number;
+  /** Tax snapshot stored at order-creation time (Issue 25): read these, never recompute. */
+  subtotal?: number;
+  taxRate?: number;
+  taxAmount?: number;
+  grandTotal?: number;
   createdAt: string; // ISO string
   updatedAt?: string; // ISO string — last modification timestamp for sync conflict resolution
   paidAt?: string; // ISO string when payment was completed
   customerPhone?: string;
+  customerName?: string;
   pointsEarned?: number;
   pointsRedeemed?: number;
   /** Multi-branch sync fields */
