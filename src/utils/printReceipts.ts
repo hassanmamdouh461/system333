@@ -21,9 +21,11 @@ function printHtml(htmlContent: string) {
 export function printCustomerReceipt(order: Order, lang: 'en' | 'ar' = 'ar') {
   const isRtl = lang === 'ar';
   const subtotal = order.totalAmount;
-  const taxRate = getTaxRate();
-  const tax = subtotal * taxRate;
-  const grandTotal = subtotal + tax;
+  // Issue #7: use the immutable tax snapshot stored on the order at payment
+  // time; fall back to the current rate only for legacy orders without one.
+  const taxRate = order.taxRate ?? getTaxRate();
+  const tax = order.taxAmount ?? subtotal * taxRate;
+  const grandTotal = order.grandTotal ?? subtotal + tax;
 
   const title = isRtl ? 'فاتورة الدفع' : 'Payment Receipt';
   const tableLabel = isRtl ? 'الطاولة / نوع الطلب' : 'Table / Mode';

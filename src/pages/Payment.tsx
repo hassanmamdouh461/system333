@@ -39,11 +39,13 @@ export default function Payment() {
   };
 
   const handlePaymentComplete = async (orderId: string, method: 'Cash' | 'Card') => {
+    // Re-throw so PaymentModal shows its error state instead of the receipt
+    // screen when the database write fails (issue #8).
     try {
       await completeWithPayment(orderId, method);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to complete payment:', err);
-      alert(t('Failed to complete payment'));
+      throw new Error(err?.message || t('Failed to complete payment'));
     }
   };
 
@@ -272,7 +274,7 @@ export default function Payment() {
                 )}
                 <div className="border-t border-gray-100 pt-2 flex justify-between font-bold text-lg text-gray-900">
                    <span>{t('Total')}</span>
-                   <span>{(order.totalAmount * (1 + getTaxRate())).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                   <span>{(order.grandTotal ?? order.totalAmount * (1 + getTaxRate())).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
                 </div>
               </div>
 

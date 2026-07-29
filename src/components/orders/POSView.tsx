@@ -291,14 +291,29 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
         return;
       }
       customerPhone = trimmedPhone;
-      
+
       if (redeemPoints && existingCustomer) {
         pointsRedeemed = Math.min(existingCustomer.points, grandTotal);
       }
-      
+
       const remainingAmount = Math.max(0, grandTotal - pointsRedeemed);
       pointsEarned = Math.floor(remainingAmount / 50);
+    }
 
+    setIsLoyaltyModalOpen(false);
+
+    // Issue #8: save the order FIRST; only update loyalty points after the
+    // order write has succeeded — otherwise a failed order leaves free points
+    // (or lost points) behind. The redeemed points are stored on the order
+    // itself (pointsRedeemed) so reports can net them out of revenue.
+    let orderSaved = false;
+    if (pendingCheckoutAction === 'save') {
+      orderSaved = await executeSaveOrder(customerPhone, pointsEarned, pointsRedeemed);
+    } else {
+      orderSaved = await executePrintAndPay(customerPhone, pointsEarned, pointsRedeemed);
+    }
+
+    if (orderSaved && trimmedPhone && (pointsEarned > 0 || pointsRedeemed > 0)) {
       const newPoints = (existingCustomer ? existingCustomer.points : 0) - pointsRedeemed + pointsEarned;
       try {
         await window.electronAPI.saveCustomer({
@@ -308,16 +323,8 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
         });
       } catch (err) {
         console.error('Failed to save customer loyalty points:', err);
+        alert(t('Order saved, but failed to update loyalty points'));
       }
-    }
-
-    setIsLoyaltyModalOpen(false);
-    
-    // Proceed with checkout
-    if (pendingCheckoutAction === 'save') {
-      await executeSaveOrder(customerPhone, pointsEarned, pointsRedeemed);
-    } else {
-      await executePrintAndPay(customerPhone, pointsEarned, pointsRedeemed);
     }
   };
 
@@ -330,22 +337,24 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     }
   };
 
-  const executeSaveOrder = async (customerPhone?: string, pointsEarned?: number, pointsRedeemed?: number) => {
+  const executeSaveOrder = async (customerPhone?: string, pointsEarned?: number, pointsRedeemed?: number): Promise<boolean> => {
     try {
       const finalTableId = orderMode === 'Takeaway' ? 'Takeaway' : `${t('Table')} ${tableId}`;
       const paidAmt = paymentStatus === 'Paid' ? (grandTotal - (pointsRedeemed || 0)) : undefined;
       await onCreateOrder(finalTableId, invoiceItems, paymentStatus, paymentMethod, paidAmt, customerPhone, pointsEarned, pointsRedeemed);
-      
+
       handleReset();
       setSuccessMessage(t('Successfully saved order'));
       setTimeout(() => setSuccessMessage(null), 3000);
+      return true;
     } catch (err) {
       console.error(err);
       alert('Failed to save order');
+      return false;
     }
   };
 
-  const executePrintAndPay = async (customerPhone?: string, pointsEarned?: number, pointsRedeemed?: number) => {
+  const executePrintAndPay = async (customerPhone?: string, pointsEarned?: number, pointsRedeemed?: number): Promise<boolean> => {
     try {
       const finalTableId = orderMode === 'Takeaway' ? 'Takeaway' : `${t('Table')} ${tableId}`;
       const finalPaymentStatus = 'Paid';
@@ -361,9 +370,11 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       handleReset();
       setSuccessMessage(t('Successfully saved order'));
       setTimeout(() => setSuccessMessage(null), 3050);
+      return true;
     } catch (err) {
       console.error(err);
       alert('Failed to process print and save');
+      return false;
     }
   };
 

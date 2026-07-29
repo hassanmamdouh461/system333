@@ -484,6 +484,12 @@ function initDatabase() {
   try { db.prepare("ALTER TABLE customers ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 0").run(); } catch (e) {}
   try { db.prepare("ALTER TABLE customers ADD COLUMN updated_at TEXT").run(); } catch (e) {}
 
+  // --- Orders table: tax snapshot columns (issue #7) ---
+  // Immutable financial record: tax rate/amount/total snapped at payment time.
+  try { db.prepare("ALTER TABLE orders ADD COLUMN taxRate REAL").run(); } catch (e) {}
+  try { db.prepare("ALTER TABLE orders ADD COLUMN taxAmount REAL").run(); } catch (e) {}
+  try { db.prepare("ALTER TABLE orders ADD COLUMN grandTotal REAL").run(); } catch (e) {}
+
   // Backfill: set timestamps on existing rows that have NULL created_at/updated_at
   try {
     const now = new Date().toISOString();

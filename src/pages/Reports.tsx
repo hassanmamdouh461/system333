@@ -137,7 +137,7 @@ export default function Reports() {
   // Single hook call — all computation happens inside useAnalytics.
   // When dateRange = 'Today', every stat equals Dashboard's values exactly.
   const analytics = useAnalytics(dateRange);
-  const taxRate = getTaxRate();
+  const taxRate = getTaxRate(); // display-only for legacy orders without a snapshot
 
   const recipeCosts = useMemo(() => {
     const costMap: Record<string, number> = {};
@@ -149,6 +149,7 @@ export default function Reports() {
     return costMap;
   }, [recipes, inventory]);
 
+  // COGS from real paid orders only — no fabricated baseline (issue #6).
   const cogs = useMemo(() => {
     let totalCogs = 0;
     for (const order of analytics.completedPeriod) {
@@ -157,25 +158,16 @@ export default function Reports() {
         totalCogs += itemCost * item.quantity;
       }
     }
-    
-    // Add baseline COGS for mock data representation
-    const baselineRevenueMap: Record<AnalyticsPeriod, number> = {
-      'Today': 0,
-      'This Week': 950,
-      'This Month': 4200,
-      'This Year': 52000,
-    };
-    const baselineRev = baselineRevenueMap[dateRange] || 0;
-    const baselineCogs = baselineRev * 0.35; // assume 35% ingredient cost
-    
-    return totalCogs + baselineCogs;
-  }, [analytics.completedPeriod, recipeCosts, dateRange]);
+    return totalCogs;
+  }, [analytics.completedPeriod, recipeCosts]);
 
   const netProfit = useMemo(() => {
     const revenue = analytics.totalRevenue;
-    const tax = revenue * taxRate;
-    return Math.max(0, revenue - tax - cogs);
-  }, [analytics.totalRevenue, taxRate, cogs]);
+    // Total revenue already includes tax; subtract the real tax portion and COGS.
+    const taxPortion = analytics.completedPeriod.reduce(
+      (sum, o) => sum + (o.taxAmount ?? o.totalAmount * (o.taxRate ?? taxRate)), 0);
+    return Math.max(0, revenue - taxPortion - cogs);
+  }, [analytics.totalRevenue, analytics.completedPeriod, taxRate, cogs]);
 
   const lowStockItems = useMemo(() => {
     return inventory.filter(item => item.stock <= item.minStock);
@@ -186,10 +178,10 @@ export default function Reports() {
     const openCount = analytics.periodOrders.filter(o => o.paymentStatus === 'Unpaid').length;
     const paidAmount = analytics.periodOrders
       .filter(o => o.paymentStatus === 'Paid')
-      .reduce((sum, o) => sum + o.totalAmount * (1 + taxRate), 0);
+      .reduce((sum, o) => sum + (o.grandTotal ?? o.totalAmount * (1 + taxRate)), 0);
     const openAmount = analytics.periodOrders
       .filter(o => o.paymentStatus === 'Unpaid')
-      .reduce((sum, o) => sum + o.totalAmount * (1 + taxRate), 0);
+      .reduce((sum, o) => sum + (o.grandTotal ?? o.totalAmount * (1 + taxRate)), 0);
     const totalCount = paidCount + openCount;
     return { paidCount, openCount, paidAmount, openAmount, totalCount };
   }, [analytics.periodOrders, taxRate]);
@@ -197,32 +189,20 @@ export default function Reports() {
   const paymentMethodStats = React.useMemo(() => {
     const realCashOrders = analytics.completedPeriod.filter(o => o.paymentMethod === 'Cash');
     const realCardOrders = analytics.completedPeriod.filter(o => o.paymentMethod === 'Card');
-    
-    const realCashAmount = realCashOrders.reduce((sum, o) => sum + o.totalAmount * (1 + taxRate), 0);
-    const realCardAmount = realCardOrders.reduce((sum, o) => sum + o.totalAmount * (1 + taxRate), 0);
-    
-    const baselineRevenueMap: Record<AnalyticsPeriod, number> = {
-      'Today': 0,
-      'This Week': 950,
-      'This Month': 4200,
-      'This Year': 52000,
-    };
-    const baselineTotal = baselineRevenueMap[dateRange] || 0;
-    const baselineCashAmount = baselineTotal * 0.60;
-    const baselineCardAmount = baselineTotal * 0.40;
-    
-    const totalCashAmount = realCashAmount + baselineCashAmount;
-    const totalCardAmount = realCardAmount + baselineCardAmount;
-    const totalPaidAmount = totalCashAmount + totalCardAmount;
-    
+
+    const realCashAmount = realCashOrders.reduce((sum, o) => sum + (o.grandTotal ?? o.totalAmount * (1 + taxRate)), 0);
+    const realCardAmount = realCardOrders.reduce((sum, o) => sum + (o.grandTotal ?? o.totalAmount * (1 + taxRate)), 0);
+
+    const totalPaidAmount = realCashAmount + realCardAmount;
+
     return {
-      cashAmount: totalCashAmount,
-      cardAmount: totalCardAmount,
+      cashAmount: realCashAmount,
+      cardAmount: realCardAmount,
       totalAmount: totalPaidAmount,
-      cashPercentage: totalPaidAmount > 0 ? Math.round((totalCashAmount / totalPaidAmount) * 100) : 0,
-      cardPercentage: totalPaidAmount > 0 ? Math.round((totalCardAmount / totalPaidAmount) * 100) : 0,
+      cashPercentage: totalPaidAmount > 0 ? Math.round((realCashAmount / totalPaidAmount) * 100) : 0,
+      cardPercentage: totalPaidAmount > 0 ? Math.round((realCardAmount / totalPaidAmount) * 100) : 0,
     };
-  }, [analytics.completedPeriod, dateRange, taxRate]);
+  }, [analytics.completedPeriod, taxRate]);
 
   if (analytics.loading) return <LoadingScreen />;
   if (analytics.error) {
@@ -681,7 +661,7 @@ export default function Reports() {
                       </div>
                     </div>
                     <div className="text-right shrink-0">
-                      <p className="text-xs md:text-sm font-bold text-gray-900">{(order.totalAmount * (1 + taxRate)).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</p>
+                      <p className="text-xs md:text-sm font-bold text-gray-900">{(order.grandTotal ?? order.totalAmount * (1 + taxRate)).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</p>
                       <p className="text-[11px] text-gray-400">{timeStr}</p>
                     </div>
                   </motion.div>
