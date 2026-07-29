@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Database, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import { menuService } from '../../services/menuService';
+import { cloudFetch } from '../../services/cloudClient';
 import { motion } from 'framer-motion';
 import { useLanguage } from '../../context/LanguageContext';
 
@@ -29,25 +30,7 @@ export function DatabaseStatus() {
     } else {
       // Running on Web: Check Cloudflare D1 Cloud Database connection
       try {
-        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech';
-        const workerApiKey = import.meta.env.VITE_CF_WORKER_API_KEY || '';
-        const response = await fetch(workerUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
-          },
-          body: JSON.stringify({
-            sql: 'SELECT 1'
-          })
-        });
-        if (!response.ok) {
-          throw new Error(`Cloud database returned status ${response.status}`);
-        }
-        const data = await response.json();
-        if (!data.success) {
-          throw new Error(data.error || 'D1 query failed');
-        }
+        await cloudFetch('/health', {});
         setStatus('connected');
         setLastChecked(new Date());
       } catch (error) {
