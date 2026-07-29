@@ -1,3 +1,4 @@
+import { logger } from '../utils/logger';
 import React, { useState } from 'react';
 import { Plus, Search } from 'lucide-react';
 import { MenuItem, CATEGORIES } from '../types/menu';
@@ -46,7 +47,7 @@ export default function Menu() {
     try {
       await toggleAvailability(id);
     } catch (error) {
-      console.error('Failed to toggle status:', error);
+      logger.error('Failed to toggle status:', error);
       alert(t('Failed to update item availability'));
     }
   };
@@ -56,7 +57,7 @@ export default function Menu() {
       try {
         await deleteItem(id);
       } catch (error) {
-        console.error('Failed to delete item:', error);
+        logger.error('Failed to delete item:', error);
         alert(t('Failed to delete item'));
       }
     }
@@ -95,7 +96,7 @@ export default function Menu() {
       
       setIsModalOpen(false);
     } catch (error) {
-      console.error('Failed to save item:', error);
+      logger.error('Failed to save item:', error);
       alert(t('Failed to save item'));
     }
   };
