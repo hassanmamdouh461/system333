@@ -20,6 +20,14 @@ export interface Order {
   paymentMethod?: 'Cash' | 'Card';
   items: OrderItem[];
   totalAmount: number;
+  /** Tax rate snapped at payment time (e.g. 0.1). Immutable once set — historical
+   *  records must never change when the settings tax rate changes later. */
+  taxRate?: number;
+  /** Tax amount snapped at payment time (= totalAmount × taxRate). */
+  taxAmount?: number;
+  /** Final amount due including tax (= totalAmount + taxAmount). Stored at payment
+   *  time; displays and reports must prefer this over recomputing. */
+  grandTotal?: number;
   createdAt: string; // ISO string
   updatedAt?: string; // ISO string — last modification timestamp for sync conflict resolution
   paidAt?: string; // ISO string when payment was completed

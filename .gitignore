@@ -105,3 +105,6 @@ Thumbs.db
 .netlify
 
 .vercel
+
+# Built bundles must never be committed — distribute via GitHub Releases
+*.zip

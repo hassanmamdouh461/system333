@@ -28,6 +28,9 @@ class OrderRepository {
         paymentStatus: row.paymentStatus,
         paymentMethod: row.paymentMethod || undefined,
         totalAmount: row.totalAmount,
+        taxRate: row.taxRate ?? undefined,
+        taxAmount: row.taxAmount ?? undefined,
+        grandTotal: row.grandTotal ?? undefined,
         createdAt: row.createdAt,
         updatedAt: row.updated_at || undefined,
         paidAt: row.paidAt || undefined,
@@ -57,6 +60,9 @@ class OrderRepository {
       paymentStatus: row.paymentStatus,
       paymentMethod: row.paymentMethod || undefined,
       totalAmount: row.totalAmount,
+      taxRate: row.taxRate ?? undefined,
+      taxAmount: row.taxAmount ?? undefined,
+      grandTotal: row.grandTotal ?? undefined,
       createdAt: row.createdAt,
       updatedAt: row.updated_at || undefined,
       paidAt: row.paidAt || undefined,
@@ -193,7 +199,31 @@ class OrderRepository {
   completeOrderPayment(id, method) {
     const sqlite = this.getDb();
     const now = new Date().toISOString();
-    sqlite.prepare("UPDATE orders SET paymentStatus = 'Paid', paymentMethod = ?, paidAt = ?, updated_at = ?, is_synced = 0 WHERE id = ?").run(method, now, now, id);
+
+    // Read the current tax rate from settings (same source as the UI), then
+    // snapshot it onto the order so historical records never change when the
+    // settings rate changes later (issue #7).
+    let taxRate = 0.1;
+    try {
+      const settings = database.getSettings();
+      const saved = settings['brewmaster_tax_rate'];
+      if (saved !== undefined && saved !== null) {
+        const parsed = parseFloat(saved);
+        if (!isNaN(parsed)) taxRate = parsed;
+      }
+    } catch (e) {}
+
+    const order = this.getOrder(id);
+    if (!order) throw new Error(`Order not found: ${id}`);
+    const taxAmount = order.totalAmount * taxRate;
+    const grandTotal = order.totalAmount + taxAmount;
+
+    sqlite.prepare(`
+      UPDATE orders
+      SET paymentStatus = 'Paid', paymentMethod = ?, paidAt = ?, updated_at = ?, is_synced = 0,
+          taxRate = ?, taxAmount = ?, grandTotal = ?
+      WHERE id = ?
+    `).run(method, now, now, taxRate, taxAmount, grandTotal, id);
     return this.getOrder(id);
   }
 

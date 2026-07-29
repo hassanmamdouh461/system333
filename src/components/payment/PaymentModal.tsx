@@ -24,6 +24,8 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
   const paymentFiredRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
+  const [paymentError, setPaymentError] = useState<string | null>(null);
+
   // Reset all state when the modal opens on a fresh order
   useEffect(() => {
     if (isOpen && order) {
@@ -36,6 +38,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
         setIsProcessing(false);
         setShowReceipt(false);
       }
+      setPaymentError(null);
       paymentFiredRef.current = false;
     }
     // Cleanup: cancel any pending timer if the modal is closed externally (e.g. backdrop)
@@ -51,20 +54,23 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
   const tax = subtotal * taxRate;
   const total = subtotal + tax;
 
-  const handleProcessPayment = () => {
+  const handleProcessPayment = async () => {
+    if (paymentFiredRef.current) return;
+    paymentFiredRef.current = true;
     setIsProcessing(true);
-    timerRef.current = setTimeout(() => {
-      // Fire the DB write immediately when payment "succeeds" — not on modal dismiss.
-      // Capture orderId/method in closure so stale state can never target the wrong order.
-      const orderId = order.id;
-      const method  = paymentMethod;
-      if (!paymentFiredRef.current) {
-        paymentFiredRef.current = true;
-        onPaymentComplete(orderId, method);
-      }
+    setPaymentError(null);
+    try {
+      // Await the real database write — the success/receipt screen is shown
+      // ONLY after it resolves. On failure the cashier sees an explicit error.
+      await onPaymentComplete(order.id, paymentMethod);
       setIsProcessing(false);
       setShowReceipt(true);
-    }, 100);
+    } catch (err: any) {
+      console.error('[PaymentModal] Payment write failed:', err);
+      paymentFiredRef.current = false; // allow retry
+      setIsProcessing(false);
+      setPaymentError(err?.message || t('Failed to complete payment'));
+    }
   };
 
   const handleClose = () => {
@@ -186,6 +192,13 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                        </button>
                     </div>
                  </div>
+
+                 {paymentError && (
+                   <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-xl text-sm font-medium flex items-center gap-2">
+                     <X size={16} className="shrink-0" />
+                     <span>{t('Payment failed — no changes were saved')}: {paymentError}</span>
+                   </div>
+                 )}
 
                  <button
                     onClick={handleProcessPayment}

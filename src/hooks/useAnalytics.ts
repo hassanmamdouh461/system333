@@ -3,14 +3,8 @@
  *
  * Single source of truth for all analytical data used by Dashboard and Reports.
  *
- * Dual-mode formula:
- *   • 'Today'               → 100 % real data only. Revenue, orders, and top items
- *                             are derived exclusively from live database records.
- *                             Dashboard starts at $0.00 / 0 orders each morning.
- *   • 'This Week/Month/Year'→ historical baseline  +  real completed orders.
- *                             Keeps realistic aggregate numbers for portfolio demos.
- *
- * When Reports is on "Today", every number matches Dashboard exactly.
+ * Financial rule: EVERY number comes from real database records only.
+ * No fabricated baselines — a manager must never see revenue that doesn't exist.
  */
 import { useMemo } from 'react';
 import { getTaxRate } from '../utils/settingsConfig';
@@ -22,76 +16,83 @@ import { MenuItem } from '../types/menu';
 // ─── Period type ──────────────────────────────────────────────────────────────
 export type AnalyticsPeriod = 'Today' | 'This Week' | 'This Month' | 'This Year';
 
-// ─── Historical Baseline ──────────────────────────────────────────────────────
-// Makes numbers non-zero for portfolio demos. The baseline represents
-// accumulated historical data before the live tracking period started.
+// ─── Demo mode ────────────────────────────────────────────────────────────────
+// Fabricated baseline data exists ONLY for portfolio demos. It is OFF by default
+// and must never appear in a production build unless explicitly enabled.
+// Enable via: localStorage 'brewmaster_demo_mode' = 'true', or VITE_DEMO_MODE=true at build time.
+export const DEMO_MODE: boolean = (() => {
+  try {
+    if (typeof import.meta !== 'undefined' && (import.meta as any).env?.VITE_DEMO_MODE === 'true') return true;
+    return typeof localStorage !== 'undefined' && localStorage.getItem('brewmaster_demo_mode') === 'true';
+  } catch {
+    return false;
+  }
+})();
+
+// ─── Historical Baseline (demo only) ─────────────────────────────────────────
 const BASELINE: Record<AnalyticsPeriod, {
   orders: number;         // total orders (including non-completed)
   completedOrders: number;
   revenue: number;        // revenue from completed orders
 }> = {
-  'Today':      { orders: 0,    completedOrders: 0,    revenue: 0     },  // 🎬 demo baseline: starts clean
-  'This Week':  { orders: 120,  completedOrders: 98,   revenue: 950   },
-  'This Month': { orders: 520,  completedOrders: 425,  revenue: 4200  },
-  'This Year':  { orders: 6500, completedOrders: 5300, revenue: 52000 },
+  'Today':      { orders: 0,    completedOrders: 0,    revenue: 0     },
+  'This Week':  DEMO_MODE ? { orders: 120,  completedOrders: 98,   revenue: 950   } : { orders: 0, completedOrders: 0, revenue: 0 },
+  'This Month': DEMO_MODE ? { orders: 520,  completedOrders: 425,  revenue: 4200  } : { orders: 0, completedOrders: 0, revenue: 0 },
+  'This Year':  DEMO_MODE ? { orders: 6500, completedOrders: 5300, revenue: 52000 } : { orders: 0, completedOrders: 0, revenue: 0 },
 };
 
-// ─── Chart Baseline ───────────────────────────────────────────────────────────
-// Values are in $ per bucket. Each period's array sums ≈ BASELINE[period].revenue.
-// Real completed-order revenue is added on top per bucket.
+// ─── Chart config (bucket labels + baseline per bucket, demo only) ───────────
 const CHART_CONFIG: Record<AnalyticsPeriod, {
   labels: string[];
-  base: number[];          // historical baseline $ per bucket
+  base: number[];          // demo baseline $ per bucket
   getBucket: (d: Date) => number;
 }> = {
   'Today': {
     labels: ['12am', '2am', '4am', '6am', '8am', '10am', '12pm', '2pm', '4pm', '6pm', '8pm', '10pm'],
-    base:   [0,      0,      0,      0,      0,     0,      0,     0,     0,     0,     0,      0],   // 🎬 demo baseline: all zeros
+    base:   [0,      0,      0,      0,      0,     0,      0,     0,     0,     0,     0,      0],
     getBucket: (d) => Math.floor(d.getHours() / 2),
   },
   'This Week': {
     labels: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
-    base:   [100,   130,   105,   145,   165,   185,   120],                                       // sum=950
+    base:   DEMO_MODE ? [100, 130, 105, 145, 165, 185, 120] : [0, 0, 0, 0, 0, 0, 0],
     getBucket: (d) => (d.getDay() + 6) % 7,
   },
   'This Month': {
     labels: ['Wk 1', 'Wk 2', 'Wk 3', 'Wk 4'],
-    base:   [950,    1050,   1100,   1100],                                                        // sum=4200
+    base:   DEMO_MODE ? [950, 1050, 1100, 1100] : [0, 0, 0, 0],
     getBucket: (d) => Math.min(Math.floor((d.getDate() - 1) / 7), 3),
   },
   'This Year': {
     labels: ['Jan',  'Feb',  'Mar',  'Apr',  'May',  'Jun',  'Jul',  'Aug',  'Sep',  'Oct',  'Nov',  'Dec'],
-    base:   [2600,   2900,   3600,   3900,   4100,   4700,   4400,   5200,   3900,   4600,   5300,   6300], // sum≈52500
+    base:   DEMO_MODE ? [2600, 2900, 3600, 3900, 4100, 4700, 4400, 5200, 3900, 4600, 5300, 6300] : [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
     getBucket: (d) => d.getMonth(),
   },
 };
 
-// ─── Top Items: historical baseline per period ───────────────────────────────
-// These are ADDED on top of real order counts so totals are always proportional
-// to the overall order/revenue baseline for that period.
+// ─── Top Items: demo baseline per period ─────────────────────────────────────
 const TOP_ITEMS_BOOST: Record<AnalyticsPeriod, TopItem[]> = {
-  'Today': [],  // 🎬 demo baseline: no pre-seeded items — only real orders appear
-  'This Week': [
+  'Today': [],
+  'This Week': DEMO_MODE ? [
     { name: 'Spanish Latte',          count: 52,   revenue: 312.00  },
     { name: 'Iced Caramel Macchiato', count: 43,   revenue: 279.50  },
     { name: 'Cappuccino',             count: 38,   revenue: 190.00  },
     { name: 'Mocha Frappe',           count: 31,   revenue: 217.00  },
     { name: 'Espresso Shot',          count: 24,   revenue: 96.00   },
-  ],
-  'This Month': [
+  ] : [],
+  'This Month': DEMO_MODE ? [
     { name: 'Spanish Latte',          count: 218,  revenue: 1308.00 },
     { name: 'Iced Caramel Macchiato', count: 172,  revenue: 1118.00 },
     { name: 'Cappuccino',             count: 145,  revenue: 725.00  },
     { name: 'Mocha Frappe',           count: 128,  revenue: 896.00  },
     { name: 'Espresso Shot',          count: 98,   revenue: 392.00  },
-  ],
-  'This Year': [
+  ] : [],
+  'This Year': DEMO_MODE ? [
     { name: 'Spanish Latte',          count: 2450, revenue: 14700.00 },
     { name: 'Iced Caramel Macchiato', count: 1980, revenue: 12870.00 },
     { name: 'Cappuccino',             count: 1720, revenue: 8600.00  },
     { name: 'Mocha Frappe',           count: 1540, revenue: 10780.00 },
     { name: 'Espresso Shot',          count: 1180, revenue: 4720.00  },
-  ],
+  ] : [],
 };
 
 // ─── Period filter ────────────────────────────────────────────────────────────
@@ -188,9 +189,11 @@ export function useAnalytics(period: AnalyticsPeriod): AnalyticsResult {
     [orders, period],
   );
 
-  // Sum of real completed-order revenue in the period (including tax)
+  // Sum of real completed-order revenue in the period (tax included).
+  // Uses the tax snapshot stored on the order at payment time — never the
+  // current settings value, so historical records never change retroactively.
   const realRevenue = useMemo(
-    () => completedPeriod.reduce((s, o) => s + o.totalAmount * (1 + getTaxRate()), 0),
+    () => completedPeriod.reduce((s, o) => s + (o.grandTotal ?? o.totalAmount * (1 + getTaxRate())), 0),
     [completedPeriod],
   );
 
@@ -228,36 +231,29 @@ export function useAnalytics(period: AnalyticsPeriod): AnalyticsResult {
   }, [completedPeriod, period]);
 
   // ── Top items ──────────────────────────────────────────────────────────────
-  // 'Today'  → pure real data: aggregate items ONLY from today's paid orders.
-  //            An item appears here only if it was actually sold and paid for today.
-  // Others   → baseline boost + real period orders merged on top so that
-  //            'This Year' always shows thousands of sales, not just a handful.
+  // Always aggregate ONLY from real paid orders. The demo boost adds fabricated
+  // rows only when DEMO_MODE is explicitly enabled.
   const topItems = useMemo<TopItem[]>(() => {
     const map: Record<string, TopItem> = {};
 
-    if (period === 'Today') {
-      // Only paid orders contribute — zero dummy data
+    // Item prices are pre-tax — apply the order's own tax snapshot per item via
+    // its parent order's stored rate when available.
+    const addReal = () =>
       completedPeriod.forEach(order =>
         order.items.forEach(item => {
           if (!map[item.name]) map[item.name] = { name: item.name, count: 0, revenue: 0 };
+          const itemTaxRate = order.taxRate ?? getTaxRate();
           map[item.name].count   += item.quantity;
-          map[item.name].revenue += item.quantity * item.price * (1 + getTaxRate());
+          map[item.name].revenue += item.quantity * item.price * (1 + itemTaxRate);
         }),
       );
-    } else {
-      // Seed from historical baseline, then layer ONLY paid orders on top.
-      // Financial rule: an item is "sold" when its order is Paid — never before.
+
+    if (DEMO_MODE && period !== 'Today') {
       TOP_ITEMS_BOOST[period].forEach(b => {
         map[b.name] = { name: b.name, count: b.count, revenue: b.revenue };
       });
-      completedPeriod.forEach(order =>
-        order.items.forEach(item => {
-          if (!map[item.name]) map[item.name] = { name: item.name, count: 0, revenue: 0 };
-          map[item.name].count   += item.quantity;
-          map[item.name].revenue += item.quantity * item.price * (1 + getTaxRate());
-        }),
-      );
     }
+    addReal();
 
     return Object.values(map).sort((a, b) => b.count - a.count).slice(0, 5);
   }, [completedPeriod, period]);
