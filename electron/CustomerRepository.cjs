@@ -60,16 +60,25 @@ class CustomerRepository {
   }
 
   /**
-   * Apply a loyalty points change atomically. MUST be called inside an outer
-   * better-sqlite3 transaction (nested calls become savepoints).
-   * Writes ledger entries to points_transactions for audit (Issue 26).
+   * Applies a loyalty points change and writes its ledger entries.
+   *
+   * Must be called inside an outer transaction; nested calls become savepoints, so the
+   * points change commits or rolls back with the order that caused it.
+   *
+   * A redemption larger than the balance is refused rather than clamped. Clamping made the
+   * order believe it had discounted more than the customer actually had, so the till figure
+   * and the points ledger disagreed with nothing recording why.
    */
   applyPointsChangeInTx(phone, { pointsEarned = 0, pointsRedeemed = 0, orderId = null, branchId = null, customerName = null }) {
     const sqlite = this.getDb();
     const now = new Date().toISOString();
     const activeBranch = branchId || this.getBranchId();
 
-    // Ensure the customer exists (upsert by phone)
+    // Points are a whole-unit balance; a fractional point cannot be redeemed.
+    const earned = Math.max(0, Math.floor(Number(pointsEarned) || 0));
+    const redeemed = Math.max(0, Math.floor(Number(pointsRedeemed) || 0));
+
+    // Upsert by phone: the phone number is the loyalty identity.
     let customer = sqlite.prepare('SELECT * FROM customers WHERE phone = ? AND deleted_at IS NULL').get(phone);
     if (!customer) {
       const id = `cust-${randomUUID()}`;
@@ -78,20 +87,30 @@ class CustomerRepository {
       customer = sqlite.prepare('SELECT * FROM customers WHERE id = ?').get(id);
     }
 
-    const delta = Number(pointsEarned) - Number(pointsRedeemed);
-    const newBalance = Math.max(0, (Number(customer.points) || 0) + delta);
+    const currentBalance = Math.max(0, Number(customer.points) || 0);
+    if (redeemed > currentBalance) {
+      throw new Error(`Cannot redeem ${redeemed} points: the balance is ${currentBalance}`);
+    }
 
-    sqlite.prepare('UPDATE customers SET points = ?, updated_at = ?, is_synced = 0 WHERE id = ?').run(newBalance, now, customer.id);
+    const balanceAfterRedeem = currentBalance - redeemed;
+    const newBalance = balanceAfterRedeem + earned;
+
+    sqlite.prepare('UPDATE customers SET points = ?, updated_at = ?, is_synced = 0 WHERE id = ?')
+      .run(newBalance, now, customer.id);
 
     const insertLedger = sqlite.prepare(`
       INSERT INTO points_transactions (id, customerId, orderId, type, points, balanceAfter, createdAt, branch_id, is_synced)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)
     `);
-    if (Number(pointsRedeemed) > 0) {
-      insertLedger.run(`ptx-${randomUUID()}`, customer.id, orderId, 'REDEEM', -Number(pointsRedeemed), newBalance, now, activeBranch);
+
+    // Recorded in the order the amounts were applied — the discount comes off the bill,
+    // then points accrue on what was actually paid — so each entry's running balance is
+    // the balance at that moment rather than the final one.
+    if (redeemed > 0) {
+      insertLedger.run(`ptx-${randomUUID()}`, customer.id, orderId, 'REDEEM', -redeemed, balanceAfterRedeem, now, activeBranch);
     }
-    if (Number(pointsEarned) > 0) {
-      insertLedger.run(`ptx-${randomUUID()}`, customer.id, orderId, 'EARN', Number(pointsEarned), newBalance, now, activeBranch);
+    if (earned > 0) {
+      insertLedger.run(`ptx-${randomUUID()}`, customer.id, orderId, 'EARN', earned, newBalance, now, activeBranch);
     }
 
     return { customerId: customer.id, newBalance };
@@ -107,7 +126,7 @@ class CustomerRepository {
 
   getUnsyncedCustomers() {
     const sqlite = this.getDb();
-    const rows = sqlite.prepare('SELECT * FROM customers WHERE is_synced = 0').all();
+    const rows = sqlite.prepare('SELECT * FROM customers WHERE is_synced = 0 AND sync_attempts < 5').all();
     return rows.map(row => ({
       ...this.mapRow(row),
       deletedAt: row.deleted_at || undefined

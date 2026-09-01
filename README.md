@@ -1,6 +1,6 @@
 <div align="center">
 
-# ☕ BrewMaster
+# ☕ Engaz
 ### Full-Stack Coffee Shop Point-of-Sale System
 
 *Built for real cafés. Engineered for scale.*
@@ -56,7 +56,7 @@
 
 > ⚠️ **This is the most important architectural decision in this system.**
 
-Most café POS systems make a critical accounting mistake: they treat *"order status"* and *"payment status"* as the same thing. BrewMaster solves this with a strict two-flow architecture:
+Most café POS systems make a critical accounting mistake: they treat *"order status"* and *"payment status"* as the same thing. Engaz solves this with a strict two-flow architecture:
 
 ```
 ┌─────────────────────────────────┐     ┌──────────────────────────────────┐
@@ -72,7 +72,7 @@ Most café POS systems make a critical accounting mistake: they treat *"order st
 
 **Why this matters in the real world:**
 
-| Scenario | Naive POS | BrewMaster |
+| Scenario | Naive POS | Engaz |
 |----------|-----------|------------|
 | Order delivered but not yet paid | Counted as revenue ❌ | Not counted as revenue ✅ |
 | Order paid but still being prepared | Missing from kitchen board ❌ | Visible on both screens ✅ |
@@ -153,8 +153,8 @@ const groupedOrders = useMemo(() => {
 
 ```bash
 # 1. Clone the repository
-git clone https://github.com/your-username/brewmaster-pos.git
-cd brewmaster-pos
+git clone https://github.com/your-username/engaz-pos.git
+cd engaz-pos
 
 # 2. Install dependencies
 npm install
@@ -187,6 +187,26 @@ npm run dev
 ```
 
 Open [http://localhost:5173](http://localhost:5173) in your browser.
+
+### One-Click Desktop Shortcut *(Windows)*
+
+Create a **Engaz POS** icon on your Desktop that starts everything with one double-click:
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File launcher\create-shortcut.ps1
+```
+
+The shortcut runs `launcher\launch.vbs`, which installs dependencies on first run, starts the Vite
+dev server, waits until it really answers on port 5173, then opens the Electron window — or the
+default browser when Electron is unavailable. Startup failures show a message box, and every run is
+logged to `logs\launcher.log`.
+
+| Command | Effect |
+| --- | --- |
+| `launcher\create-shortcut.ps1` | Create or refresh the Desktop shortcut |
+| `launcher\create-shortcut.ps1 -Mode Browser` | Shortcut opens the browser instead of Electron |
+| `launcher\create-shortcut.ps1 -Remove` | Delete the shortcut |
+| `run.bat` | Same launcher with a visible console, for debugging |
 
 ---
 

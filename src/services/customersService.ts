@@ -1,4 +1,5 @@
 import { Customer } from '../types/customer';
+import { requireDesktopApi } from './desktopBridge';
 
 /**
  * Customers Service - Handle CRUD operations for Customers using SQLite via Electron IPC
@@ -9,7 +10,7 @@ export const customersService = {
    */
   async getAll(): Promise<Customer[]> {
     try {
-      return await window.electronAPI.getCustomers();
+      return await requireDesktopApi('Reading customers').getCustomers();
     } catch (error) {
       console.error('[customersService] Error fetching customers:', error);
       throw new Error('Failed to fetch customers');
@@ -21,7 +22,7 @@ export const customersService = {
    */
   async getByPhone(phone: string): Promise<Customer | null> {
     try {
-      return await window.electronAPI.getCustomerByPhone(phone);
+      return await requireDesktopApi('Looking up a customer').getCustomerByPhone(phone);
     } catch (error) {
       console.error('[customersService] Error fetching customer by phone:', error);
       throw new Error('Failed to fetch customer');
@@ -33,7 +34,7 @@ export const customersService = {
    */
   async save(customer: Partial<Customer> & { phone: string }): Promise<Customer> {
     try {
-      return await window.electronAPI.saveCustomer(customer);
+      return await requireDesktopApi('Saving a customer').saveCustomer(customer);
     } catch (error) {
       console.error('[customersService] Error saving customer:', error);
       throw new Error('Failed to save customer');
@@ -45,7 +46,7 @@ export const customersService = {
    */
   async delete(id: string): Promise<void> {
     try {
-      await window.electronAPI.deleteCustomer(id);
+      await requireDesktopApi('Deleting a customer').deleteCustomer(id);
     } catch (error) {
       console.error('[customersService] Error deleting customer:', error);
       throw new Error('Failed to delete customer');

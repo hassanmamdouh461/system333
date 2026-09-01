@@ -1,0 +1,25 @@
+# Engaz Reports Portal (static SPA)
+# Deploys reports-site/dist to reporting.engaz.tech as a Workers static site.
+#
+# Build first:  cd reports-site && npm install && npm run build
+# Deploy:       npx wrangler deploy -c wrangler-reports-site.toml
+#
+# The portal reads analytics from the reports worker (api-reports.engaz.tech) which is
+# bound to the isolated engaz-reports-db. The site itself holds no data.
+
+name = "engaz-reports-portal"
+compatibility_date = "2025-01-01"
+workers_dev = true
+
+main = "reports-site/empty-worker.js"
+
+# NOTE: `routes` must come BEFORE [assets]. In TOML, any key after a table header
+# belongs to that table — putting it after [assets] silently made it "assets.routes",
+# so the custom domain was never registered and reporting.engaz.tech returned 522.
+routes = [
+  { pattern = "reporting.engaz.tech/*", zone_name = "engaz.tech" },
+]
+
+[assets]
+directory = "reports-site/dist"
+not_found_handling = "single-page-application"

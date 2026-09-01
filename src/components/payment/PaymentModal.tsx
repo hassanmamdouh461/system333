@@ -1,10 +1,11 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Order } from '../../types/order';
-import { X, CheckCircle2, Receipt, Printer, CreditCard, Banknote } from 'lucide-react';
+import { X, CheckCircle2, Printer, CreditCard, Banknote } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useLanguage } from '../../context/LanguageContext';
-import { getTaxRate } from '../../utils/settingsConfig';
+import { useDialog } from '../../hooks/useDialog';
+import { orderTotals, orderRevenue, roundMoney } from '../../utils/orderTotals';
 import { printCustomerReceipt } from '../../utils/printReceipts';
 
 interface PaymentModalProps {
@@ -19,37 +20,44 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
   const [isProcessing, setIsProcessing] = useState(false);
   const [showReceipt, setShowReceipt] = useState(false);
   const { t, language } = useLanguage();
+  const { panelRef, titleId, dialogProps } = useDialog<HTMLDivElement>({
+    onClose,
+    enabled: isOpen && !!order,
+  });
   // Track whether onPaymentComplete has already been called for this session.
   // Prevents double-firing if the user clicks Done twice or if any stale timer fires.
   const paymentFiredRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Reset all state when the modal opens on a fresh order
+  // An already-paid order opens straight onto its receipt; an unpaid one opens on the
+  // method picker. Keyed on the order's identity and payment state rather than the whole
+  // object, so an unrelated field change does not reset the modal mid-interaction.
+  const orderId = order?.id;
+  const orderPaymentStatus = order?.paymentStatus;
+  const orderPaymentMethod = order?.paymentMethod;
+
   useEffect(() => {
-    if (isOpen && order) {
-      if (order.paymentStatus === 'Paid') {
-        setPaymentMethod(order.paymentMethod || 'Cash');
-        setIsProcessing(false);
-        setShowReceipt(true);
-      } else {
-        setPaymentMethod('Cash');
-        setIsProcessing(false);
-        setShowReceipt(false);
-      }
+    if (isOpen && orderId) {
+      const alreadyPaid = orderPaymentStatus === 'Paid';
+      setPaymentMethod(alreadyPaid ? orderPaymentMethod || 'Cash' : 'Cash');
+      setIsProcessing(false);
+      setShowReceipt(alreadyPaid);
       paymentFiredRef.current = false;
     }
-    // Cleanup: cancel any pending timer if the modal is closed externally (e.g. backdrop)
+    // Cancel any pending timer if the modal is closed externally, e.g. via the backdrop.
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [isOpen, order?.id]); // re-run only when a different order opens
+  }, [isOpen, orderId, orderPaymentStatus, orderPaymentMethod]);
 
   if (!isOpen || !order) return null;
 
-  const subtotal = order.totalAmount;
-  const taxRate = getTaxRate();
-  const tax = subtotal * taxRate;
-  const total = subtotal + tax;
+  // The order carries its own tax snapshot; reading the live setting here made a receipt
+  // change retroactively whenever the branch edited its tax rate.
+  const { subtotal, taxRate, taxAmount, grandTotal } = orderTotals(order);
+  const total = orderRevenue(order);
+  const discount = roundMoney(grandTotal - total);
+  const currency = language === 'ar' ? 'ج.م' : 'EGP';
 
   const handleProcessPayment = () => {
     setIsProcessing(true);
@@ -94,19 +102,21 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
         />
 
         <motion.div
+           ref={panelRef}
+           {...dialogProps}
            initial={{ opacity: 0, scale: 0.95 }}
            animate={{ opacity: 1, scale: 1 }}
            exit={{ opacity: 0, scale: 0.95 }}
-           className="bg-white rounded-2xl w-full max-w-lg shadow-2xl relative z-50 overflow-hidden flex flex-col max-h-[90dvh]"
+           className="bg-white rounded-2xl w-full max-w-lg shadow-2xl relative z-50 overflow-hidden flex flex-col max-h-[90dvh] outline-none"
         >
           {/* Header */}
           <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
-            <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
+            <h2 id={titleId} className="text-lg font-bold text-gray-900 flex items-center gap-2">
               <CreditCard className="text-mocha-700" />
               {showReceipt ? t('Payment Successful') : t('Process Payment')}
             </h2>
-            <button onClick={handleClose} className="p-2 hover:bg-gray-200 rounded-full transition-colors text-gray-500">
-              <X size={20} />
+            <button type="button" onClick={handleClose} aria-label={t('Close')} className="p-2 hover:bg-gray-200 rounded-full transition-colors text-gray-500">
+              <X size={20} aria-hidden="true" />
             </button>
           </div>
 
@@ -134,7 +144,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                               <span className="text-gray-400 font-mono">x{item.quantity}</span>
                               <span className="font-medium">{t(item.name)}</span>
                             </div>
-                            <span className="font-mono">{(item.price * item.quantity).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                            <span className="font-mono">{roundMoney(item.price * item.quantity).toFixed(2)} {currency}</span>
                           </div>
                         ))}
                       </div>
@@ -145,18 +155,24 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                     <div className="space-y-1.5 text-xs text-gray-500">
                       <div className="flex justify-between">
                         <span>{t('Subtotal')} ({t('Price')})</span>
-                        <span className="font-mono">{subtotal.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                        <span className="font-mono">{subtotal.toFixed(2)} {currency}</span>
                       </div>
                       <div className="flex justify-between items-center text-gray-500 mb-2">
                         <span>{language === 'ar' ? `الضريبة (${taxRate * 100}%)` : `Tax (${taxRate * 100}%)`}</span>
-                        <span className="font-mono">{tax.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                        <span className="font-mono">{taxAmount.toFixed(2)} {currency}</span>
                       </div>
+                      {discount > 0 && (
+                        <div className="flex justify-between items-center text-green-600 mb-2">
+                          <span>{t('Loyalty Discount')}</span>
+                          <span className="font-mono">-{discount.toFixed(2)} {currency}</span>
+                        </div>
+                      )}
                     </div>
 
                     <div className="border-t border-gray-200 my-3" />
                     <div className="flex justify-between items-center text-lg font-bold">
                        <span>{t('Total to Pay')}</span>
-                       <span className="text-mocha-700">{total.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                       <span className="text-mocha-700">{total.toFixed(2)} {currency}</span>
                     </div>
                  </div>
 
@@ -192,7 +208,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                     disabled={isProcessing}
                     className="w-full bg-mocha-700 text-white py-4 rounded-xl font-bold text-lg hover:bg-mocha-800 transition-all disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                  >
-                    {isProcessing ? t('Processing...') : `${t('Pay')} ${total.toFixed(2)} ${language === 'ar' ? 'ج.م' : 'EGP'}`}
+                    {isProcessing ? t('Processing...') : `${t('Pay')} ${total.toFixed(2)} ${currency}`}
                  </button>
               </div>
             ) : (
@@ -207,12 +223,12 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                  </div>
 
                  {/* Mock Receipt Preview */}
-                 <div className="bg-gray-50 p-6 rounded-xl border border-gray-100 text-left font-mono text-sm shadow-inner relative overflow-hidden text-gray-900">
+                 <div className="bg-gray-50 p-6 rounded-xl border border-gray-100 text-start font-mono text-sm shadow-inner relative overflow-hidden text-gray-900">
                     {/* Jaggered edge effect */}
                     <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-transparent to-white bg-[length:10px_100%]" />
                     
                     <div className="text-center border-b border-gray-200 pb-4 mb-4">
-                       <p className="font-bold text-lg">{t('BREWMASTER')}</p>
+                       <p className="font-bold text-lg">{t('ENGAZ')}</p>
                        <p className="text-xs text-gray-400">{t('42 Roast Street, Coffee District')}</p>
                     </div>
 
@@ -220,7 +236,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                        {order.items.map((item, i) => (
                           <div key={i} className="flex justify-between">
                              <span>{item.quantity}x {t(item.name)}</span>
-                             <span>{(item.price * item.quantity).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                             <span>{roundMoney(item.price * item.quantity).toFixed(2)} {currency}</span>
                           </div>
                        ))}
                     </div>
@@ -228,22 +244,28 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                     <div className="border-t border-gray-200 pt-4 space-y-1">
                        <div className="flex justify-between">
                           <span>{t('Subtotal')}</span>
-                          <span>{subtotal.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                          <span>{subtotal.toFixed(2)} {currency}</span>
                        </div>
                        <div className="flex justify-between items-center text-sm font-bold text-gray-700">
                           <span>{language === 'ar' ? `الضريبة (${taxRate * 100}%)` : `Tax (${taxRate * 100}%)`}</span>
-                          <span>{tax.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                          <span>{taxAmount.toFixed(2)} {currency}</span>
                        </div>
+                       {discount > 0 && (
+                         <div className="flex justify-between items-center text-sm text-green-600">
+                            <span>{t('Loyalty Discount')}</span>
+                            <span>-{discount.toFixed(2)} {currency}</span>
+                         </div>
+                       )}
                        <div className="flex justify-between font-bold text-base pt-2">
                           <span>{t('TOTAL')}</span>
-                          <span>{total.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                          <span>{total.toFixed(2)} {currency}</span>
                        </div>
                     </div>
                     
                     <div className="text-center mt-6 text-xs text-gray-400">
                        <p>{t('Paid via')} {t(paymentMethod)}</p>
                        <p>{new Date().toLocaleString()}</p>
-                       <p>{t('Thank you for choosing BrewMaster! ☕')}</p>
+                       <p>{t('Thank you for choosing Engaz! ☕')}</p>
                     </div>
                  </div>
 

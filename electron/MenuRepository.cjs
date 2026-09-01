@@ -147,7 +147,7 @@ class MenuRepository {
 
   getUnsyncedMenu() {
     const sqlite = this.getDb();
-    const rows = sqlite.prepare('SELECT * FROM menu_items WHERE is_synced = 0').all();
+    const rows = sqlite.prepare('SELECT * FROM menu_items WHERE is_synced = 0 AND sync_attempts < 5').all();
     return rows.map(row => ({
       ...this.mapRow(row),
       deletedAt: row.deleted_at || undefined

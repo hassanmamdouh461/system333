@@ -43,6 +43,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   // Sync Engine APIs
   getSyncStatus: () => ipcRenderer.invoke('sync:get-status'),
   triggerSync: () => ipcRenderer.invoke('sync:trigger-now'),
+  getParkedSyncRows: () => ipcRenderer.invoke('sync:get-parked-rows'),
+  retryParkedSyncRows: (table, ids) => ipcRenderer.invoke('sync:retry-parked-rows', table, ids),
   onSyncStatusUpdate: (callback) => {
     const listener = (event, status) => callback(status);
     ipcRenderer.on('sync:status-update', listener);
@@ -50,6 +52,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   },
   
   // Manager Dashboard cloud bypass APIs
+  getManagerSnapshot: () => ipcRenderer.invoke('db:get-manager-snapshot'),
   getManagerOrders: () => ipcRenderer.invoke('db:get-manager-orders'),
   getManagerCustomers: () => ipcRenderer.invoke('db:get-manager-customers')
 });

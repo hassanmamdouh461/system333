@@ -1,11 +1,20 @@
-import React, { useState, useMemo } from 'react';
-import { Order, OrderStatus } from '../types/order';
+import { useState, useMemo } from 'react';
+import { Order } from '../types/order';
 import { PaymentModal } from '../components/payment/PaymentModal';
 import { CreditCard, DollarSign, Search, Calculator } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useOrders } from '../hooks/useOrders';
 import { useLanguage } from '../context/LanguageContext';
 import { getTaxRate } from '../utils/settingsConfig';
+import { reportFailure } from '../utils/reportFailure';
+
+/**
+ * Queue order for the cashier: ready first, then preparing, then new.
+ *
+ * A module-level constant rather than a value rebuilt each render, so the sort memo does not
+ * take it as a dependency and re-run on every keystroke.
+ */
+const STATUS_PRIORITY: Record<string, number> = { Ready: 1, Preparing: 2, New: 3, Completed: 4, Cancelled: 5 };
 
 export default function Payment() {
   const { t, isRtl, language } = useLanguage();
@@ -43,13 +52,9 @@ export default function Payment() {
       await completeWithPayment(orderId, method);
     } catch (err) {
       console.error('Failed to complete payment:', err);
-      alert(t('Failed to complete payment'));
+      reportFailure(t('Failed to complete payment'), err);
     }
   };
-
-  // Ready first → Preparing → New (cashier sees most urgent orders at the top).
-  // Tie-break: oldest createdAt first (longest-waiting customer gets priority).
-  const STATUS_PRIORITY: Record<string, number> = { Ready: 1, Preparing: 2, New: 3, Completed: 4, Cancelled: 5 };
 
   const filteredOrders = useMemo(() => {
     const list = orders.filter(o => {
@@ -179,6 +184,7 @@ export default function Payment() {
         <div className="relative flex-1 max-w-full xl:max-w-md">
           <Search className={`absolute top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 md:w-5 md:h-5 ${isRtl ? 'right-3' : 'left-3'}`} />
           <input
+            aria-label={t('Search by Table or Order ID...')}
             type="text"
             placeholder={t('Search by Table or Order ID...')}
             value={searchTerm}
@@ -192,6 +198,7 @@ export default function Payment() {
           {/* Date Calendar Picker */}
           <div className="flex items-center gap-2">
             <input
+              aria-label={t('Invoice Date')}
               type="date"
               value={filterDate}
               onChange={(e) => setFilterDate(e.target.value)}
@@ -203,6 +210,7 @@ export default function Payment() {
           <div className="flex items-center gap-2 bg-white px-3 py-2.5 md:py-3 border border-gray-200 rounded-xl shadow-sm text-sm md:text-base text-gray-700">
             <span className="text-gray-500 font-medium text-xs md:text-sm">{t('From Time')}:</span>
             <input
+              aria-label={t('From Time')}
               type="time"
               value={filterStartTime}
               onChange={(e) => setFilterStartTime(e.target.value)}
@@ -211,6 +219,7 @@ export default function Payment() {
             <span className="text-gray-300">|</span>
             <span className="text-gray-500 font-medium text-xs md:text-sm">{t('To Time')}:</span>
             <input
+              aria-label={t('To Time')}
               type="time"
               value={filterEndTime}
               onChange={(e) => setFilterEndTime(e.target.value)}
@@ -226,7 +235,7 @@ export default function Payment() {
                 setFilterStartTime('');
                 setFilterEndTime('');
               }}
-              className="py-2.5 md:py-3 px-3 text-xs font-bold bg-red-50 text-red-650 hover:bg-red-100 rounded-xl border border-red-200 transition-colors shadow-sm active:scale-95"
+              className="py-2.5 md:py-3 px-3 text-xs font-bold bg-red-50 text-red-600 hover:bg-red-100 rounded-xl border border-red-200 transition-colors shadow-sm active:scale-95"
             >
               {t('Clear Filter')}
             </button>
@@ -286,7 +295,7 @@ export default function Payment() {
               ) : (
                 <button
                   onClick={() => handleOpenPayment(order)}
-                  className="w-full py-3 bg-mocha-600 text-white rounded-xl font-semibold hover:bg-mocha-700 transition-colors flex items-center justify-center gap-2 shadow-lg shadow-gray-250"
+                  className="w-full py-3 bg-mocha-600 text-white rounded-xl font-semibold hover:bg-mocha-700 transition-colors flex items-center justify-center gap-2 shadow-lg shadow-gray-300"
                 >
                   <CreditCard size={18} /> {t('View Invoice')}
                 </button>

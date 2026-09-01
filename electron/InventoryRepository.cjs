@@ -171,14 +171,29 @@ class InventoryRepository {
     }));
   }
 
+  /**
+   * Records a stock movement and applies it to the balance.
+   *
+   * The direction comes from the type, never from the sign of the quantity: an "IN" always
+   * adds and an "OUT" always subtracts, so the ledger and the balance can never disagree
+   * about which way stock moved.
+   *
+   * The item must exist. Without that check an unknown id updated zero rows while the
+   * movement was still written, leaving a ledger entry no balance ever reflected.
+   */
   createInventoryTransaction(tx) {
     const sqlite = this.getDb();
     const id = tx.id || `tx-${randomUUID()}`;
     const now = new Date().toISOString();
     const branchId = tx.branchId || this.getBranchId();
+    const quantity = Math.abs(Number(tx.quantity));
 
-    sqlite.transaction(() => {
-      // 1. Insert transaction
+    const runTx = sqlite.transaction(() => {
+      const item = sqlite.prepare('SELECT id, stock FROM inventory WHERE id = ? AND deleted_at IS NULL').get(tx.itemId);
+      if (!item) {
+        throw new Error(`Stock item not found: ${tx.itemId}`);
+      }
+
       sqlite.prepare(`
         INSERT INTO inventory_transactions (id, itemId, type, quantity, referenceId, createdAt, branch_id, is_synced, notes)
         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
@@ -186,27 +201,26 @@ class InventoryRepository {
         id,
         tx.itemId,
         tx.type,
-        Number(tx.quantity),
+        quantity,
         tx.referenceId || null,
         now,
         branchId,
         tx.notes || null
       );
 
-      // 2. Adjust stock in inventory table
-      let stockChange = Number(tx.quantity);
-      if (tx.type === 'OUT') {
-        stockChange = -stockChange; // Subtract quantity for OUT
-      }
+      const stockChange = tx.type === 'OUT' ? -quantity : quantity;
 
+      // Stock is floored at zero: a physical count cannot be negative, and a negative
+      // balance propagates into the valuation as negative money.
       sqlite.prepare(`
-        UPDATE inventory 
-        SET stock = stock + ?, updated_at = ?, is_synced = 0 
+        UPDATE inventory
+        SET stock = MAX(0, stock + ?), updated_at = ?, is_synced = 0
         WHERE id = ?
       `).run(stockChange, now, tx.itemId);
-    })();
+    });
 
-    return { ...tx, id, createdAt: now, branchId };
+    runTx();
+    return { ...tx, id, quantity, createdAt: now, branchId };
   }
 
   // ─── Menu Recipes (Ingredients Mapping) ────────────────────────────────────
@@ -274,87 +288,121 @@ class InventoryRepository {
 
   // ─── Live Inventory Deduction on Order Create/Cancel ─────────────────────────
 
+  /**
+   * Deducts the ingredients an order consumes and logs one movement per ingredient.
+   *
+   * Called from inside the order-creation transaction, so its own transaction becomes a
+   * savepoint rather than a second top-level one — the whole order still commits or rolls
+   * back as a unit.
+   *
+   * Stock is floored at zero: selling an item whose ingredients ran out is a stock-count
+   * problem, not a reason to store a negative balance that then reads as negative money in
+   * the valuation.
+   */
   deductInventoryForOrder(orderId, orderItems, branchId) {
     const sqlite = this.getDb();
     const now = new Date().toISOString();
     const activeBranch = branchId || this.getBranchId();
 
-    sqlite.transaction(() => {
-      for (const item of orderItems) {
-        const mItemId = item.menuItemId || item.id; // handle case where ID might be menuItemId or direct ID
-        // Get recipe ingredients for this menu item
-        const recipe = sqlite.prepare('SELECT * FROM menu_recipes WHERE menuItemId = ?').all(mItemId);
-        
-        for (const ing of recipe) {
-          const qtyUsed = ing.quantity * item.quantity;
-          
-          // Deduct from stock
-          sqlite.prepare(`
-            UPDATE inventory 
-            SET stock = stock - ?, updated_at = ?, is_synced = 0 
-            WHERE id = ?
-          `).run(qtyUsed, now, ing.inventoryItemId);
+    const runTx = sqlite.transaction(() => {
+      const recipeFor = sqlite.prepare('SELECT * FROM menu_recipes WHERE menuItemId = ?');
+      const deduct = sqlite.prepare(`
+        UPDATE inventory
+        SET stock = MAX(0, stock - ?), updated_at = ?, is_synced = 0
+        WHERE id = ?
+      `);
+      const logMovement = sqlite.prepare(`
+        INSERT INTO inventory_transactions (id, itemId, type, quantity, referenceId, createdAt, branch_id, is_synced, notes)
+        VALUES (?, ?, 'OUT', ?, ?, ?, ?, 0, ?)
+      `);
 
-          // Log OUT transaction
-          const txId = `tx-${randomUUID()}`;
-          sqlite.prepare(`
-            INSERT INTO inventory_transactions (id, itemId, type, quantity, referenceId, createdAt, branch_id, is_synced, notes)
-            VALUES (?, ?, 'OUT', ?, ?, ?, ?, 0, ?)
-          `).run(
-            txId,
-            ing.inventoryItemId,
-            qtyUsed,
+      for (const item of orderItems) {
+        // A line may carry either a menu item id or the item's own id, depending on which
+        // screen created it.
+        const menuItemId = item.menuItemId || item.id;
+
+        for (const ingredient of recipeFor.all(menuItemId)) {
+          const quantityUsed = ingredient.quantity * item.quantity;
+          deduct.run(quantityUsed, now, ingredient.inventoryItemId);
+          logMovement.run(
+            `tx-${randomUUID()}`,
+            ingredient.inventoryItemId,
+            quantityUsed,
             orderId,
             now,
             activeBranch,
-            `Order Item: ${item.name} x${item.quantity}`
+            `Order item: ${item.name} ×${item.quantity}`
           );
         }
       }
-    })();
+    });
+
+    runTx();
   }
 
+  /**
+   * Returns the ingredients an order consumed, by reversing its recorded movements.
+   *
+   * Reversal reads the ledger rather than recomputing from the recipe, so a recipe edited
+   * after the sale cannot restore a different quantity than was taken. Movements already
+   * reversed are skipped, which makes a repeated cancellation a no-op instead of crediting
+   * the stock twice.
+   */
   restoreInventoryForOrder(orderId, branchId) {
     const sqlite = this.getDb();
     const now = new Date().toISOString();
     const activeBranch = branchId || this.getBranchId();
 
-    sqlite.transaction(() => {
-      // Find OUT transactions recorded for this order
-      const transactions = sqlite.prepare(`
-        SELECT * FROM inventory_transactions 
+    const runTx = sqlite.transaction(() => {
+      const taken = sqlite.prepare(`
+        SELECT * FROM inventory_transactions
         WHERE referenceId = ? AND type = 'OUT'
       `).all(orderId);
 
-      for (const tx of transactions) {
-        // Put stock back
-        sqlite.prepare(`
-          UPDATE inventory 
-          SET stock = stock + ?, updated_at = ?, is_synced = 0 
-          WHERE id = ?
-        `).run(tx.quantity, now, tx.itemId);
+      const alreadyReturned = sqlite.prepare(`
+        SELECT itemId, SUM(quantity) AS total FROM inventory_transactions
+        WHERE referenceId = ? AND type = 'IN'
+        GROUP BY itemId
+      `).all(orderId);
 
-        // Log compensating IN transaction
-        const revTxId = `tx-${randomUUID()}`;
-        sqlite.prepare(`
-          INSERT INTO inventory_transactions (id, itemId, type, quantity, referenceId, createdAt, branch_id, is_synced, notes)
-          VALUES (?, ?, 'IN', ?, ?, ?, ?, 0, ?)
-        `).run(
-          revTxId,
-          tx.itemId,
-          tx.quantity,
+      const returnedByItem = new Map(alreadyReturned.map(r => [r.itemId, r.total || 0]));
+
+      const restore = sqlite.prepare(`
+        UPDATE inventory
+        SET stock = stock + ?, updated_at = ?, is_synced = 0
+        WHERE id = ?
+      `);
+      const logMovement = sqlite.prepare(`
+        INSERT INTO inventory_transactions (id, itemId, type, quantity, referenceId, createdAt, branch_id, is_synced, notes)
+        VALUES (?, ?, 'IN', ?, ?, ?, ?, 0, ?)
+      `);
+
+      for (const movement of taken) {
+        const outstanding = movement.quantity - (returnedByItem.get(movement.itemId) || 0);
+        if (outstanding <= 0) continue;
+
+        restore.run(outstanding, now, movement.itemId);
+        logMovement.run(
+          `tx-${randomUUID()}`,
+          movement.itemId,
+          outstanding,
           orderId,
           now,
           activeBranch,
-          `Revert cancelled order transaction`
+          'Reverted cancelled order'
         );
+        // Account for what this pass returned, so two OUT rows for the same item do not
+        // each credit the full already-returned amount.
+        returnedByItem.set(movement.itemId, (returnedByItem.get(movement.itemId) || 0) + outstanding);
       }
-    })();
+    });
+
+    runTx();
   }
 
   getUnsyncedInventory() {
     const sqlite = this.getDb();
-    const rows = sqlite.prepare('SELECT * FROM inventory WHERE is_synced = 0').all();
+    const rows = sqlite.prepare('SELECT * FROM inventory WHERE is_synced = 0 AND sync_attempts < 5').all();
     // No silent 'branch_1' fallback (Issue 22): branchless (NULL) rows are shared
     // stock and must stay branchless in the cloud too.
     return rows.map(row => ({
@@ -376,7 +424,7 @@ class InventoryRepository {
 
   getUnsyncedTransactions() {
     const sqlite = this.getDb();
-    const rows = sqlite.prepare('SELECT * FROM inventory_transactions WHERE is_synced = 0').all();
+    const rows = sqlite.prepare('SELECT * FROM inventory_transactions WHERE is_synced = 0 AND sync_attempts < 5').all();
     return rows.map(row => ({
       id: row.id,
       itemId: row.itemId,

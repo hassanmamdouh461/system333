@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Building2, Mail, Lock, Tag, ShieldCheck, Hash } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { useDialog } from '../../hooks/useDialog';
 import { getBranchConfig, setBranchConfig } from '../../utils/settingsConfig';
 
 interface BranchConfigModalProps {
@@ -8,8 +9,18 @@ interface BranchConfigModalProps {
   onClose: () => void;
 }
 
+/**
+ * Renders nothing while closed so the dialog body — and its focus management — mounts
+ * and unmounts with the dialog itself.
+ */
 export function BranchConfigModal({ isOpen, onClose }: BranchConfigModalProps) {
+  if (!isOpen) return null;
+  return <BranchConfigModalBody onClose={onClose} />;
+}
+
+function BranchConfigModalBody({ onClose }: { onClose: () => void }) {
   const { t } = useLanguage();
+  const { panelRef, titleId, dialogProps } = useDialog<HTMLDivElement>({ onClose });
   const [branchName, setBranchName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -18,38 +29,39 @@ export function BranchConfigModal({ isOpen, onClose }: BranchConfigModalProps) {
   const [error, setError] = useState('');
 
   useEffect(() => {
-    if (isOpen) {
-      const config = getBranchConfig();
-      setBranchName(config.branchName);
-      setEmail(config.email);
-      setPassword(config.password);
-      setBranchId(config.branchId);
-      setSuccess(false);
-      setError('');
-    }
-  }, [isOpen]);
+    const config = getBranchConfig();
+    setBranchName(config.branchName);
+    setEmail(config.email);
+    // The stored password is a digest, never plaintext. Loading it into the field and
+    // saving it back would hash the digest again and lock the branch out, so the field
+    // starts empty and an empty field means "keep the current credential".
+    setPassword('');
+    setBranchId(config.branchId);
+    setSuccess(false);
+    setError('');
+  }, []);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setError('');
 
     if (!branchName.trim()) {
-      setError('Branch name is required');
+      setError(t('Branch name is required'));
       return;
     }
     if (!email.trim()) {
-      setError('Email is required');
+      setError(t('Email is required'));
       return;
     }
-    if (!password.trim()) {
-      setError('Password is required');
+    if (password.length > 0 && password.length < 6) {
+      setError(t('Password must be at least 6 characters'));
       return;
     }
 
-    setBranchConfig({
+    await setBranchConfig({
       branchName: branchName.trim(),
       email: email.trim().toLowerCase(),
-      password: password,
       branchId: branchId,
+      ...(password.length > 0 ? { password } : {}),
     });
 
     setSuccess(true);
@@ -58,13 +70,14 @@ export function BranchConfigModal({ isOpen, onClose }: BranchConfigModalProps) {
     }, 1200);
   };
 
-  if (!isOpen) return null;
-
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={onClose} />
       
-      <div className="relative bg-white w-full max-w-md rounded-2xl shadow-xl overflow-hidden">
+      <div
+        ref={panelRef}
+        {...dialogProps}
+        className="relative bg-white w-full max-w-md rounded-2xl shadow-xl overflow-hidden outline-none">
         {/* Header */}
         <div className="bg-orange-600 px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -72,12 +85,12 @@ export function BranchConfigModal({ isOpen, onClose }: BranchConfigModalProps) {
               <Building2 size={24} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">{t('Branch Configuration')}</h2>
+              <h2 id={titleId} className="text-lg font-bold text-white">{t('Branch Configuration')}</h2>
               <p className="text-orange-100 text-xs">{t('Configure branch identity and credentials')}</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-white/80 hover:text-white p-2 rounded-lg hover:bg-white/10 transition-colors">
-            <X size={20} />
+          <button type="button" onClick={onClose} aria-label={t('Close')} className="text-white/80 hover:text-white p-2 rounded-lg hover:bg-white/10 transition-colors">
+            <X size={20} aria-hidden="true" />
           </button>
         </div>
 
@@ -87,14 +100,15 @@ export function BranchConfigModal({ isOpen, onClose }: BranchConfigModalProps) {
           <div className="space-y-1">
             <label className="text-sm font-bold text-gray-700 block">{t('Branch ID')}</label>
             <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
+              <div className="absolute inset-y-0 left-0 ps-4 flex items-center pointer-events-none text-gray-400">
                 <Hash size={18} />
               </div>
               <input
+                aria-label={t('Branch ID')}
                 type="text"
                 value={branchId}
                 readOnly
-                className="w-full bg-gray-100 border border-gray-200 rounded-xl pl-11 pr-4 py-3 text-sm font-mono text-gray-500 cursor-not-allowed"
+                className="w-full bg-gray-100 border border-gray-200 rounded-xl ps-11 pe-4 py-3 text-sm font-mono text-gray-500 cursor-not-allowed"
               />
             </div>
             <p className="text-xs text-gray-500 mt-1">{t('Auto-generated identifier for this branch')}</p>
@@ -104,14 +118,15 @@ export function BranchConfigModal({ isOpen, onClose }: BranchConfigModalProps) {
           <div className="space-y-1">
             <label className="text-sm font-bold text-gray-700 block">{t('Branch Name')}</label>
             <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
+              <div className="absolute inset-y-0 left-0 ps-4 flex items-center pointer-events-none text-gray-400">
                 <Tag size={18} />
               </div>
               <input
+                aria-label={t('Branch Email')}
                 type="text"
                 value={branchName}
                 onChange={(e) => setBranchName(e.target.value)}
-                className="w-full bg-gray-50 border border-gray-300 rounded-xl pl-11 pr-4 py-3 text-sm font-semibold focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition-all"
+                className="w-full bg-gray-50 border border-gray-300 rounded-xl ps-11 pe-4 py-3 text-sm font-semibold focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition-all"
                 placeholder="Main Branch"
               />
             </div>
@@ -121,14 +136,15 @@ export function BranchConfigModal({ isOpen, onClose }: BranchConfigModalProps) {
           <div className="space-y-1">
             <label className="text-sm font-bold text-gray-700 block">{t('Branch Email')}</label>
             <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
+              <div className="absolute inset-y-0 left-0 ps-4 flex items-center pointer-events-none text-gray-400">
                 <Mail size={18} />
               </div>
               <input
+                aria-label={t('Branch Password')}
                 type="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                className="w-full bg-gray-50 border border-gray-300 rounded-xl pl-11 pr-4 py-3 text-sm font-semibold focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition-all"
+                className="w-full bg-gray-50 border border-gray-300 rounded-xl ps-11 pe-4 py-3 text-sm font-semibold focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition-all"
                 placeholder="admin@branch.local"
               />
             </div>
@@ -137,19 +153,21 @@ export function BranchConfigModal({ isOpen, onClose }: BranchConfigModalProps) {
 
           {/* Branch Password */}
           <div className="space-y-1">
-            <label className="text-sm font-bold text-gray-700 block">{t('Branch Password')}</label>
+            <label htmlFor="branch-password" className="text-sm font-bold text-gray-700 block">{t('Branch Password')}</label>
             <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
+              <div className="absolute inset-y-0 left-0 ps-4 flex items-center pointer-events-none text-gray-400">
                 <Lock size={18} />
               </div>
               <input
+                id="branch-password"
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                className="w-full bg-gray-50 border border-gray-300 rounded-xl pl-11 pr-4 py-3 text-sm font-semibold focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition-all"
+                className="w-full bg-gray-50 border border-gray-300 rounded-xl ps-11 pe-4 py-3 text-sm font-semibold focus:ring-2 focus:ring-orange-500 focus:border-orange-500 outline-none transition-all"
                 placeholder="••••••••"
               />
             </div>
+            <p className="text-xs text-gray-500 mt-1">{t('Leave blank to keep current password')}</p>
           </div>
 
           {/* Error */}

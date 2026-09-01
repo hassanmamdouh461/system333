@@ -1,4 +1,3 @@
-import React from 'react';
 import { MenuItem } from '../../types/menu';
 import { Edit, Trash2, Power } from 'lucide-react';
 import { motion } from 'framer-motion';
@@ -24,7 +23,7 @@ export function MenuItemCard({ item, onEdit, onDelete, onToggleStatus }: MenuIte
       <div>
         {/* Header */}
         <div className="flex justify-between items-start mb-2">
-          <div className="flex-1 min-w-0 mr-2">
+          <div className="flex-1 min-w-0 me-2">
             <h3 className="font-bold text-base text-gray-900 truncate">{t(item.name)}</h3>
             <span className="text-[10px] text-gray-500 font-medium px-2 py-0.5 bg-gray-100 rounded-full">
               {(() => {

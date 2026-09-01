@@ -1,4 +1,3 @@
-import React from 'react';
 import { NavLink } from 'react-router-dom';
 import { Home, ShoppingBag, UtensilsCrossed, CreditCard, BarChart3, Building2, Settings } from 'lucide-react';
 import { motion } from 'framer-motion';

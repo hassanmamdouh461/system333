@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { X, Send, Key, Hash, Clock, ShieldCheck, AlertCircle, ToggleLeft, ToggleRight } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { useDialog } from '../../hooks/useDialog';
 import { getTelegramConfig, setTelegramConfig } from '../../utils/settingsConfig';
 
 interface TelegramConfigModalProps {
@@ -8,8 +9,18 @@ interface TelegramConfigModalProps {
   onClose: () => void;
 }
 
+/**
+ * Renders nothing while closed so the dialog body — and its focus management — mounts
+ * and unmounts with the dialog itself.
+ */
 export function TelegramConfigModal({ isOpen, onClose }: TelegramConfigModalProps) {
+  if (!isOpen) return null;
+  return <TelegramConfigModalBody onClose={onClose} />;
+}
+
+function TelegramConfigModalBody({ onClose }: { onClose: () => void }) {
   const { t } = useLanguage();
+  const { panelRef, titleId, dialogProps } = useDialog<HTMLDivElement>({ onClose });
   const [botToken, setBotToken] = useState('');
   const [chatId, setChatId] = useState('');
   const [reportTime, setReportTime] = useState('23:00');
@@ -21,17 +32,15 @@ export function TelegramConfigModal({ isOpen, onClose }: TelegramConfigModalProp
   const [testSuccess, setTestSuccess] = useState(false);
 
   useEffect(() => {
-    if (isOpen) {
-      const config = getTelegramConfig();
-      setBotToken(config.botToken);
-      setChatId(config.chatId);
-      setReportTime(config.reportTime);
-      setEnabled(config.enabled);
-      setSuccess(false);
-      setTestSuccess(false);
-      setError('');
-    }
-  }, [isOpen]);
+    const config = getTelegramConfig();
+    setBotToken(config.botToken);
+    setChatId(config.chatId);
+    setReportTime(config.reportTime);
+    setEnabled(config.enabled);
+    setSuccess(false);
+    setTestSuccess(false);
+    setError('');
+  }, []);
 
   const handleSave = () => {
     setError('');
@@ -82,7 +91,7 @@ export function TelegramConfigModal({ isOpen, onClose }: TelegramConfigModalProp
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           chat_id: chatId.trim(),
-          text: `🧪 <b>رسالة تجريبية من نظام BrewMaster POS</b>\n\nتم إعداد البوت ومحادثة تليجرام بنجاح! ستصلك التقارير اليومية هنا في الموعد المحدد.`,
+          text: `🧪 <b>رسالة تجريبية من نظام Engaz POS</b>\n\nتم إعداد البوت ومحادثة تليجرام بنجاح! ستصلك التقارير اليومية هنا في الموعد المحدد.`,
           parse_mode: 'HTML'
         })
       });
@@ -93,21 +102,23 @@ export function TelegramConfigModal({ isOpen, onClose }: TelegramConfigModalProp
       } else {
         throw new Error(data.description || 'Failed to send message');
       }
-    } catch (err: any) {
+    } catch (err) {
       console.error('[TelegramConfig] Test message failed:', err);
-      setError(`خطأ أثناء الإرسال: ${err.message || 'يرجى التحقق من صحة التوكن والمعرف'}`);
+      const reason = err instanceof Error ? err.message : 'يرجى التحقق من صحة التوكن والمعرف';
+      setError(`خطأ أثناء الإرسال: ${reason}`);
     } finally {
       setTesting(false);
     }
   };
 
-  if (!isOpen) return null;
-
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={onClose} />
       
-      <div className="relative bg-white w-full max-w-md rounded-2xl shadow-xl overflow-hidden animate-in fade-in zoom-in-95 duration-200">
+      <div
+        ref={panelRef}
+        {...dialogProps}
+        className="relative bg-white w-full max-w-md rounded-2xl shadow-xl overflow-hidden outline-none animate-in fade-in zoom-in-95 duration-200">
         {/* Header */}
         <div className="bg-sky-600 px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -115,12 +126,12 @@ export function TelegramConfigModal({ isOpen, onClose }: TelegramConfigModalProp
               <Send size={24} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">{t('Telegram Configuration') || 'إعدادات التليجرام'}</h2>
+              <h2 id={titleId} className="text-lg font-bold text-white">{t('Telegram Configuration') || 'إعدادات التليجرام'}</h2>
               <p className="text-sky-100 text-xs">{t('Configure Telegram report notifications') || 'إعداد تقارير المبيعات على التليجرام'}</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-white/80 hover:text-white p-2 rounded-lg hover:bg-white/10 transition-colors">
-            <X size={20} />
+          <button type="button" onClick={onClose} aria-label={t('Close')} className="text-white/80 hover:text-white p-2 rounded-lg hover:bg-white/10 transition-colors">
+            <X size={20} aria-hidden="true" />
           </button>
         </div>
 
@@ -152,14 +163,15 @@ export function TelegramConfigModal({ isOpen, onClose }: TelegramConfigModalProp
               {t('Telegram Bot Token') || 'رمز البوت (Bot Token)'}
             </label>
             <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
+              <div className="absolute inset-y-0 left-0 ps-4 flex items-center pointer-events-none text-gray-400">
                 <Key size={18} />
               </div>
               <input
+                aria-label={t('Telegram Bot Token')}
                 type="text"
                 value={botToken}
                 onChange={(e) => setBotToken(e.target.value)}
-                className="w-full bg-gray-50 border border-gray-300 rounded-xl pl-11 pr-4 py-3 text-sm font-sans focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none transition-all"
+                className="w-full bg-gray-50 border border-gray-300 rounded-xl ps-11 pe-4 py-3 text-sm font-sans focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none transition-all"
                 placeholder="123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ"
               />
             </div>
@@ -171,14 +183,15 @@ export function TelegramConfigModal({ isOpen, onClose }: TelegramConfigModalProp
               {t('Telegram Chat ID') || 'معرف المحادثة (Chat ID)'}
             </label>
             <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
+              <div className="absolute inset-y-0 left-0 ps-4 flex items-center pointer-events-none text-gray-400">
                 <Hash size={18} />
               </div>
               <input
+                aria-label={t('Telegram Chat ID')}
                 type="text"
                 value={chatId}
                 onChange={(e) => setChatId(e.target.value)}
-                className="w-full bg-gray-50 border border-gray-300 rounded-xl pl-11 pr-4 py-3 text-sm font-sans focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none transition-all"
+                className="w-full bg-gray-50 border border-gray-300 rounded-xl ps-11 pe-4 py-3 text-sm font-sans focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none transition-all"
                 placeholder="-100123456789 أو 123456789"
               />
             </div>
@@ -193,14 +206,15 @@ export function TelegramConfigModal({ isOpen, onClose }: TelegramConfigModalProp
               {t('Report Send Time') || 'وقت إرسال التقرير التلقائي'}
             </label>
             <div className="relative">
-              <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none text-gray-400">
+              <div className="absolute inset-y-0 left-0 ps-4 flex items-center pointer-events-none text-gray-400">
                 <Clock size={18} />
               </div>
               <input
+                aria-label={t('Report Send Time')}
                 type="time"
                 value={reportTime}
                 onChange={(e) => setReportTime(e.target.value)}
-                className="w-full bg-gray-50 border border-gray-300 rounded-xl pl-11 pr-4 py-3 text-sm font-semibold focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none transition-all"
+                className="w-full bg-gray-50 border border-gray-300 rounded-xl ps-11 pe-4 py-3 text-sm font-semibold focus:ring-2 focus:ring-sky-500 focus:border-sky-500 outline-none transition-all"
               />
             </div>
           </div>

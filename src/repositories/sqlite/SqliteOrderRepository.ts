@@ -1,35 +1,36 @@
 import { IOrderRepository } from '../types';
 import { Order, OrderStatus } from '../../types/order';
+import { requireDesktopApi } from '../../services/desktopBridge';
 
 export class SqliteOrderRepository implements IOrderRepository {
   async getAll(branchId?: string): Promise<Order[]> {
     // Branch filtering happens in SQL inside the main process (Issue 22)
-    return window.electronAPI.getOrders(branchId);
+    return requireDesktopApi('Reading orders').getOrders(branchId);
   }
 
   async create(order: Omit<Order, 'id'>, branchId?: string): Promise<Order> {
     const orderWithBranch = { ...order, branchId };
-    return window.electronAPI.createOrder(orderWithBranch);
+    return requireDesktopApi('Creating an order').createOrder(orderWithBranch);
   }
 
   async update(id: string, data: Partial<Omit<Order, 'id'>>): Promise<Order> {
-    return window.electronAPI.updateOrder(id, data);
+    return requireDesktopApi('Updating an order').updateOrder(id, data);
   }
 
   async updateStatus(id: string, status: OrderStatus): Promise<Order> {
-    return window.electronAPI.updateOrderStatus(id, status);
+    return requireDesktopApi('Updating an order status').updateOrderStatus(id, status);
   }
 
   async completeWithPayment(id: string, method: 'Cash' | 'Card'): Promise<Order> {
-    return window.electronAPI.completeOrderPayment(id, method);
+    return requireDesktopApi('Completing a payment').completeOrderPayment(id, method);
   }
 
   async delete(id: string): Promise<void> {
-    return window.electronAPI.deleteOrder(id);
+    return requireDesktopApi('Deleting an order').deleteOrder(id);
   }
 
   async resetToDefaults(defaults: Omit<Order, 'id'>[], branchId?: string): Promise<Order[]> {
     const defaultsWithBranch = defaults.map(order => ({ ...order, branchId }));
-    return window.electronAPI.resetOrders(defaultsWithBranch);
+    return requireDesktopApi('Resetting orders').resetOrders(defaultsWithBranch);
   }
 }

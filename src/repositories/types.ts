@@ -1,6 +1,5 @@
 import { MenuItem } from '../types/menu';
 import { Order, OrderStatus } from '../types/order';
-import { Customer } from '../types/customer';
 
 export interface IMenuRepository {
   getAll(branchId?: string): Promise<MenuItem[]>;
@@ -18,11 +17,4 @@ export interface IOrderRepository {
   completeWithPayment(id: string, method: 'Cash' | 'Card'): Promise<Order>;
   delete(id: string): Promise<void>;
   resetToDefaults(defaults: Omit<Order, 'id'>[], branchId?: string): Promise<Order[]>;
-}
-
-export interface ICustomerRepository {
-  getAll(branchId?: string): Promise<Customer[]>;
-  getByPhone(phone: string, branchId?: string): Promise<Customer | null>;
-  save(customer: Partial<Customer> & { phone: string }, branchId?: string): Promise<Customer>;
-  delete(id: string): Promise<void>;
 }

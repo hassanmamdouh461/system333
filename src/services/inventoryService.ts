@@ -1,4 +1,5 @@
 import { InventoryItem, InventoryTransaction, RecipeIngredient } from '../global';
+import { requireDesktopApi } from './desktopBridge';
 
 /**
  * Inventory Service - Interface to Electron SQLite Database for Inventory and Recipes
@@ -9,7 +10,7 @@ export const inventoryService = {
    */
   async getAll(branchId?: string): Promise<InventoryItem[]> {
     try {
-      return await window.electronAPI.getInventory(branchId);
+      return await requireDesktopApi('Reading inventory').getInventory(branchId);
     } catch (error) {
       console.error('[inventoryService] Error fetching inventory:', error);
       throw new Error('Failed to fetch inventory');
@@ -21,7 +22,7 @@ export const inventoryService = {
    */
   async create(item: Omit<InventoryItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<InventoryItem> {
     try {
-      return await window.electronAPI.createInventoryItem(item);
+      return await requireDesktopApi('Creating a stock item').createInventoryItem(item);
     } catch (error) {
       console.error('[inventoryService] Error creating inventory item:', error);
       throw new Error('Failed to create inventory item');
@@ -33,7 +34,7 @@ export const inventoryService = {
    */
   async update(id: string, data: Partial<Omit<InventoryItem, 'id' | 'createdAt' | 'updatedAt'>>): Promise<InventoryItem> {
     try {
-      return await window.electronAPI.updateInventoryItem(id, data);
+      return await requireDesktopApi('Updating a stock item').updateInventoryItem(id, data);
     } catch (error) {
       console.error('[inventoryService] Error updating inventory item:', error);
       throw new Error('Failed to update inventory item');
@@ -45,7 +46,7 @@ export const inventoryService = {
    */
   async delete(id: string): Promise<void> {
     try {
-      await window.electronAPI.deleteInventoryItem(id);
+      await requireDesktopApi('Deleting a stock item').deleteInventoryItem(id);
     } catch (error) {
       console.error('[inventoryService] Error deleting inventory item:', error);
       throw new Error('Failed to delete inventory item');
@@ -57,7 +58,7 @@ export const inventoryService = {
    */
   async getTransactions(itemId?: string, branchId?: string): Promise<InventoryTransaction[]> {
     try {
-      return await window.electronAPI.getInventoryTransactions(itemId, branchId);
+      return await requireDesktopApi('Reading stock movements').getInventoryTransactions(itemId, branchId);
     } catch (error) {
       console.error('[inventoryService] Error fetching transactions:', error);
       throw new Error('Failed to fetch inventory transactions');
@@ -69,7 +70,7 @@ export const inventoryService = {
    */
   async createTransaction(tx: Omit<InventoryTransaction, 'id' | 'createdAt'>): Promise<InventoryTransaction> {
     try {
-      return await window.electronAPI.createInventoryTransaction(tx);
+      return await requireDesktopApi('Recording a stock movement').createInventoryTransaction(tx);
     } catch (error) {
       console.error('[inventoryService] Error creating stock transaction:', error);
       throw new Error('Failed to create stock transaction');
@@ -81,7 +82,7 @@ export const inventoryService = {
    */
   async getMenuRecipes(): Promise<RecipeIngredient[]> {
     try {
-      return await window.electronAPI.getMenuRecipes();
+      return await requireDesktopApi('Reading recipes').getMenuRecipes();
     } catch (error) {
       console.error('[inventoryService] Error fetching all recipes:', error);
       throw new Error('Failed to fetch recipes');
@@ -93,7 +94,7 @@ export const inventoryService = {
    */
   async getMenuItemRecipe(menuItemId: string): Promise<RecipeIngredient[]> {
     try {
-      return await window.electronAPI.getMenuItemRecipe(menuItemId);
+      return await requireDesktopApi('Reading a recipe').getMenuItemRecipe(menuItemId);
     } catch (error) {
       console.error('[inventoryService] Error fetching recipe for item:', menuItemId, error);
       return [];
@@ -105,7 +106,7 @@ export const inventoryService = {
    */
   async saveMenuRecipe(menuItemId: string, ingredients: RecipeIngredient[]): Promise<RecipeIngredient[]> {
     try {
-      return await window.electronAPI.saveMenuRecipe(menuItemId, ingredients);
+      return await requireDesktopApi('Saving a recipe').saveMenuRecipe(menuItemId, ingredients);
     } catch (error) {
       console.error('[inventoryService] Error saving recipe for item:', menuItemId, error);
       throw new Error('Failed to save item recipe');
@@ -117,7 +118,7 @@ export const inventoryService = {
    */
   async getRecipeCost(menuItemId: string): Promise<number> {
     try {
-      return await window.electronAPI.getRecipeCost(menuItemId);
+      return await requireDesktopApi('Reading a recipe cost').getRecipeCost(menuItemId);
     } catch (error) {
       console.error('[inventoryService] Error getting recipe cost:', menuItemId, error);
       return 0;

@@ -1,4 +1,3 @@
-import React from 'react';
 import { Menu, Bell, User } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
@@ -21,7 +20,7 @@ export function MobileHeader({ onMenuClick }: MobileHeaderProps) {
       '/manager-dashboard': 'Manager Dashboard',
       '/settings': 'Settings',
     };
-    return titles[path] || 'BrewMaster';
+    return titles[path] || 'Engaz';
   };
 
   return (

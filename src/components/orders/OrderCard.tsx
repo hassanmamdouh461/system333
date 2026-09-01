@@ -133,7 +133,7 @@ export const OrderCard = React.forwardRef<HTMLDivElement, OrderCardProps>(
           {items && items.length > 0 ? items.map((item, idx) => (
             <div key={idx} className="flex justify-between text-sm items-center">
               <span className="text-gray-600">
-                <span className="inline-flex items-center justify-center min-w-[24px] h-6 rounded-lg bg-mocha-50 text-mocha-700 font-bold text-xs mr-2 px-1.5 border border-mocha-100/50">
+                <span className="inline-flex items-center justify-center min-w-[24px] h-6 rounded-lg bg-mocha-50 text-mocha-700 font-bold text-xs me-2 px-1.5 border border-mocha-100/50">
                   {item.quantity}×
                 </span>
                 {item.name}

@@ -1,5 +1,6 @@
-import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { MenuItem, INITIAL_MENU_ITEMS } from '../types/menu';
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import { MenuItem } from '../types/menu';
+import { INITIAL_MENU_ITEMS } from '../data/menuSeed';
 import { Order, OrderStatus } from '../types/order';
 import { menuRepository, orderRepository } from '../repositories';
 import { useAuth } from './AuthContext';
@@ -39,6 +40,13 @@ interface DataContextValue {
 
 const DataContext = createContext<DataContextValue | null>(null);
 
+// A repository can reject with a plain string (the IPC bridge does when the main
+// process throws a non-Error), and `err as Error` produced an object whose .message
+// was undefined — the UI then rendered an empty error box.
+function toError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err));
+}
+
 // ─── Provider ─────────────────────────────────────────────────────────────────
 
 export function DataProvider({ children }: { children: React.ReactNode }) {
@@ -55,35 +63,57 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
   const [ordersLoading, setOrdersLoading] = useState(true);
   const [ordersError, setOrdersError] = useState<Error | null>(null);
 
+  // Monotonic token per fetch. A response is applied only if it belongs to the most
+  // recent request, so a slow fetch for the previous branch cannot land after a fast
+  // fetch for the current one and show another branch's data.
+  const menuFetchId = useRef(0);
+  const ordersFetchId = useRef(0);
+
+  // Mirrors menuItems so callbacks can read the latest list without listing the whole
+  // array as a dependency (which would change their identity on every menu mutation).
+  const menuItemsRef = useRef<MenuItem[]>(menuItems);
+  menuItemsRef.current = menuItems;
+
   // ── Menu fetching ────────────────────────────────────────────────────────────
 
   const fetchMenu = useCallback(async () => {
+    const fetchId = ++menuFetchId.current;
     try {
       setMenuLoading(true);
       setMenuError(null);
       const data = await menuRepository.getAll(branch?.branchId);
+      if (fetchId !== menuFetchId.current) return;
       setMenuItems(data);
     } catch (err) {
-      console.warn('[DataContext] Failed to fetch menu from repository, using default initial items:', err);
-      setMenuItems(INITIAL_MENU_ITEMS);
+      if (fetchId !== menuFetchId.current) return;
+      console.warn('[DataContext] Failed to fetch menu from repository:', err);
+      // Leave the list empty. Substituting the seed catalogue here let POSView — which
+      // reads items and never reads error — sell forty items that do not exist, at
+      // prices nobody set.
+      setMenuError(toError(err));
+      setMenuItems([]);
     } finally {
-      setMenuLoading(false);
+      if (fetchId === menuFetchId.current) setMenuLoading(false);
     }
   }, [branch?.branchId]);
 
   // ── Orders fetching ───────────────────────────────────────────────────────────
 
   const fetchOrders = useCallback(async () => {
+    const fetchId = ++ordersFetchId.current;
     try {
       setOrdersLoading(true);
       setOrdersError(null);
       const data = await orderRepository.getAll(branch?.branchId);
+      if (fetchId !== ordersFetchId.current) return;
       setOrdersList(data);
     } catch (err) {
+      if (fetchId !== ordersFetchId.current) return;
       console.warn('[DataContext] Failed to fetch orders from repository:', err);
+      setOrdersError(toError(err));
       setOrdersList([]);
     } finally {
-      setOrdersLoading(false);
+      if (fetchId === ordersFetchId.current) setOrdersLoading(false);
     }
   }, [branch?.branchId]);
 
@@ -99,9 +129,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     try {
       const newItem = await menuRepository.create(item, branch?.branchId);
       setMenuItems(prev => [newItem, ...prev]);
+      setMenuError(null);
       return newItem;
     } catch (err) {
       console.error('[DataContext] Failed to create item in repository:', err);
+      setMenuError(toError(err));
       return null;
     }
   }, [branch?.branchId]);
@@ -110,8 +142,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     try {
       const updatedItem = await menuRepository.update(id, data);
       setMenuItems(prev => prev.map(i => i.id === id ? updatedItem : i));
+      setMenuError(null);
     } catch (err) {
       console.error('[DataContext] Failed to update item in repository:', err);
+      setMenuError(toError(err));
+      throw err;
     }
   }, []);
 
@@ -119,21 +154,27 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     try {
       await menuRepository.delete(id);
       setMenuItems(prev => prev.filter(i => i.id !== id));
+      setMenuError(null);
     } catch (err) {
       console.error('[DataContext] Failed to delete item in repository:', err);
+      setMenuError(toError(err));
+      throw err;
     }
   }, []);
 
   const toggleAvailability = useCallback(async (id: string) => {
-    const item = menuItems.find(i => i.id === id);
+    const item = menuItemsRef.current.find(i => i.id === id);
     if (!item) return;
     try {
       const updatedItem = await menuRepository.update(id, { available: !item.available });
       setMenuItems(prev => prev.map(i => i.id === id ? updatedItem : i));
+      setMenuError(null);
     } catch (err) {
       console.error('[DataContext] Failed to toggle availability in repository:', err);
+      setMenuError(toError(err));
+      throw err;
     }
-  }, [menuItems]);
+  }, []);
 
   const resetMenu = useCallback(async () => {
     try {
@@ -143,7 +184,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       setMenuItems(seeded);
     } catch (err) {
       console.error('[DataContext] Failed to reset menu to defaults:', err);
-      setMenuError(err as Error);
+      setMenuError(toError(err));
     } finally {
       setMenuLoading(false);
     }
@@ -155,9 +196,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     try {
       const newOrder = await orderRepository.create(order, branch?.branchId);
       setOrdersList(prev => [newOrder, ...prev]);
+      setOrdersError(null);
       return newOrder;
     } catch (err) {
       console.error('[DataContext] Failed to create order in repository:', err);
+      setOrdersError(toError(err));
       return null;
     }
   }, [branch?.branchId]);
@@ -166,8 +209,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     try {
       const updatedOrder = await orderRepository.updateStatus(id, status);
       setOrdersList(prev => prev.map(o => o.id === id ? updatedOrder : o));
+      setOrdersError(null);
     } catch (err) {
       console.error('[DataContext] Failed to update order status in repository:', err);
+      setOrdersError(toError(err));
+      throw err;
     }
   }, []);
 
@@ -175,8 +221,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     try {
       const updatedOrder = await orderRepository.completeWithPayment(id, method);
       setOrdersList(prev => prev.map(o => o.id === id ? updatedOrder : o));
+      setOrdersError(null);
     } catch (err) {
       console.error('[DataContext] Failed to complete payment in repository:', err);
+      setOrdersError(toError(err));
+      throw err;
     }
   }, []);
 
@@ -184,8 +233,11 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     try {
       const updatedOrder = await orderRepository.update(id, data);
       setOrdersList(prev => prev.map(o => o.id === id ? updatedOrder : o));
+      setOrdersError(null);
     } catch (err) {
       console.error('[DataContext] Failed to update order in repository:', err);
+      setOrdersError(toError(err));
+      throw err;
     }
   }, []);
 
@@ -193,14 +245,19 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     try {
       await orderRepository.delete(id);
       setOrdersList(prev => prev.filter(o => o.id !== id));
+      setOrdersError(null);
     } catch (err) {
       console.error('[DataContext] Failed to delete order in repository:', err);
+      setOrdersError(toError(err));
+      throw err;
     }
   }, []);
 
   // ── Context value ─────────────────────────────────────────────────────────────
 
-  const value: DataContextValue = {
+  // Memoized: an unmemoized object literal here re-renders every consumer screen
+  // (Orders, Menu, Payment, Reports, Dashboard, POSView) on any provider state change.
+  const value = useMemo<DataContextValue>(() => ({
     menu: {
       items: menuItems,
       loading: menuLoading,
@@ -223,7 +280,12 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       deleteOrder,
       refetch: fetchOrders,
     },
-  };
+  }), [
+    menuItems, menuLoading, menuError,
+    addItem, updateItem, deleteItem, toggleAvailability, fetchMenu, resetMenu,
+    ordersList, ordersLoading, ordersError,
+    addOrder, updateOrderStatus, completeWithPayment, updateOrder, deleteOrder, fetchOrders,
+  ]);
 
   return <DataContext.Provider value={value}>{children}</DataContext.Provider>;
 }

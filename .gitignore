@@ -101,7 +101,14 @@ Thumbs.db
 /scratch/
 /dist-electron
 
-# Local Netlify folder
-.netlify
+# Build archives. dist-deploy.zip was committed three separate times before this rule
+# existed, so the pattern is what keeps it out rather than a one-off deletion.
+*.zip
 
-.vercel
+# Wrangler deploy scratch directory
+.wrangler/
+
+# Reports portal (reporting.engaz.tech) — build artifacts and deps
+reports-site/node_modules/
+reports-site/dist/
+reports-site/.env

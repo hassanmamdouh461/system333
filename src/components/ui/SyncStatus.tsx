@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { Database, Cloud, CloudOff, RefreshCw, AlertCircle, CheckCircle2 } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Cloud, CloudOff, RefreshCw, AlertCircle, CheckCircle2 } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useLanguage } from '../../context/LanguageContext';
 
@@ -61,7 +61,7 @@ export function SyncStatus() {
       // Web Manager Portal Live Status Card
       return {
         icon: CheckCircle2,
-        color: 'text-emerald-650',
+        color: 'text-emerald-600',
         bgColor: 'bg-emerald-50',
         borderColor: 'border-emerald-200',
         label: language === 'ar' ? 'قناة المزامنة نشطة' : 'Live Channel Active',
@@ -147,7 +147,7 @@ export function SyncStatus() {
           </div>
 
           {/* Content */}
-          <div className="flex-1 min-w-0 text-left">
+          <div className="flex-1 min-w-0 text-start">
             <div className="flex items-center gap-2 mb-1">
               <Cloud size={16} className="text-gray-400 flex-shrink-0" />
               <h3 className={`font-semibold ${config.color} text-sm md:text-base`}>
@@ -199,6 +199,7 @@ export function SyncStatus() {
             onClick={handleSyncNow}
             disabled={syncStatus.state === 'syncing'}
             className={`mobile-touch-target p-2.5 rounded-xl ${config.bgColor} ${config.color} border ${config.borderColor} hover:bg-white active:scale-95 transition-all disabled:opacity-50 flex-shrink-0 tap-highlight-none shadow-sm flex items-center justify-center`}
+            aria-label={t('Sync database changes now')}
             title={t('Sync database changes now')}
           >
             <RefreshCw 

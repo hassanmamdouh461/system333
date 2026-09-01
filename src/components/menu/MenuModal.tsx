@@ -3,23 +3,25 @@ import { X, Plus, Trash2, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MenuItem } from '../../types/menu';
 import { useLanguage } from '../../context/LanguageContext';
+import { useDialog } from '../../hooks/useDialog';
 import { inventoryService } from '../../services/inventoryService';
-import { InventoryItem } from '../../global';
+import { InventoryItem, RecipeIngredient } from '../../global';
+import { reportFailure } from '../../utils/reportFailure';
 
 interface MenuModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (item: Omit<MenuItem, 'id'> | MenuItem, recipeIngredients: any[]) => void;
+  onSave: (item: Omit<MenuItem, 'id'> | MenuItem, recipeIngredients: RecipeIngredient[]) => void;
   initialData?: MenuItem | null;
   existingItems: MenuItem[];
 }
 
 export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems }: MenuModalProps) {
   const { t } = useLanguage();
+  const { panelRef, titleId, dialogProps } = useDialog<HTMLDivElement>({ onClose, enabled: isOpen });
   const [activeTab, setActiveTab] = useState<'general' | 'recipe'>('general');
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
   const [mappedIngredients, setMappedIngredients] = useState<Array<{ inventoryItemId: string; quantity: number }>>([]);
-  const [loading, setLoading] = useState(false);
 
   const [showNewCategoryInput, setShowNewCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
@@ -56,7 +58,6 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
 
   useEffect(() => {
     const loadRecipeAndInventory = async () => {
-      setLoading(true);
       try {
         const inv = await inventoryService.getAll();
         setInventoryItems(inv);
@@ -71,9 +72,7 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
           setMappedIngredients([]);
         }
       } catch (err) {
-        console.error('Failed to load recipe/inventory items:', err);
-      } finally {
-        setLoading(false);
+        console.error('[MenuModal] Failed to load the recipe and stock list:', err);
       }
     };
     
@@ -181,7 +180,7 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
       onClose();
     } catch (err) {
       console.error('Failed to save menu item:', err);
-      alert(t('Failed to save item. Please try again.'));
+      reportFailure(t('Failed to save item. Please try again.'), err);
     }
   };
 
@@ -202,17 +201,21 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
           initial={{ opacity: 0, scale: 0.95, y: 20 }}
           animate={{ opacity: 1, scale: 1, y: 0 }}
           exit={{ opacity: 0, scale: 0.95, y: 20 }}
-          className="bg-white rounded-2xl w-full max-w-lg shadow-xl relative z-10 overflow-hidden"
+          ref={panelRef}
+          {...dialogProps}
+          className="bg-white rounded-2xl w-full max-w-lg shadow-xl relative z-10 overflow-hidden outline-none"
         >
           <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
-            <h2 className="text-xl font-bold text-gray-900">
+            <h2 id={titleId} className="text-xl font-bold text-gray-900">
               {initialData ? t('Edit Item') : t('Add New Item')}
             </h2>
-            <button 
+            <button
+              type="button"
               onClick={onClose}
+              aria-label={t('Close')}
               className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-500"
             >
-              <X size={20} />
+              <X size={20} aria-hidden="true" />
             </button>
           </div>
 
@@ -246,8 +249,9 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
               {activeTab === 'general' ? (
                 <>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">{t('Item Name')}</label>
+                    <label htmlFor="menu-item-name" className="block text-sm font-medium text-gray-700 mb-1">{t('Item Name')}</label>
                     <input
+                      id="menu-item-name"
                       type="text"
                       required
                       value={formData.name}
@@ -258,8 +262,9 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">{t('Description')}</label>
+                    <label htmlFor="menu-item-description" className="block text-sm font-medium text-gray-700 mb-1">{t('Description')}</label>
                     <textarea
+                      id="menu-item-description"
                       rows={3}
                       value={formData.description}
                       onChange={(e) => setFormData({ ...formData, description: e.target.value })}
@@ -270,8 +275,9 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
 
                   <div className="grid grid-cols-3 gap-3">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">{t('Price') || 'السعر'}</label>
+                      <label htmlFor="menu-item-price" className="block text-sm font-medium text-gray-700 mb-1">{t('Price') || 'السعر'}</label>
                       <input
+                        id="menu-item-price"
                         type="number"
                         step="0.01"
                         required
@@ -283,8 +289,9 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">{t('Category') || 'قسم المنيو'}</label>
+                      <label htmlFor="menu-item-category" className="block text-sm font-medium text-gray-700 mb-1">{t('Category') || 'قسم المنيو'}</label>
                       <select
+                        id="menu-item-category"
                         value={showNewCategoryInput ? 'CREATE_NEW' : formData.category}
                         onChange={handleCategoryChange}
                         className="w-full px-3 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent transition-all bg-white text-sm"
@@ -297,8 +304,9 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">{t('Preparation Destination') || 'مكان التحضير (الكاشير)'}</label>
+                      <label htmlFor="menu-item-destination" className="block text-sm font-medium text-gray-700 mb-1">{t('Preparation Destination') || 'مكان التحضير (الكاشير)'}</label>
                       <select
+                        id="menu-item-destination"
                         value={preparation}
                         onChange={(e) => setPreparation(e.target.value)}
                         className="w-full px-3 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent transition-all bg-white text-sm font-bold text-mocha-800"
@@ -311,10 +319,11 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
 
                   {showNewCategoryInput && (
                     <div className="animate-fadeIn">
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                      <label htmlFor="menu-item-image" className="block text-sm font-medium text-gray-700 mb-1">
                         {t('New Category Name') || 'اسم القسم الجديد'}
                       </label>
                       <input
+                        id="menu-item-image"
                         type="text"
                         required
                         placeholder={t('e.g. Tea, Desserts') || 'مثال: شاي، حلويات'}
@@ -356,6 +365,7 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
                         return (
                           <div key={idx} className="flex gap-2 items-center bg-gray-50 p-2 rounded-xl border border-gray-100">
                             <select
+                              aria-label={t('Add Ingredient')}
                                value={ing.inventoryItemId}
                                onChange={(e) => updateIngredientRow(idx, e.target.value, ing.quantity)}
                                className="flex-1 px-3 py-1.5 rounded-lg border border-gray-200 text-xs focus:outline-none bg-white font-medium"
@@ -367,6 +377,7 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
 
                             <div className="flex items-center gap-1.5 w-24">
                               <input
+                                aria-label={t('Quantity Used')}
                                 type="number"
                                 step="0.001"
                                 required

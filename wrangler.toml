@@ -1,0 +1,35 @@
+name = "engaz-d1-proxy"
+main = "cloudflare/d1-proxy-worker.js"
+compatibility_date = "2025-01-01"
+
+# Route the worker on the production API subdomain. The zone (engaz.tech) must be on
+# this same Cloudflare account; wrangler resolves the zone_id automatically by name.
+# If the route conflicts with an existing deployment, remove `routes` below and use:
+#   npx wrangler routes add api.engaz.tech/* engaz-d1-proxy --zone engaz.tech
+routes = [
+  { pattern = "api.engaz.tech/*", zone_name = "engaz.tech" },
+]
+
+# Cloudflare D1 database used by the desktop POS (writes) and the manager portal (reads).
+# The binding name must stay `DB` — the worker reads env.DB.
+#
+# database_id is intentionally a placeholder in version control: it identifies a live
+# database, and committing it would publish that identity. Fill it in locally before
+# deploying, from either:
+#   npx wrangler d1 create engaz-db      # first time
+#   npx wrangler d1 list                 # existing database
+#
+# Deploying with the placeholder in place fails fast with an "invalid database" error
+# rather than writing anywhere unexpected.
+[[d1_databases]]
+binding = "DB"
+database_name = "engaz-db"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+
+# Local dev origins are refused unless this is explicitly "true". The worker reads it, so
+# without the declaration the setting could never be turned on for a dev deployment.
+[vars]
+ALLOW_DEV_ORIGINS = "false"
+
+# Secrets are never in this file. Set once per environment:
+#   npx wrangler secret put WORKER_API_KEY

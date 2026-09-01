@@ -1,14 +1,27 @@
-Set WshShell = CreateObject("WScript.Shell")
-strPath = Wscript.ScriptFullName
-Set objFSO = CreateObject("Scripting.FileSystemObject")
-Set objFile = objFSO.GetFile(strPath)
-strFolder = objFSO.GetParentFolderName(objFile)
+' Engaz POS (system333) - kept for backwards compatibility.
+'
+' The real launcher now lives in launcher\launch.vbs, which resolves Node from
+' PATH, waits for the dev server to actually answer, and reports failures instead
+' of dying silently. This file just forwards to it.
 
-WshShell.CurrentDirectory = strFolder
+Option Explicit
 
-' Prepend the portable Node.js folder to the PATH environment variable
-nodePath = strFolder & "\..\node-v20.11.1-win-x64"
-cmdLine = "cmd.exe /c ""set PATH=" & nodePath & ";%PATH% && npm run electron:dev"""
+Dim shell, fso, scriptDir, target, args, i
 
-' Run with window style 0 (hidden) and wait = False
-WshShell.Run cmdLine, 0, False
+Set shell = CreateObject("WScript.Shell")
+Set fso = CreateObject("Scripting.FileSystemObject")
+
+scriptDir = fso.GetParentFolderName(fso.GetFile(WScript.ScriptFullName))
+target = fso.BuildPath(fso.BuildPath(scriptDir, "launcher"), "launch.vbs")
+
+If Not fso.FileExists(target) Then
+    MsgBox "Cannot find the launcher:" & vbCrLf & target, 16, "Engaz POS"
+    WScript.Quit 1
+End If
+
+args = ""
+For i = 0 To WScript.Arguments.Count - 1
+    args = args & " " & WScript.Arguments(i)
+Next
+
+shell.Run "wscript.exe """ & target & """" & args, 0, False

@@ -1,17 +1,16 @@
-import React, { useState, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { Order, OrderStatus, OrderItem } from '../types/order';
 import { OrderCard } from '../components/orders/OrderCard';
 import { OrderDetails } from '../components/orders/OrderDetails';
-import { NewOrderModal } from '../components/orders/NewOrderModal';
 import { useIsMobile } from '../hooks/useIsMobile';
 import { useOrders } from '../hooks/useOrders';
 import { useMenu } from '../hooks/useMenu';
-import { PlusCircle } from 'lucide-react';
+import { LayoutList, Calculator } from 'lucide-react';
 import { AnimatePresence } from 'framer-motion';
 import { useLanguage } from '../context/LanguageContext';
-import { clsx } from 'clsx';
 import { POSView } from '../components/orders/POSView';
 import { getTaxRate } from '../utils/settingsConfig';
+import { buildOrderTotals, roundMoney } from '../utils/orderTotals';
 
 import { filterItemsBySection, getOrderStatusForSection } from '../utils/orderSection';
 import { printKitchenReceipt, printDrinksReceipt } from '../utils/printReceipts';
@@ -22,15 +21,15 @@ interface OrdersProps {
 
 export default function Orders({ type = 'all' }: OrdersProps) {
   // Use local SQLite database for data persistence
-  const { orders, error, updateOrderStatus, updateOrder, addOrder } = useOrders();
+  const { orders, error, updateOrder, addOrder } = useOrders();
   const { t, language } = useLanguage();
-  const { items: menuItems } = useMenu();
+  const { items: menuItems, error: menuError } = useMenu();
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [activeView, setActiveView] = useState<'pos' | 'tracker'>('pos');
 
   const handleCreatePOSOrder = async (
     tableId: string,
-    items: any[],
+    items: OrderItem[],
     paymentStatus: 'Paid' | 'Unpaid',
     paymentMethod?: 'Cash' | 'Card',
     paidAmount?: number,
@@ -41,10 +40,12 @@ export default function Orders({ type = 'all' }: OrdersProps) {
   ) => {
     // Snapshot the financial fields at creation time (Issue 25) so every screen
     // and report reads stored values instead of re-computing tax retroactively.
-    const subtotal = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
-    const taxRate = getTaxRate();
-    const taxAmount = subtotal * taxRate;
-    const grandTotal = subtotal + taxAmount;
+    const { subtotal, taxRate, taxAmount, grandTotal } = buildOrderTotals(items, getTaxRate());
+    // The amount that actually reached the till. Without storing it, an order discounted by
+    // loyalty points still reported its full grand total as revenue.
+    const collected = paidAmount != null
+      ? Math.max(0, roundMoney(paidAmount))
+      : (paymentStatus === 'Paid' ? grandTotal : undefined);
     const newOrder = await addOrder({
       orderNumber: '',
       tableId,
@@ -57,6 +58,7 @@ export default function Orders({ type = 'all' }: OrdersProps) {
       taxRate,
       taxAmount,
       grandTotal,
+      ...(collected != null ? { paidAmount: collected } : {}),
       createdAt: new Date().toISOString(),
       paidAt: paymentStatus === 'Paid' ? new Date().toISOString() : undefined,
       customerPhone,
@@ -70,30 +72,21 @@ export default function Orders({ type = 'all' }: OrdersProps) {
     }
     return newOrder;
   };
-  const [filterStatus, setFilterStatus] = useState<OrderStatus | 'All'>('All');
-  const [isNewOrderOpen, setIsNewOrderOpen] = useState(false);
+  // The authoritative number is assigned by the atomic per-day counter in the main process
+  // when the order is written. This is only a hint for the cashier, derived the same way —
+  // today's order count plus one — so it matches in the normal case instead of showing a
+  // lifetime total.
+  const nextOrderNumberHint = useMemo(() => {
+    const today = new Date().toDateString();
+    const todayCount = orders.filter(o => new Date(o.createdAt).toDateString() === today).length;
+    return String(todayCount + 1);
+  }, [orders]);
+
   const isMobile = useIsMobile();
 
   const sectionOrders = useMemo(() => {
     return orders.filter(order => filterItemsBySection(order.items, type).length > 0);
   }, [orders, type]);
-
-  const handleCreateOrder = async (tableId: string, items: OrderItem[]) => {
-    const totalAmount = items.reduce((sum, i) => sum + i.price * i.quantity, 0);
-    const newOrder = await addOrder({
-      orderNumber: '',
-      tableId,
-      items,
-      status: 'New',
-      paymentStatus: 'Unpaid',
-      totalAmount,
-      createdAt: new Date().toISOString(),
-    });
-    if (newOrder) {
-      printKitchenReceipt(newOrder, language);
-      printDrinksReceipt(newOrder, language);
-    }
-  };
 
   const handleUpdateStatus = async (orderId: string, newStatus: OrderStatus) => {
     try {
@@ -164,22 +157,10 @@ export default function Orders({ type = 'all' }: OrdersProps) {
   };
 
   const handleCancelOrder = (orderId: string) => {
-    if (window.confirm('هل تريد إلغاء هذا الطلب؟ / Cancel this order?')) {
+    if (window.confirm(t('Cancel this order?'))) {
       handleUpdateStatus(orderId, 'Cancelled');
     }
   };
-
-  // Show error state
-  if (error) {
-    return (
-      <div className="flex items-center justify-center h-96">
-        <div className="text-center">
-          <p className="text-red-600 font-semibold mb-2">Failed to load orders</p>
-          <p className="text-gray-500 text-sm">{error.message}</p>
-        </div>
-      </div>
-    );
-  }
 
   const columns: { title: string; status: OrderStatus; color: string }[] = [
     { title: 'New Orders', status: 'New', color: 'bg-mocha-100 text-mocha-800' },
@@ -206,23 +187,47 @@ export default function Orders({ type = 'all' }: OrdersProps) {
     // Completed sorted newest-first so the most recent payment is at the top
     map.Completed.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
     return map;
-  }, [sectionOrders]);
+  }, [sectionOrders, type]);
 
-  const filteredOrders = filterStatus === 'All'
-    ? sectionOrders
-    : (groupedOrders[filterStatus] ?? []);
+  // Error state renders after every hook has run: an early return above the useMemo
+  // changed the hook call order between renders.
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <div className="text-center">
+          <p className="text-red-600 font-semibold mb-2">{t('Failed to load orders')}</p>
+          <p className="text-gray-500 text-sm">{error.message}</p>
+        </div>
+      </div>
+    );
+  }
+
+  // A failed menu load must block the cashier board too. The catalogue is what the POS
+  // sells from, so rendering it empty would look like a café with nothing on the menu
+  // rather than a database that is unreachable.
+  if (menuError) {
+    return (
+      <div className="flex items-center justify-center h-96">
+        <div className="text-center">
+          <p className="text-red-600 font-semibold mb-2">{t('Failed to load menu')}</p>
+          <p className="text-gray-500 text-sm">{menuError.message}</p>
+        </div>
+      </div>
+    );
+  }
 
   const titleMap = {
-    all: { title: 'Cashier Board', desc: 'Manage order flow, payments and track status.' },
-    kitchen: { title: 'Kitchen Board', desc: 'Food items preparing queue.' },
-    drinks: { title: 'Drinks Board', desc: 'Beverages and coffee preparing queue.' }
+    all: { title: 'Cashier Board' },
+    kitchen: { title: 'Kitchen Board' },
+    drinks: { title: 'Drinks Board' }
   };
-  const { title, desc } = titleMap[type];
+  const { title } = titleMap[type];
 
   return (
     <div className="flex flex-col h-[calc(100vh-168px)] md:h-[calc(100vh-114px)]">
-      {/* Header */}
-      {!(type === 'all' && activeView === 'pos') && (
+      {/* Header. The cashier board carries the register/tracker switch; the kitchen and
+          drinks boards only ever show the tracker, so they get a plain title. */}
+      {(type !== 'all' || activeView !== 'pos') && (
         <div className="mb-2 md:mb-4 shrink-0">
           <div className="flex justify-between items-center mb-2">
             <div>
@@ -230,30 +235,48 @@ export default function Orders({ type = 'all' }: OrdersProps) {
                 {t(title)}
               </h1>
             </div>
+            {type === 'all' && (
+              <button
+                onClick={() => setActiveView('pos')}
+                className="mobile-touch-target flex items-center gap-2 bg-mocha-600 hover:bg-mocha-700 text-white px-4 py-2 rounded-xl text-sm font-bold transition-colors"
+              >
+                <Calculator size={18} /> {t('POS View')}
+              </button>
+            )}
           </div>
         </div>
       )}
 
       {type === 'all' && activeView === 'pos' ? (
-        <div className="flex-1 overflow-hidden">
-          <POSView
-            menuItems={menuItems}
-            onCreateOrder={handleCreatePOSOrder}
-            estimatedOrderNumber={String(orders.length + 1)}
-          />
+        <div className="flex-1 overflow-hidden flex flex-col">
+          <div className="shrink-0 flex justify-end mb-2">
+            <button
+              onClick={() => setActiveView('tracker')}
+              className="mobile-touch-target flex items-center gap-2 bg-white border border-gray-200 hover:bg-gray-50 text-gray-700 px-4 py-2 rounded-xl text-sm font-bold transition-colors"
+            >
+              <LayoutList size={18} /> {t('Order Tracker')}
+            </button>
+          </div>
+          <div className="flex-1 overflow-hidden">
+            <POSView
+              menuItems={menuItems}
+              onCreateOrder={handleCreatePOSOrder}
+              estimatedOrderNumber={nextOrderNumberHint}
+            />
+          </div>
         </div>
       ) : (
         /* Kanban Board - Desktop | Mobile: Simple list */
         isMobile ? (
         /* Mobile: Full-width list, padded for bottom nav */
         <div className="flex-1 overflow-y-auto space-y-2 pb-24">
-          {filteredOrders.length === 0 ? (
+          {sectionOrders.length === 0 ? (
             <div className="text-center py-12 text-gray-400">
-              <p className="text-sm">No orders found</p>
+              <p className="text-sm">{t('No orders found')}</p>
             </div>
           ) : (
             <AnimatePresence mode="popLayout">
-              {filteredOrders.map(order => (
+              {sectionOrders.map(order => (
                 <OrderCard 
                   key={order.id} 
                   order={order} 
@@ -277,7 +300,7 @@ export default function Orders({ type = 'all' }: OrdersProps) {
                     {(groupedOrders[col.status] ?? []).length}
                   </span>
                 </div>
-                <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar pr-1">
+                <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar pe-1">
                   <AnimatePresence mode="popLayout">
                     {(groupedOrders[col.status] ?? [])
                       .map(order => (
@@ -302,7 +325,7 @@ export default function Orders({ type = 'all' }: OrdersProps) {
                   {groupedOrders.Completed.length}
                 </span>
               </div>
-              <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar pr-1">
+              <div className="flex-1 overflow-y-auto space-y-2 custom-scrollbar pe-1">
                 <AnimatePresence mode="popLayout">
                   {groupedOrders.Completed
                     .map(order => (
@@ -326,13 +349,6 @@ export default function Orders({ type = 'all' }: OrdersProps) {
         onClose={() => setSelectedOrder(null)}
         onUpdateStatus={handleUpdateStatus}
         type={type}
-      />
-
-      <NewOrderModal
-        isOpen={isNewOrderOpen}
-        onClose={() => setIsNewOrderOpen(false)}
-        menuItems={menuItems}
-        onSubmit={handleCreateOrder}
       />
     </div>
   );

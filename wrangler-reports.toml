@@ -1,0 +1,33 @@
+# Engaz Reports Worker
+# Deploys cloudflare/d1-reports-worker.js to api-reports.engaz.tech, bound to its OWN
+# isolated D1 database (engaz-reports-db) — fully separate from the production POS
+# database. The reports portal (reporting.engaz.tech) calls this worker for analytics.
+#
+# Setup (once):
+#   npx wrangler d1 create engaz-reports-db   # paste returned id below
+#   npx wrangler secret put REPORTS_API_KEY   # shared X-API-Key the desktop POS uses
+# Deploy:
+#   npx wrangler deploy -c wrangler-reports.toml
+
+name = "engaz-reports-proxy"
+main = "cloudflare/d1-reports-worker.js"
+compatibility_date = "2025-01-01"
+workers_dev = true
+
+# The reports worker lives on its own API subdomain so it is fully isolated from the
+# production POS worker (api.engaz.tech). If the route conflicts, remove `routes` and use:
+#   npx wrangler routes add api-reports.engaz.tech/* engaz-reports-proxy --zone engaz.tech
+routes = [
+  { pattern = "api-reports.engaz.tech/*", zone_name = "engaz.tech" },
+]
+
+# Isolated reports database. Create once:
+#   npx wrangler d1 create engaz-reports-db
+# then paste the returned database_id below.
+[[d1_databases]]
+binding = "DB"
+database_name = "engaz-reports-db"
+database_id = "8d6a9587-084e-4609-8e39-4b0a0589556b"
+
+# The shared secret the desktop POS sends as X-API-Key, and that the reports portal
+# bakes in as VITE_REPORTS_API_KEY. Set it with: npx wrangler secret put REPORTS_API_KEY

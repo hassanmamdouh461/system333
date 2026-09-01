@@ -1,16 +1,18 @@
 import React, { useState } from 'react';
 import { Plus, Search } from 'lucide-react';
-import { MenuItem, CATEGORIES } from '../types/menu';
+import { MenuItem } from '../types/menu';
 import { MenuItemCard } from '../components/menu/MenuItemCard';
 import { MenuModal } from '../components/menu/MenuModal';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useMenu } from '../hooks/useMenu';
 import { useLanguage } from '../context/LanguageContext';
+import { reportFailure } from '../utils/reportFailure';
+import { RecipeIngredient } from '../global';
 
 export default function Menu() {
   const { t, isRtl } = useLanguage();
   // Use local SQLite database for data persistence
-  const { items, loading, error, addItem, updateItem, deleteItem, toggleAvailability } = useMenu();
+  const { items, error, addItem, updateItem, deleteItem, toggleAvailability } = useMenu();
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
   
@@ -47,7 +49,7 @@ export default function Menu() {
       await toggleAvailability(id);
     } catch (error) {
       console.error('Failed to toggle status:', error);
-      alert(t('Failed to update item availability'));
+      reportFailure(t('Failed to update item availability'), error);
     }
   };
 
@@ -57,7 +59,7 @@ export default function Menu() {
         await deleteItem(id);
       } catch (error) {
         console.error('Failed to delete item:', error);
-        alert(t('Failed to delete item'));
+        reportFailure(t('Failed to delete item'), error);
       }
     }
   };
@@ -72,7 +74,7 @@ export default function Menu() {
     setIsModalOpen(true);
   };
 
-  const handleSave = async (itemData: MenuItem | Omit<MenuItem, 'id'>, recipeIngredients: any[]) => {
+  const handleSave = async (itemData: MenuItem | Omit<MenuItem, 'id'>, recipeIngredients: RecipeIngredient[]) => {
     try {
       let savedItemId = '';
       if ('id' in itemData) {
@@ -96,7 +98,7 @@ export default function Menu() {
       setIsModalOpen(false);
     } catch (error) {
       console.error('Failed to save item:', error);
-      alert(t('Failed to save item'));
+      reportFailure(t('Failed to save item'), error);
     }
   };
 
@@ -152,6 +154,7 @@ export default function Menu() {
         <div className="relative w-full">
           <Search className={`absolute top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 ${isRtl ? 'right-3' : 'left-3'}`} />
           <input
+            aria-label={t('Search items...')}
             type="text"
             placeholder={t('Search items...')}
             value={searchQuery}

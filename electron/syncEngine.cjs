@@ -1,8 +1,12 @@
-const https = require('https');
 const mockApi = require('./mockApiService.cjs');
 
+/** Base interval between sync cycles when everything is healthy. */
+const BASE_INTERVAL_MS = 30_000;
+/** Ceiling for the backoff, so a long outage still retries twice an hour. */
+const MAX_BACKOFF_MS = 30 * 60_000;
+
 async function checkInternet() {
-  // Real connectivity check: can we actually reach our Worker? (Issue 34)
+  // Real reachability, not navigator.onLine: can we actually reach our worker?
   return mockApi.checkWorkerHealth();
 }
 
@@ -18,30 +22,61 @@ class SyncEngine {
       lastError: null,
     };
     this.isSyncing = false;
+    // Consecutive failed cycles, which sets how long to wait before the next attempt.
+    this.consecutiveFailures = 0;
+    this.baseIntervalMs = BASE_INTERVAL_MS;
+    this.timeoutId = null;
+  }
+
+  /**
+   * Delay before the next cycle: the base interval while healthy, doubling with each
+   * consecutive failure up to the ceiling.
+   *
+   * A fixed interval meant an unreachable or rate-limiting worker was retried every 30
+   * seconds indefinitely, which is exactly the traffic that keeps it rate-limiting.
+   */
+  nextDelay() {
+    if (this.consecutiveFailures === 0) return this.baseIntervalMs;
+    const backoff = this.baseIntervalMs * 2 ** Math.min(this.consecutiveFailures, 6);
+    return Math.min(backoff, MAX_BACKOFF_MS);
   }
 
   /**
    * Start the sync background loop
    */
-  start(intervalMs = 30000) {
+  start(intervalMs = BASE_INTERVAL_MS) {
     console.log('[syncEngine] Starting Background Sync Worker...');
-    
-    // Initial stats check and sync
-    this.updatePendingCount();
-    this.runSyncCycle();
+    this.baseIntervalMs = intervalMs;
+    this.stopped = false;
 
-    this.intervalId = setInterval(() => {
-      this.runSyncCycle();
-    }, intervalMs);
+    this.updatePendingCount();
+    // Self-scheduling rather than setInterval: the delay after each cycle depends on
+    // whether that cycle succeeded.
+    this.scheduleNext(0);
+  }
+
+  scheduleNext(delayMs) {
+    if (this.stopped) return;
+    if (this.timeoutId) clearTimeout(this.timeoutId);
+
+    this.timeoutId = setTimeout(async () => {
+      await this.runSyncCycle();
+      const delay = this.nextDelay();
+      if (this.consecutiveFailures > 0) {
+        console.log(`[syncEngine] Next attempt in ${Math.round(delay / 1000)}s after ${this.consecutiveFailures} failed cycle(s).`);
+      }
+      this.scheduleNext(delay);
+    }, delayMs);
   }
 
   /**
    * Stop the background loop
    */
   stop() {
-    if (this.intervalId) {
-      clearInterval(this.intervalId);
-      this.intervalId = null;
+    this.stopped = true;
+    if (this.timeoutId) {
+      clearTimeout(this.timeoutId);
+      this.timeoutId = null;
       console.log('[syncEngine] Background Sync Worker stopped.');
     }
   }
@@ -113,6 +148,7 @@ class SyncEngine {
       if (!isOnline) {
         console.warn('[syncEngine] Offline: Internet connectivity check failed. Postponing sync.');
         this.status.state = 'offline';
+        this.consecutiveFailures += 1;
         this.emitStatus();
         this.isSyncing = false;
         return;
@@ -152,6 +188,7 @@ class SyncEngine {
         // Nothing to push, sync is complete!
         this.status.state = 'synced';
         this.status.lastError = null;
+        this.consecutiveFailures = 0;
         this.emitStatus();
         this.isSyncing = false;
         return;
@@ -177,7 +214,7 @@ class SyncEngine {
           console.log(`[syncEngine] Marked ${ids.length} menu items as synced in local DB.`);
         } catch (e) {
           console.error('[syncEngine] Menu push failed:', e.message);
-          db.markSyncFailure('menu_items', ids, e.message);
+          this.db.markSyncFailure('menu_items', ids, e.message);
         }
       }
 
@@ -190,7 +227,7 @@ class SyncEngine {
           console.log(`[syncEngine] Marked ${ids.length} customers as synced in local DB.`);
         } catch (e) {
           console.error('[syncEngine] Customers push failed:', e.message);
-          db.markSyncFailure('customers', ids, e.message);
+          this.db.markSyncFailure('customers', ids, e.message);
         }
       }
 
@@ -203,7 +240,7 @@ class SyncEngine {
           console.log(`[syncEngine] Marked ${ids.length} orders as synced in local DB.`);
         } catch (e) {
           console.error('[syncEngine] Orders push failed:', e.message);
-          db.markSyncFailure('orders', ids, e.message);
+          this.db.markSyncFailure('orders', ids, e.message);
         }
       }
 
@@ -219,7 +256,7 @@ class SyncEngine {
             console.log(`[syncEngine] Marked ${ids.length} inventory items as synced in local DB.`);
           } catch (e) {
             console.error('[syncEngine] Inventory push failed:', e.message);
-            db.markSyncFailure('inventory', ids, e.message);
+            this.db.markSyncFailure('inventory', ids, e.message);
           }
         }
 
@@ -232,12 +269,12 @@ class SyncEngine {
             console.log(`[syncEngine] Marked ${txIds.length} inventory transactions as synced in local DB.`);
           } catch (e) {
             console.error('[syncEngine] Inventory transactions push failed:', e.message);
-            db.markSyncFailure('inventory_transactions', txIds, e.message);
+            this.db.markSyncFailure('inventory_transactions', txIds, e.message);
           }
         }
 
         // Loyalty points ledger (Issue 26)
-        const sqlite = db.getDb();
+        const sqlite = this.db.getDb();
         const unsyncedPtx = sqlite.prepare('SELECT * FROM points_transactions WHERE is_synced = 0').all();
         if (unsyncedPtx.length > 0) {
           const ptxIds = unsyncedPtx.map(p => p.id);
@@ -248,7 +285,7 @@ class SyncEngine {
             console.log(`[syncEngine] Marked ${ptxIds.length} points transactions as synced in local DB.`);
           } catch (e) {
             console.error('[syncEngine] Points transactions push failed:', e.message);
-            db.markSyncFailure('points_transactions', ptxIds, e.message);
+            this.db.markSyncFailure('points_transactions', ptxIds, e.message);
           }
         }
       } catch (invError) {
@@ -258,6 +295,7 @@ class SyncEngine {
       // 6. Update success status
       this.status.state = 'synced';
       this.status.lastError = null;
+      this.consecutiveFailures = 0;
       this.updatePendingCount(); // Updates pending count and calls emitStatus()
       
       console.log('[syncEngine] Sync cycle completed successfully.');
@@ -265,6 +303,7 @@ class SyncEngine {
       console.error('[syncEngine] Sync cycle failed with error:', error.message);
       this.status.state = 'error';
       this.status.lastError = error.message || 'Unknown synchronization error';
+      this.consecutiveFailures += 1;
       this.updatePendingCount(); // Updates pending count and calls emitStatus()
     } finally {
       this.isSyncing = false;
@@ -279,7 +318,7 @@ class SyncEngine {
       const db = require('./database.cjs');
       const settings = db.getSettings();
       
-      const configRaw = settings['brewmaster_telegram_config'];
+      const configRaw = settings['engaz_telegram_config'];
       if (!configRaw) return;
 
       let config;

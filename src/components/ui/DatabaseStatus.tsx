@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Database, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import { menuService } from '../../services/menuService';
+import { checkWorkerHealth } from '../../services/workerClient';
 import { motion } from 'framer-motion';
 import { useLanguage } from '../../context/LanguageContext';
 
@@ -13,64 +14,39 @@ export function DatabaseStatus() {
 
   const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
 
-  const checkConnection = async () => {
+  const checkConnection = useCallback(async () => {
     setStatus('checking');
-    if (isElectron) {
-      try {
-        // Perform a lightweight check against local SQLite db
+    try {
+      if (isElectron) {
+        // Lightweight round trip against the local database.
         await menuService.getAll();
-        setStatus('connected');
-        setLastChecked(new Date());
-      } catch (error) {
-        console.error('SQLite connection error:', error);
-        setStatus('error');
-        setLastChecked(new Date());
+      } else {
+        // The worker's own liveness endpoint, which needs no key and no query.
+        const healthy = await checkWorkerHealth();
+        if (!healthy) throw new Error('Worker health check failed');
       }
-    } else {
-      // Running on Web: Check Cloudflare D1 Cloud Database connection
-      try {
-        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech';
-        const workerApiKey = import.meta.env.VITE_CF_WORKER_API_KEY || '';
-        const response = await fetch(workerUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
-          },
-          body: JSON.stringify({
-            sql: 'SELECT 1'
-          })
-        });
-        if (!response.ok) {
-          throw new Error(`Cloud database returned status ${response.status}`);
-        }
-        const data = await response.json();
-        if (!data.success) {
-          throw new Error(data.error || 'D1 query failed');
-        }
-        setStatus('connected');
-        setLastChecked(new Date());
-      } catch (error) {
-        console.error('D1 connection error:', error);
-        setStatus('error');
-        setLastChecked(new Date());
-      }
+      setStatus('connected');
+    } catch (error) {
+      console.error('[DatabaseStatus] Connection check failed:', error);
+      setStatus('error');
+    } finally {
+      setLastChecked(new Date());
     }
-  };
+  }, [isElectron]);
 
   useEffect(() => {
     checkConnection();
     // Auto-check every 60 seconds
     const interval = setInterval(checkConnection, 60000);
     return () => clearInterval(interval);
-  }, []);
+  }, [checkConnection]);
 
   const getStatusConfig = () => {
     switch (status) {
       case 'checking':
         return {
           icon: RefreshCw,
-          color: 'text-blue-605',
+          color: 'text-blue-600',
           bgColor: 'bg-blue-50',
           borderColor: 'border-blue-200',
           label: language === 'ar' ? 'جاري التحقق...' : 'Checking...',
@@ -94,7 +70,7 @@ export function DatabaseStatus() {
       case 'error':
         return {
           icon: WifiOff,
-          color: 'text-red-650',
+          color: 'text-red-600',
           bgColor: 'bg-red-50',
           borderColor: 'border-red-200',
           label: isElectron
@@ -127,7 +103,7 @@ export function DatabaseStatus() {
           </div>
 
           {/* Content */}
-          <div className="flex-1 min-w-0 text-left">
+          <div className="flex-1 min-w-0 text-start">
             <div className="flex items-center gap-2 mb-1">
               <Database size={16} className="text-gray-400 flex-shrink-0" />
               <h3 className={`font-semibold ${config.color} text-sm md:text-base`}>
@@ -145,7 +121,7 @@ export function DatabaseStatus() {
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="font-semibold text-gray-700">{isElectron ? (language === 'ar' ? 'مسار التخزين:' : 'File Storage:') : (language === 'ar' ? 'رابط الاتصال:' : 'Endpoint:')}</span>
-                <span className="font-mono">{isElectron ? 'brewmaster.db' : 'Cloudflare D1'}</span>
+                <span className="font-mono">{isElectron ? 'engaz.db' : 'Cloudflare D1'}</span>
               </div>
               {lastChecked && (
                 <div className="flex items-center gap-2">
@@ -162,7 +138,8 @@ export function DatabaseStatus() {
           onClick={checkConnection}
           disabled={status === 'checking'}
           className={`mobile-touch-target p-2 rounded-lg ${config.bgColor} ${config.color} hover:opacity-80 transition-opacity disabled:opacity-50 flex-shrink-0 tap-highlight-none`}
-          title="Refresh connection status"
+          aria-label={t('Refresh')}
+          title={t('Refresh')}
         >
           <RefreshCw 
             size={18} 

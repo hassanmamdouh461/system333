@@ -1,24 +1,13 @@
 import { Order, OrderItem, OrderStatus } from '../types/order';
 
-export function getItemSection(category: string, name: string): 'kitchen' | 'drinks' {
-  const parts = category.split('|');
-  const cat = parts[1] ? parts[1].toLowerCase() : parts[0].toLowerCase();
-  
-  if (cat === 'bar' || cat === 'drinks') return 'drinks';
-  if (cat === 'kitchen') return 'kitchen';
-
-  const n = name.toLowerCase();
-  // Drinks categories and keywords
-  const drinksKeywords = [
-    'coffee', 'iced', 'hot', 'frappe', 'milkshake', 'latte', 'espresso', 
-    'drink', 'juice', 'tea', 'beverage', 'smoothie', 'soda', 'water',
-    'mojito', 'shake', 'brew', 'macchiato', 'cappuccino', 'flat white',
-    'americano', 'cortado', 'mocha'
-  ];
-  
-  const matchesDrink = drinksKeywords.some(keyword => cat.includes(keyword) || n.includes(keyword));
-  return matchesDrink ? 'drinks' : 'kitchen';
-}
+// Item names that route a line to the bar rather than the kitchen. Used as a fallback for
+// legacy rows whose category column was never populated.
+const DRINKS_KEYWORDS = [
+  'coffee', 'iced', 'hot', 'frappe', 'milkshake', 'latte', 'espresso',
+  'drink', 'juice', 'tea', 'beverage', 'smoothie', 'soda', 'water',
+  'mojito', 'shake', 'brew', 'macchiato', 'cappuccino', 'flat white',
+  'americano', 'cortado', 'mocha'
+];
 
 /**
  * Filter items of an order by destination section.
@@ -37,15 +26,9 @@ export function filterItemsBySection(items: OrderItem[], section: 'all' | 'kitch
       return section === 'kitchen';
     }
     
-    // Fallback to item name keyword matching for mock/legacy orders
+    // Fallback to item name keyword matching for legacy orders
     const nameLower = item.name.toLowerCase();
-    const drinksKeywords = [
-      'coffee', 'iced', 'hot', 'frappe', 'milkshake', 'latte', 'espresso', 
-      'drink', 'juice', 'tea', 'beverage', 'smoothie', 'soda', 'water',
-      'mojito', 'shake', 'brew', 'macchiato', 'cappuccino', 'flat white',
-      'americano', 'cortado', 'mocha'
-    ];
-    const isDrink = drinksKeywords.some(keyword => nameLower.includes(keyword));
+    const isDrink = DRINKS_KEYWORDS.some(keyword => nameLower.includes(keyword));
     return section === 'drinks' ? isDrink : !isDrink;
   });
 }

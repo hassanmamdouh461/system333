@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect } from 'react';
 import { X, User, ShieldCheck, AlertCircle } from 'lucide-react';
 import { useLanguage } from '../../context/LanguageContext';
+import { useDialog } from '../../hooks/useDialog';
 import { getAdminCredentials, setAdminCredentials } from '../../utils/settingsConfig';
 import { useAuth } from '../../context/AuthContext';
 
@@ -9,8 +10,18 @@ interface ProfileSettingsModalProps {
   onClose: () => void;
 }
 
+/**
+ * Renders nothing while closed so the dialog body — and its focus management — mounts
+ * and unmounts with the dialog itself.
+ */
 export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalProps) {
+  if (!isOpen) return null;
+  return <ProfileSettingsModalBody onClose={onClose} />;
+}
+
+function ProfileSettingsModalBody({ onClose }: { onClose: () => void }) {
   const { t } = useLanguage();
+  const { panelRef, titleId, dialogProps } = useDialog<HTMLDivElement>({ onClose });
   const { logout } = useAuth();
   
   const [username, setUsername] = useState('');
@@ -21,17 +32,19 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
   const [success, setSuccess] = useState(false);
 
   useEffect(() => {
-    if (isOpen) {
-      const creds = getAdminCredentials();
+    let cancelled = false;
+    getAdminCredentials().then(creds => {
+      if (cancelled) return;
       setUsername(creds.username);
-      setPassword('');
-      setConfirmPassword('');
-      setError('');
-      setSuccess(false);
-    }
-  }, [isOpen]);
+    });
+    setPassword('');
+    setConfirmPassword('');
+    setError('');
+    setSuccess(false);
+    return () => { cancelled = true; };
+  }, []);
 
-  const handleSave = () => {
+  const handleSave = async () => {
     setError('');
     setSuccess(false);
 
@@ -41,8 +54,8 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
     }
 
     if (password.length > 0) {
-      if (password.length < 3) {
-        setError(t('Password must be at least 3 characters'));
+      if (password.length < 6) {
+        setError(t('Password must be at least 6 characters'));
         return;
       }
       if (password !== confirmPassword) {
@@ -51,10 +64,14 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
       }
     }
 
-    const currentCreds = getAdminCredentials();
-    const finalPassword = password.length > 0 ? password : currentCreds.password;
-
-    setAdminCredentials(username.trim(), finalPassword);
+    // When the password field is left blank we keep the existing credential untouched;
+    // only the username is updated. The stored value is a digest, so we must not read it
+    // back and re-hash it (that would make the stored hash wrong).
+    if (password.length > 0) {
+      await setAdminCredentials(username.trim(), password);
+    } else {
+      await setAdminCredentials(username.trim());
+    }
     setSuccess(true);
     
     setTimeout(() => {
@@ -64,13 +81,14 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
     }, 1500);
   };
 
-  if (!isOpen) return null;
-
   return (
     <div className="fixed inset-0 z-[100] flex items-center justify-center p-4">
       <div className="absolute inset-0 bg-gray-900/40 backdrop-blur-sm" onClick={onClose} />
       
-      <div className="relative bg-white w-full max-w-md rounded-2xl shadow-xl overflow-hidden">
+      <div
+        ref={panelRef}
+        {...dialogProps}
+        className="relative bg-white w-full max-w-md rounded-2xl shadow-xl overflow-hidden outline-none">
         {/* Header */}
         <div className="bg-blue-600 px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
@@ -78,12 +96,12 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
               <User size={24} />
             </div>
             <div>
-              <h2 className="text-lg font-bold text-white">{t('Profile Settings')}</h2>
+              <h2 id={titleId} className="text-lg font-bold text-white">{t('Profile Settings')}</h2>
               <p className="text-blue-100 text-xs">{t('Update password and user settings')}</p>
             </div>
           </div>
-          <button onClick={onClose} className="text-white/80 hover:text-white p-2 rounded-lg hover:bg-white/10 transition-colors">
-            <X size={20} />
+          <button type="button" onClick={onClose} aria-label={t('Close')} className="text-white/80 hover:text-white p-2 rounded-lg hover:bg-white/10 transition-colors">
+            <X size={20} aria-hidden="true" />
           </button>
         </div>
 
@@ -93,6 +111,7 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
             <div className="space-y-1">
               <label className="text-sm font-bold text-gray-700 block">{t('Admin Username')}</label>
               <input
+                aria-label={t('Admin Username')}
                 type="text"
                 value={username}
                 onChange={(e) => setUsername(e.target.value)}
@@ -104,6 +123,7 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
             <div className="space-y-1">
               <label className="text-sm font-bold text-gray-700 block">{t('New Password')}</label>
               <input
+                aria-label={t('New Password')}
                 type="password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
@@ -116,6 +136,7 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
               <div className="space-y-1">
                 <label className="text-sm font-bold text-gray-700 block">{t('Confirm New Password')}</label>
                 <input
+                  aria-label={t('Confirm New Password')}
                   type="password"
                   value={confirmPassword}
                   onChange={(e) => setConfirmPassword(e.target.value)}
@@ -139,7 +160,7 @@ export function ProfileSettingsModal({ isOpen, onClose }: ProfileSettingsModalPr
                 <ShieldCheck size={16} />
                 <p>{t('Profile updated successfully!')}</p>
               </div>
-              <p className="text-xs text-blue-600 ml-6">{t('Logging you out to apply changes...')}</p>
+              <p className="text-xs text-blue-600 ms-6">{t('Logging you out to apply changes...')}</p>
             </div>
           )}
 

@@ -1,6 +1,5 @@
-import React from 'react';
 import { motion } from 'framer-motion';
-import { Coffee, Bean } from 'lucide-react';
+import { Coffee } from 'lucide-react';
 
 export function LoadingScreen() {
   return (

@@ -1,38 +1,101 @@
-import React, { useState } from 'react';
-import { User, Store, Bell, Lock, HelpCircle, LogOut, QrCode } from 'lucide-react';
+import { useState } from 'react';
+import { User, Store, Lock, LogOut, QrCode, Globe, Send, Building2 } from 'lucide-react';
+
+// Web reports portal URL. The desktop POS pushes its data to the isolated reports D1
+// database (api-reports.engaz.tech) and this link opens that data as a live dashboard
+// on its own subdomain — fully separated from the production POS site.
+const REPORTS_PORTAL_URL = 'https://reporting.engaz.tech';
 import { motion } from 'framer-motion';
 import { DatabaseStatus } from '../components/ui/DatabaseStatus';
 import { SyncStatus } from '../components/ui/SyncStatus';
 import { useAuth } from '../context/AuthContext';
+import { useLanguage } from '../context/LanguageContext';
 import { QrMenuModal } from '../components/settings/QrMenuModal';
+import { ProfileSettingsModal } from '../components/settings/ProfileSettingsModal';
+import { StoreConfigModal } from '../components/settings/StoreConfigModal';
+import { BranchConfigModal } from '../components/settings/BranchConfigModal';
+import { TelegramConfigModal } from '../components/settings/TelegramConfigModal';
 
+type ModalName = 'qr' | 'profile' | 'store' | 'branch' | 'telegram';
 
 export default function Settings() {
-  const [isQrModalOpen, setIsQrModalOpen] = useState(false);
+  const [openModal, setOpenModal] = useState<ModalName | null>(null);
   const { logout } = useAuth();
+  const { t } = useLanguage();
+
+  const closeModal = () => setOpenModal(null);
 
   const sections = [
     {
-      title: 'Profile Settings',
+      title: t('Profile Settings'),
       items: [
-        { icon: User, label: 'My Account', desc: 'Manage your personal details' },
-      ]
-    },
-    {
-      title: 'Customer Experience',
-      items: [
-        { 
-          icon: QrCode, 
-          label: 'Customer QR Menu', 
-          desc: 'Generate & print QR code for customer view', 
-          onClick: () => setIsQrModalOpen(true) 
+        {
+          icon: User,
+          label: t('My Account'),
+          desc: t('Update password and user settings'),
+          onClick: () => setOpenModal('profile')
         },
       ]
     },
     {
-      title: 'App Settings',
+      title: t('Store Configuration'),
       items: [
-        { icon: Lock, label: 'Privacy & Security', desc: 'Update password and controls' },
+        {
+          icon: Store,
+          label: t('Tax Rate Percentage'),
+          desc: t('Edit tax rates'),
+          onClick: () => setOpenModal('store')
+        },
+        {
+          icon: Building2,
+          label: t('Branch Configuration'),
+          desc: t('Configure branch identity and credentials'),
+          onClick: () => setOpenModal('branch')
+        },
+      ]
+    },
+    {
+      title: t('Customer Experience'),
+      items: [
+        {
+          icon: QrCode,
+          label: t('Customer QR Menu'),
+          desc: t('Generate & print QR code for customer view'),
+          onClick: () => setOpenModal('qr')
+        },
+      ]
+    },
+    {
+      title: t('Telegram Configuration'),
+      items: [
+        {
+          icon: Send,
+          label: t('Enable Telegram Reports'),
+          desc: t('Send the daily report automatically'),
+          onClick: () => setOpenModal('telegram')
+        },
+      ]
+    },
+    {
+      title: t('Privacy & Security'),
+      items: [
+        {
+          icon: Lock,
+          label: t('Privacy & Security'),
+          desc: t('Update password and controls'),
+          onClick: () => setOpenModal('profile')
+        },
+      ]
+    },
+    {
+      title: t('Web Reports Portal'),
+      items: [
+        {
+          icon: Globe,
+          label: t('Open Reports Website'),
+          desc: t('Open the reports portal in a browser'),
+          onClick: () => window.open(REPORTS_PORTAL_URL, '_blank', 'noopener,noreferrer')
+        },
       ]
     }
   ];
@@ -40,8 +103,8 @@ export default function Settings() {
   return (
     <div className="space-y-3 md:space-y-8 max-w-4xl mx-auto">
       <div>
-        <h1 className="text-lg md:text-2xl font-bold text-gray-900">Settings</h1>
-        <p className="text-xs md:text-base text-gray-500">Manage your account and preferences.</p>
+        <h1 className="text-lg md:text-2xl font-bold text-gray-900">{t('Settings')}</h1>
+        <p className="text-xs md:text-base text-gray-500">{t('Manage your account and preferences.')}</p>
       </div>
 
       <div className="space-y-3 md:space-y-6">
@@ -61,7 +124,7 @@ export default function Settings() {
                   <button 
                     key={i} 
                     onClick={item.onClick}
-                    className="mobile-touch-target w-full flex items-center gap-4 p-4 hover:bg-gray-50 rounded-xl transition-colors text-left group tap-highlight-none"
+                    className="mobile-touch-target w-full flex items-center gap-4 p-4 hover:bg-gray-50 rounded-xl transition-colors text-start group tap-highlight-none"
                   >
                      <div className="w-10 h-10 rounded-full bg-gray-100 flex items-center justify-center text-gray-500 group-hover:bg-mocha-50 group-hover:text-mocha-700 transition-colors">
                         <item.icon size={20} />
@@ -101,11 +164,15 @@ export default function Settings() {
            onClick={logout}
            className="mobile-touch-target w-full bg-red-50 text-red-600 py-3 md:py-4 rounded-xl font-semibold hover:bg-red-100 flex items-center justify-center gap-2 transition-colors tap-highlight-none"
         >
-           <LogOut size={20} /> Sign Out
+           <LogOut size={20} /> {t('Sign Out')}
          </motion.button>
       </div>
       
-      <QrMenuModal isOpen={isQrModalOpen} onClose={() => setIsQrModalOpen(false)} />
+      <QrMenuModal isOpen={openModal === 'qr'} onClose={closeModal} />
+      <ProfileSettingsModal isOpen={openModal === 'profile'} onClose={closeModal} />
+      <StoreConfigModal isOpen={openModal === 'store'} onClose={closeModal} />
+      <BranchConfigModal isOpen={openModal === 'branch'} onClose={closeModal} />
+      <TelegramConfigModal isOpen={openModal === 'telegram'} onClose={closeModal} />
     </div>
   );
 }

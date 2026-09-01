@@ -1,37 +1,28 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import { useState, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import {
   TrendingUp, DollarSign, ShoppingBag,
-  Coffee, Calendar, Download,
-  CheckCircle2, Clock, XCircle, AlertCircle, Utensils,
+  Calendar, Download,
+  CheckCircle2, Utensils,
   UserCheck, Award, Coins, TrendingDown, AlertTriangle, Scale
 } from 'lucide-react';
 import { useAnalytics, AnalyticsPeriod } from '../hooks/useAnalytics';
+import { useReportSupportData } from '../hooks/useReportSupportData';
 import { StatCard } from '../components/ui/StatCard';
 import { LoadingScreen } from '../components/ui/LoadingScreen';
-import { OrderStatus } from '../types/order';
 import { useLanguage } from '../context/LanguageContext';
 import { getTaxRate } from '../utils/settingsConfig';
-import { customersService } from '../services/customersService';
-import { Customer } from '../types/customer';
-import { inventoryService } from '../services/inventoryService';
-import { menuService } from '../services/menuService';
-import { MenuItem } from '../types/menu';
-
-// ─── Status display config (UI-only: icons & colours) ────────────────────────
-const STATUS_CONFIG: Array<{
-  status: OrderStatus;
-  label: string;
-  icon: React.ElementType;
-  color: string;
-  bar: string;
-}> = [
-  { status: 'New',       label: 'New',       icon: Coffee,       color: 'text-mocha-700', bar: 'bg-mocha-400' },
-  { status: 'Preparing', label: 'Preparing', icon: Clock,        color: 'text-amber-600', bar: 'bg-amber-400' },
-  { status: 'Ready',     label: 'Ready',     icon: AlertCircle,  color: 'text-blue-600',  bar: 'bg-blue-400'  },
-  { status: 'Completed', label: 'Completed', icon: CheckCircle2, color: 'text-green-600', bar: 'bg-green-500' },
-  { status: 'Cancelled', label: 'Cancelled', icon: XCircle,      color: 'text-red-500',   bar: 'bg-red-400'   },
-];
+import { orderRevenue } from '../utils/orderTotals';
+import { computeItemYields, isLowStock, summarizeInventory } from '../utils/inventoryMath';
+import {
+  computeCogs,
+  computeNetProfit,
+  computeRecipeCosts,
+  summarizeCustomers,
+  summarizeInvoices,
+  summarizeOrderModes,
+  summarizePaymentMethods,
+} from '../utils/reportMath';
 
 function periodLabel(p: AnalyticsPeriod, t: (k: string) => string) {
   const map: Record<AnalyticsPeriod, string> = {
@@ -53,184 +44,77 @@ export default function Reports() {
     localStorage.setItem('reports_date_range', value);
   };
 
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [inventory, setInventory] = useState<any[]>([]);
-  const [recipes, setRecipes] = useState<any[]>([]);
-  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const {
+    customers,
+    inventory,
+    recipes,
+    menuItems,
+    loading: auxLoading,
+    error: auxError,
+  } = useReportSupportData();
 
-  useEffect(() => {
-    customersService.getAll().then(setCustomers).catch(console.error);
-    inventoryService.getAll().then(setInventory).catch(console.error);
-    inventoryService.getMenuRecipes().then(setRecipes).catch(console.error);
-    menuService.getAll().then(setMenuItems).catch(console.error);
-  }, []);
+  const itemYields = useMemo(
+    () => computeItemYields(inventory, recipes, menuItems),
+    [inventory, recipes, menuItems]
+  );
 
-  // Precompute average selling yield for each inventory item ID
-  const itemYields = useMemo(() => {
-    const yields: Record<string, number> = {};
-    
-    // Group recipe entries by inventoryItemId
-    const recipeGroups: Record<string, { menuItemId: string; quantity: number }[]> = {};
-    recipes.forEach(r => {
-      if (!recipeGroups[r.inventoryItemId]) {
-        recipeGroups[r.inventoryItemId] = [];
-      }
-      recipeGroups[r.inventoryItemId].push({
-        menuItemId: r.menuItemId,
-        quantity: r.quantity
-      });
-    });
+  const inventoryValuation = useMemo(
+    () => summarizeInventory(inventory, itemYields),
+    [inventory, itemYields]
+  );
 
-    // Create a map of menu items by ID for fast lookup
-    const menuMap = new Map(menuItems.map(item => [item.id, item]));
-
-    // Calculate average yield for each inventory item
-    inventory.forEach(item => {
-      const itemRecipes = recipeGroups[item.id] || [];
-      if (itemRecipes.length === 0) {
-        yields[item.id] = 0;
-        return;
-      }
-
-      let totalYield = 0;
-      let validCount = 0;
-
-      itemRecipes.forEach(rec => {
-        const menuItem = menuMap.get(rec.menuItemId);
-        if (menuItem && rec.quantity > 0) {
-          const yieldVal = menuItem.price / rec.quantity;
-          totalYield += yieldVal;
-          validCount++;
-        }
-      });
-
-      yields[item.id] = validCount > 0 ? (totalYield / validCount) : 0;
-    });
-
-    return yields;
-  }, [inventory, recipes, menuItems]);
-
-  const inventoryValuation = useMemo(() => {
-    let totalCost = 0;
-    let totalProfit = 0;
-
-    inventory.forEach(item => {
-      const costVal = item.stock * item.costPerUnit;
-      const avgYield = itemYields[item.id] || 0;
-      const potSales = item.stock * avgYield;
-      const potProfit = potSales > 0 ? Math.max(potSales - costVal, 0) : 0;
-
-      totalCost += costVal;
-      totalProfit += potProfit;
-    });
-
-    return { totalCost, totalProfit };
-  }, [inventory, itemYields]);
-
-  const customerStats = useMemo(() => {
-    const totalCount = customers.length;
-    const totalPoints = customers.reduce((sum, c) => sum + c.points, 0);
-    const totalValue = totalPoints; // 1 point = 1 EGP
-    return { totalCount, totalPoints, totalValue };
-  }, [customers]);
+  const customerStats = useMemo(() => summarizeCustomers(customers), [customers]);
 
   // Single hook call — all computation happens inside useAnalytics.
   // When dateRange = 'Today', every stat equals Dashboard's values exactly.
   const analytics = useAnalytics(dateRange);
   const taxRate = getTaxRate();
 
-  const recipeCosts = useMemo(() => {
-    const costMap: Record<string, number> = {};
-    for (const r of recipes) {
-      const invItem = inventory.find(i => i.id === r.inventoryItemId);
-      const itemCost = invItem ? invItem.costPerUnit : 0;
-      costMap[r.menuItemId] = (costMap[r.menuItemId] || 0) + (r.quantity * itemCost);
-    }
-    return costMap;
-  }, [recipes, inventory]);
+  const recipeCosts = useMemo(
+    () => computeRecipeCosts(recipes, inventory),
+    [recipes, inventory]
+  );
 
-  const cogs = useMemo(() => {
-    let totalCogs = 0;
-    for (const order of analytics.completedPeriod) {
-      for (const item of order.items) {
-        const itemCost = recipeCosts[item.menuItemId || item.id] || 0;
-        totalCogs += itemCost * item.quantity;
-      }
-    }
-    
-    // Add baseline COGS for mock data representation
-    const baselineRevenueMap: Record<AnalyticsPeriod, number> = {
-      'Today': 0,
-      'This Week': 950,
-      'This Month': 4200,
-      'This Year': 52000,
-    };
-    const baselineRev = baselineRevenueMap[dateRange] || 0;
-    const baselineCogs = baselineRev * 0.35; // assume 35% ingredient cost
-    
-    return totalCogs + baselineCogs;
-  }, [analytics.completedPeriod, recipeCosts, dateRange]);
+  const cogs = useMemo(
+    () => computeCogs(analytics.completedPeriod, recipeCosts),
+    [analytics.completedPeriod, recipeCosts]
+  );
 
-  const netProfit = useMemo(() => {
-    const revenue = analytics.totalRevenue;
-    const tax = revenue * taxRate;
-    return Math.max(0, revenue - tax - cogs);
-  }, [analytics.totalRevenue, taxRate, cogs]);
+  const netProfit = useMemo(
+    () => computeNetProfit(analytics.totalRevenue, taxRate, cogs),
+    [analytics.totalRevenue, taxRate, cogs]
+  );
 
-  const lowStockItems = useMemo(() => {
-    return inventory.filter(item => item.stock <= item.minStock);
-  }, [inventory]);
+  const lowStockItems = useMemo(
+    () => inventory.filter(isLowStock),
+    [inventory]
+  );
 
-  const invoiceStats = React.useMemo(() => {
-    const paidCount = analytics.periodOrders.filter(o => o.paymentStatus === 'Paid').length;
-    const openCount = analytics.periodOrders.filter(o => o.paymentStatus === 'Unpaid').length;
-    const paidAmount = analytics.periodOrders
-      .filter(o => o.paymentStatus === 'Paid')
-      .reduce((sum, o) => sum + o.totalAmount * (1 + taxRate), 0);
-    const openAmount = analytics.periodOrders
-      .filter(o => o.paymentStatus === 'Unpaid')
-      .reduce((sum, o) => sum + o.totalAmount * (1 + taxRate), 0);
-    const totalCount = paidCount + openCount;
-    return { paidCount, openCount, paidAmount, openAmount, totalCount };
-  }, [analytics.periodOrders, taxRate]);
+  const invoiceStats = useMemo(
+    () => summarizeInvoices(analytics.periodOrders),
+    [analytics.periodOrders]
+  );
 
-  const paymentMethodStats = React.useMemo(() => {
-    const realCashOrders = analytics.completedPeriod.filter(o => o.paymentMethod === 'Cash');
-    const realCardOrders = analytics.completedPeriod.filter(o => o.paymentMethod === 'Card');
-    
-    const realCashAmount = realCashOrders.reduce((sum, o) => sum + o.totalAmount * (1 + taxRate), 0);
-    const realCardAmount = realCardOrders.reduce((sum, o) => sum + o.totalAmount * (1 + taxRate), 0);
-    
-    const baselineRevenueMap: Record<AnalyticsPeriod, number> = {
-      'Today': 0,
-      'This Week': 950,
-      'This Month': 4200,
-      'This Year': 52000,
-    };
-    const baselineTotal = baselineRevenueMap[dateRange] || 0;
-    const baselineCashAmount = baselineTotal * 0.60;
-    const baselineCardAmount = baselineTotal * 0.40;
-    
-    const totalCashAmount = realCashAmount + baselineCashAmount;
-    const totalCardAmount = realCardAmount + baselineCardAmount;
-    const totalPaidAmount = totalCashAmount + totalCardAmount;
-    
-    return {
-      cashAmount: totalCashAmount,
-      cardAmount: totalCardAmount,
-      totalAmount: totalPaidAmount,
-      cashPercentage: totalPaidAmount > 0 ? Math.round((totalCashAmount / totalPaidAmount) * 100) : 0,
-      cardPercentage: totalPaidAmount > 0 ? Math.round((totalCardAmount / totalPaidAmount) * 100) : 0,
-    };
-  }, [analytics.completedPeriod, dateRange, taxRate]);
+  const paymentMethodStats = useMemo(
+    () => summarizePaymentMethods(analytics.completedPeriod),
+    [analytics.completedPeriod]
+  );
 
-  if (analytics.loading) return <LoadingScreen />;
-  if (analytics.error) {
+  const orderModeStats = useMemo(
+    () => summarizeOrderModes(analytics.periodOrders),
+    [analytics.periodOrders]
+  );
+
+  // Loading and error states render only after every hook has run: returning early above
+  // orderModeStats changed the hook call order between renders.
+  if (analytics.loading || auxLoading) return <LoadingScreen />;
+  if (analytics.error || auxError) {
+    const shown = analytics.error ?? auxError;
     return (
       <div className="flex items-center justify-center h-96">
         <div className="text-center">
           <p className="text-red-600 font-semibold mb-2">{t('Failed to load reports')}</p>
-          <p className="text-gray-500 text-sm">{analytics.error.message}</p>
+          <p className="text-gray-500 text-sm">{shown?.message}</p>
         </div>
       </div>
     );
@@ -241,48 +125,28 @@ export default function Reports() {
   const maxSale      = Math.max(...chartData.map(d => d.value), 1);
   const maxItemCount = Math.max(...topItems.map(i => i.count), 1);
 
-  const orderModeStats = React.useMemo(() => {
-    const realTakeaway = analytics.periodOrders.filter(o => o.tableId === 'Takeaway').length;
-    const realDineIn = analytics.periodOrders.filter(o => o.tableId !== 'Takeaway').length;
-
-    const baselineMap: Record<AnalyticsPeriod, { takeaway: number; dineIn: number }> = {
-      'Today':      { takeaway: 0,    dineIn: 0    },
-      'This Week':  { takeaway: 72,   dineIn: 48   },
-      'This Month': { takeaway: 312,  dineIn: 208  },
-      'This Year':  { takeaway: 3900, dineIn: 2600 },
-    };
-
-    const bl = baselineMap[dateRange] || { takeaway: 0, dineIn: 0 };
-    const takeaway = bl.takeaway + realTakeaway;
-    const dineIn = bl.dineIn + realDineIn;
-    const total = takeaway + dineIn;
-
-    return { takeaway, dineIn, total };
-  }, [analytics.periodOrders, dateRange]);
-
   const currencyStr = language === 'ar' ? 'ج.م' : 'EGP';
 
-  // Stat cards — when dateRange = 'Today', these equal Dashboard's values exactly
   const statCards = [
     {
       label: t('TOTAL REVENUE (INCL. TAX)'),
       value: `${analytics.totalRevenue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyStr}`,
       icon: DollarSign,
-      trend: analytics.realRevenue > 0 ? `+${analytics.realRevenue.toFixed(2)} ${currencyStr} ${pLabel}` : t('Lifetime total'),
+      trend: `${analytics.paidOrders} ${t('completed')} ${pLabel}`,
       color: 'green',
     },
     {
       label: t('TOTAL ORDERS'),
       value: analytics.totalOrders.toLocaleString(),
       icon: ShoppingBag,
-      trend: `${analytics.realOrders} ${t('new')} ${pLabel}`,
+      trend: `${analytics.openOrders} ${t('Open')}`,
       color: 'blue',
     },
     {
       label: t('AVG. ORDER VALUE'),
       value: `${analytics.avgOrderValue.toFixed(2)} ${currencyStr}`,
       icon: TrendingUp,
-      trend: `${analytics.completedPeriod.length} ${t('completed')} ${pLabel}`,
+      trend: `${analytics.paidOrders} ${t('completed')} ${pLabel}`,
       color: 'orange',
     },
     {
@@ -307,6 +171,7 @@ export default function Reports() {
           <div className="relative flex-1 md:flex-initial">
             <Calendar className={`absolute top-1/2 -translate-y-1/2 text-gray-400 w-3.5 h-3.5 md:w-4 md:h-4 ${isRtl ? 'right-3' : 'left-3'}`} />
             <select
+              aria-label={t('Reports & Analytics')}
               value={dateRange}
               onChange={e => handleDateRangeChange(e.target.value as AnalyticsPeriod)}
               className={`w-full pr-3 md:pr-4 py-2 bg-white border border-gray-200 rounded-lg text-xs md:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-caramel ${isRtl ? 'pr-8 md:pr-9 pl-3 md:pl-4' : 'pl-8 md:pl-9'}`}
@@ -350,14 +215,14 @@ export default function Reports() {
         />
         <StatCard
           label={t('Total Stock Cost')}
-          value={`${inventoryValuation.totalCost.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyStr}`}
+          value={`${inventoryValuation.totalCostValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyStr}`}
           icon={Scale}
           trend={t('Cost value of remaining stock')}
           color="blue"
         />
         <StatCard
           label={t('Expected Potential Profit')}
-          value={`${inventoryValuation.totalProfit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyStr}`}
+          value={`${inventoryValuation.totalPotentialProfit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyStr}`}
           icon={TrendingUp}
           trend={t('Potential profit of remaining stock')}
           color="purple"
@@ -392,9 +257,9 @@ export default function Reports() {
         <div className="lg:col-span-2 bg-white p-3 md:p-6 rounded-xl md:rounded-2xl shadow-sm border border-gray-100 flex flex-col">
           <div className="flex items-center justify-between mb-4 md:mb-6">
             <h2 className="text-sm md:text-lg font-bold text-gray-900">{t('Revenue Trend')}</h2>
-            {analytics.realRevenue > 0 && (
+            {analytics.totalRevenue > 0 && (
               <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded-full font-medium">
-                +{analytics.realRevenue.toFixed(2)} {currencyStr} {pLabel}
+                {analytics.totalRevenue.toFixed(2)} {currencyStr} {pLabel}
               </span>
             )}
           </div>
@@ -408,7 +273,7 @@ export default function Reports() {
                     animate={{ height: `${(data.value / maxSale) * 100}%` }}
                     transition={{ duration: 0.7, ease: 'easeOut', delay: idx * 0.04 }}
                     className="w-full max-w-[32px] md:max-w-[40px] rounded-t-lg transition-opacity group-hover:opacity-75 relative"
-                    style={{ background: data.realRevenue > 0 ? '#c8956c' : '#e8d5c4' }}
+                    style={{ background: data.value > 0 ? '#c8956c' : '#e8d5c4' }}
                   >
                     <div className="opacity-0 group-hover:opacity-100 absolute -top-11 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-[11px] py-1 px-2 rounded pointer-events-none transition-opacity whitespace-nowrap z-10">
                       {data.value.toFixed(2)} {currencyStr}{data.orders > 0 ? ` · ${data.orders} ${t('orders')}` : ''}
@@ -419,7 +284,8 @@ export default function Reports() {
               </div>
             ))}
           </div>
-          {/* Legend */}
+          {/* Legend. There is no baseline series any more: a bar is either collected
+              revenue or an empty bucket. */}
           <div className="flex items-center gap-4 mt-3 md:mt-4 pt-3 border-t border-gray-100">
             <div className="flex items-center gap-1.5">
               <div className="w-3 h-3 rounded-sm bg-caramel" />
@@ -427,7 +293,7 @@ export default function Reports() {
             </div>
             <div className="flex items-center gap-1.5">
               <div className="w-3 h-3 rounded-sm" style={{ background: '#e8d5c4' }} />
-              <span className="text-xs text-gray-500">{t('Historical baseline')}</span>
+              <span className="text-xs text-gray-500">{t('No orders')}</span>
             </div>
           </div>
         </div>
@@ -443,7 +309,7 @@ export default function Reports() {
                 <div key={idx} className="space-y-1.5">
                   <div className="flex justify-between text-xs md:text-sm">
                     <span className="font-medium text-gray-900">{t(item.name)}</span>
-                    <span className="text-gray-500 shrink-0 ml-2">{item.count}x</span>
+                    <span className="text-gray-500 shrink-0 ms-2">{item.count}x</span>
                   </div>
                   <div className="w-full h-2 bg-mocha-100 rounded-full overflow-hidden">
                     <motion.div
@@ -494,7 +360,7 @@ export default function Reports() {
                     initial={{ width: 0 }}
                     animate={{ width: `${(orderModeStats.takeaway / orderModeStats.total) * 100}%` }}
                     transition={{ duration: 0.8 }}
-                    className="h-full bg-mocha-650 rounded-full"
+                    className="h-full bg-mocha-600 rounded-full"
                   />
                 </div>
               </div>
@@ -527,8 +393,8 @@ export default function Reports() {
         {/* Invoice Payment Status */}
         <div className="bg-white p-3 md:p-6 rounded-xl md:rounded-2xl shadow-sm border border-gray-100">
           <div className="mb-4 md:mb-6">
-            <h2 className="text-sm md:text-lg font-bold text-gray-900 text-left">{t('Invoice Payment Status')}</h2>
-            <p className="text-xs text-gray-400 mt-0.5 text-left">
+            <h2 className="text-sm md:text-lg font-bold text-gray-900 text-start">{t('Invoice Payment Status')}</h2>
+            <p className="text-xs text-gray-400 mt-0.5 text-start">
               {t('Paid vs Open invoices breakdown')}
             </p>
           </div>
@@ -556,7 +422,7 @@ export default function Reports() {
                     className="h-full bg-green-600 rounded-full"
                   />
                 </div>
-                <p className="text-[10px] text-gray-400 text-left">
+                <p className="text-[10px] text-gray-400 text-start">
                   {t('Total Paid')}: {invoiceStats.paidAmount.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}
                 </p>
               </div>
@@ -581,7 +447,7 @@ export default function Reports() {
                     className="h-full bg-amber-500 rounded-full"
                   />
                 </div>
-                <p className="text-[10px] text-gray-400 text-left">
+                <p className="text-[10px] text-gray-400 text-start">
                   {t('Total Open')}: {invoiceStats.openAmount.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}
                 </p>
               </div>
@@ -590,8 +456,8 @@ export default function Reports() {
               <div className="border-t border-gray-100 my-4 pt-4" />
 
               <div className="mb-3">
-                <h3 className="text-xs md:text-sm font-bold text-gray-850 text-left">{t('Payment Methods')}</h3>
-                <p className="text-[10px] text-gray-400 text-left">
+                <h3 className="text-xs md:text-sm font-bold text-gray-800 text-start">{t('Payment Methods')}</h3>
+                <p className="text-[10px] text-gray-400 text-start">
                   {t('Breakdown of paid revenue')}
                 </p>
               </div>
@@ -616,7 +482,7 @@ export default function Reports() {
                     className="h-full bg-emerald-600 rounded-full"
                   />
                 </div>
-                <p className="text-[10px] text-gray-400 text-left">
+                <p className="text-[10px] text-gray-400 text-start">
                   {t('Total Cash')}: {paymentMethodStats.cashAmount.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}
                 </p>
               </div>
@@ -641,7 +507,7 @@ export default function Reports() {
                     className="h-full bg-blue-600 rounded-full"
                   />
                 </div>
-                <p className="text-[10px] text-gray-400 text-left">
+                <p className="text-[10px] text-gray-400 text-start">
                   {t('Total Card')}: {paymentMethodStats.cardAmount.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}
                 </p>
               </div>
@@ -674,14 +540,14 @@ export default function Reports() {
                         <CheckCircle2 size={14} />
                       </div>
                       <div className="min-w-0">
-                        <p className="text-xs md:text-sm font-semibold text-gray-900 truncate text-left">
+                        <p className="text-xs md:text-sm font-semibold text-gray-900 truncate text-start">
                           #{order.orderNumber} · {order.tableId === 'Takeaway' || order.tableId === 'Dine-in' ? t(order.tableId) : `${t('Table')} ${order.tableId}`}
                         </p>
-                        <p className="text-[11px] text-gray-400 truncate text-left">{summary}{more}</p>
+                        <p className="text-[11px] text-gray-400 truncate text-start">{summary}{more}</p>
                       </div>
                     </div>
-                    <div className="text-right shrink-0">
-                      <p className="text-xs md:text-sm font-bold text-gray-900">{(order.totalAmount * (1 + taxRate)).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</p>
+                    <div className="text-end shrink-0">
+                      <p className="text-xs md:text-sm font-bold text-gray-900">{orderRevenue(order).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</p>
                       <p className="text-[11px] text-gray-400">{timeStr}</p>
                     </div>
                   </motion.div>

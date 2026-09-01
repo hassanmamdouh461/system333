@@ -1,7 +1,6 @@
-import React from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Order, OrderStatus } from '../../types/order';
-import { X, Clock, CheckCircle2, XCircle, ArrowRight, ArrowLeft, Printer } from 'lucide-react';
+import { X, CheckCircle2, XCircle, ArrowRight, ArrowLeft, Printer } from 'lucide-react';
 import { useSwipe } from '../../hooks/useSwipe';
 import { useIsMobile } from '../../hooks/useIsMobile';
 import { filterItemsBySection } from '../../utils/orderSection';
@@ -75,11 +74,12 @@ export function OrderDetails({ order, onClose, onUpdateStatus, type = 'all' }: O
                     {order.tableId === 'Takeaway' || order.tableId === 'Dine-in' ? order.tableId : `Table ${order.tableId}`}
                   </p>
                 </div>
-                <button 
-                  onClick={onClose} 
+                <button
+                  onClick={onClose}
+                  aria-label={t('Close')}
                   className="mobile-touch-target p-2 hover:bg-gray-200 rounded-full transition-colors tap-highlight-none"
                 >
-                  <X size={20} />
+                  <X size={20} aria-hidden="true" />
                 </button>
               </div>
 

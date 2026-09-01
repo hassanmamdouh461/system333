@@ -1,13 +1,11 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { 
-  LayoutDashboard, 
   UtensilsCrossed, 
   ClipboardList, 
   CreditCard, 
   BarChart3, 
   Settings, 
   Coffee,
-  ChefHat,
   ChevronLeft,
   ChevronRight,
   X,
@@ -68,9 +66,10 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
       {isMobile && (
         <button
           onClick={onMobileClose}
+          aria-label={t('Close')}
           className="absolute right-4 top-4 text-gray-400 hover:text-white p-2 hover:bg-gray-800 rounded-lg transition-colors z-50"
         >
-          <X size={24} />
+          <X size={24} aria-hidden="true" />
         </button>
       )}
 

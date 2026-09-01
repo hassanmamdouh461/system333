@@ -1,81 +1,69 @@
-import React from 'react';
 import { LucideIcon } from 'lucide-react';
-import { motion } from 'framer-motion';
+import { clsx } from 'clsx';
+
+export type StatTone = 'mocha' | 'green' | 'blue' | 'amber' | 'purple' | 'red' | 'orange';
+
+const TONES: Record<StatTone, { icon: string; accent: string }> = {
+  mocha:  { icon: 'bg-mocha-50 text-mocha-700',   accent: 'text-mocha-700' },
+  green:  { icon: 'bg-green-50 text-green-700',   accent: 'text-green-700' },
+  blue:   { icon: 'bg-blue-50 text-blue-700',     accent: 'text-blue-700' },
+  amber:  { icon: 'bg-amber-50 text-amber-700',   accent: 'text-amber-700' },
+  // Retained as an alias so existing call sites keep their intended warm tone.
+  orange: { icon: 'bg-amber-50 text-amber-700',   accent: 'text-amber-700' },
+  purple: { icon: 'bg-purple-50 text-purple-700', accent: 'text-purple-700' },
+  red:    { icon: 'bg-red-50 text-red-700',       accent: 'text-red-700' },
+};
 
 interface StatCardProps {
   label: string;
   value: string;
   icon: LucideIcon;
-  trend: string;
-  color: string;
+  /** Secondary line: what the number counts, or over what period. */
+  trend?: string;
+  color?: StatTone | string;
+  /** Draws attention to a figure that needs action, such as a low-stock count. */
+  emphasis?: boolean;
 }
 
-const colorConfig: Record<string, { gradient: string; iconBg: string; iconText: string; glow: string }> = {
-  orange: { 
-    gradient: 'from-amber-200 to-orange-200', 
-    iconBg: 'bg-gradient-to-br from-amber-50 to-orange-50', 
-    iconText: 'text-amber-600',
-    glow: 'shadow-amber-200/10'
-  },
-  blue: { 
-    gradient: 'from-blue-200 to-cyan-200', 
-    iconBg: 'bg-gradient-to-br from-blue-50 to-cyan-50', 
-    iconText: 'text-blue-500',
-    glow: 'shadow-blue-200/10'
-  },
-  green: { 
-    gradient: 'from-green-200 to-emerald-200', 
-    iconBg: 'bg-gradient-to-br from-green-50 to-emerald-50', 
-    iconText: 'text-green-500',
-    glow: 'shadow-green-200/10'
-  },
-  purple: { 
-    gradient: 'from-purple-200 to-pink-200', 
-    iconBg: 'bg-gradient-to-br from-purple-50 to-pink-50', 
-    iconText: 'text-purple-500',
-    glow: 'shadow-purple-200/10'
-  },
-};
-
-export function StatCard({ label, value, icon: Icon, trend, color }: StatCardProps) {
-  const colors = colorConfig[color] || colorConfig.orange;
+/**
+ * One headline figure.
+ *
+ * The value is the largest element and uses tabular figures, so a row of cards lines up and
+ * a changing number does not shift the layout. Label above, value, then hint below — the
+ * order they are actually read.
+ *
+ * The previous version put the hint in a green "trend" badge regardless of meaning, so a
+ * low-stock warning was styled as good news.
+ */
+export function StatCard({ label, value, icon: Icon, trend, color = 'mocha', emphasis = false }: StatCardProps) {
+  const colors = TONES[color as StatTone] ?? TONES.mocha;
 
   return (
-    <motion.div 
-      whileHover={{ y: -4, scale: 1.01 }}
-      whileTap={{ scale: 0.99 }}
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      className="bg-white/95 backdrop-blur-sm p-3 md:p-6 rounded-xl md:rounded-2xl shadow-sm hover:shadow-md border border-gray-200/50 relative overflow-hidden group transition-all mobile-touch-target"
+    <div
+      className={clsx(
+        'bg-white rounded-2xl border p-4 md:p-5 shadow-sm transition-shadow hover:shadow-md',
+        emphasis ? 'border-red-200 bg-red-50/40' : 'border-gray-200'
+      )}
     >
-      {/* Soft gradient overlay on hover */}
-      <div className={`absolute inset-0 bg-gradient-to-br ${colors.gradient} opacity-0 group-hover:opacity-[0.03] transition-opacity duration-300`} />
-      
-      <div className="relative z-10">
-        <div className="flex justify-between items-start mb-3 md:mb-4 gap-1">
-          {/* Icon with soft gradient */}
-          <motion.div 
-            whileHover={{ rotate: 15, scale: 1.05 }}
-            transition={{ duration: 0.3 }}
-            className={`p-2 md:p-3 rounded-xl ${colors.iconBg} ${colors.iconText} shadow-sm border border-current/10 shrink-0`}
-          >
-            <Icon className="w-4 h-4 md:w-6 md:h-6" strokeWidth={2} />
-          </motion.div>
-          
-          {/* Trend badge - responsive */}
-          <span className="text-[10px] md:text-xs font-sans font-semibold text-green-600 bg-green-50 px-1.5 md:px-2.5 py-0.5 md:py-1 rounded-lg border border-green-100/50 shadow-sm text-right min-w-0 leading-tight max-w-[62%]">
-            {trend}
-          </span>
-        </div>
-        
-        <h3 className="text-gray-500 text-xs md:text-sm font-semibold mb-1 uppercase tracking-wide">{label}</h3>
-        <p className="text-2xl md:text-3xl font-bold text-gray-800">
-          {value}
+      <div className="flex items-start justify-between gap-3 mb-3">
+        <p className="text-[11px] md:text-xs font-semibold text-gray-500 uppercase tracking-wide leading-snug">
+          {label}
         </p>
+        <div className={clsx('p-2 rounded-xl shrink-0', colors.icon)}>
+          <Icon className="w-4 h-4 md:w-5 md:h-5" strokeWidth={2} aria-hidden="true" />
+        </div>
       </div>
 
-      {/* Very subtle decorative circle */}
-      <div className={`absolute -right-4 -bottom-4 w-24 h-24 bg-gradient-to-br ${colors.gradient} rounded-full opacity-5 group-hover:opacity-10 transition-opacity duration-300 blur-2xl`} />
-    </motion.div>
+      <p
+        className={clsx(
+          'text-xl md:text-2xl font-bold tabular-nums leading-none',
+          emphasis ? colors.accent : 'text-gray-900'
+        )}
+      >
+        {value}
+      </p>
+
+      {trend && <p className="text-[11px] text-gray-500 mt-2 leading-snug">{trend}</p>}
+    </div>
   );
 }

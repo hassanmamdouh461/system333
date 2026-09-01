@@ -16,13 +16,18 @@ function getBranchId() {
 }
 
 function initDatabase() {
-  const dbPath = path.join(app.getPath('userData'), 'brewmaster.db');
+  const dbPath = path.join(app.getPath('userData'), 'engaz.db');
   console.log('[database] Initializing SQLite database at:', dbPath);
   
   db = new Database(dbPath);
   
   // Enable WAL mode for better concurrency/performance
   db.pragma('journal_mode = WAL');
+  // Under WAL a second instance upgrading to a write lock fails immediately with
+  // SQLITE_BUSY instead of waiting. Wait up to 5s so concurrent writes serialize
+  // rather than throwing — this is what protects the daily order counter.
+  db.pragma('busy_timeout = 5000');
+  db.pragma('foreign_keys = ON');
 
   // Settings table must exist before anything that reads/writes flags (seeded_*)
   db.prepare(`
@@ -472,22 +477,12 @@ function initDatabase() {
 
 
   // Migration: Add paidAt column if table already existed without it
-  try {
-    db.prepare('ALTER TABLE orders ADD COLUMN paidAt TEXT').run();
-  } catch (e) {
-    // Column already exists or table didn't exist yet
-  }
+  addColumnIfMissing(db, 'ALTER TABLE orders ADD COLUMN paidAt TEXT');
 
   // Migration: Add customer columns to orders
-  try {
-    db.prepare('ALTER TABLE orders ADD COLUMN customerPhone TEXT').run();
-  } catch (e) {}
-  try {
-    db.prepare('ALTER TABLE orders ADD COLUMN pointsEarned REAL DEFAULT 0').run();
-  } catch (e) {}
-  try {
-    db.prepare('ALTER TABLE orders ADD COLUMN pointsRedeemed REAL DEFAULT 0').run();
-  } catch (e) {}
+  addColumnIfMissing(db, 'ALTER TABLE orders ADD COLUMN customerPhone TEXT');
+  addColumnIfMissing(db, 'ALTER TABLE orders ADD COLUMN pointsEarned REAL DEFAULT 0');
+  addColumnIfMissing(db, 'ALTER TABLE orders ADD COLUMN pointsRedeemed REAL DEFAULT 0');
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Phase 1 Migration: Add branch_id, is_synced, created_at, updated_at
@@ -495,20 +490,20 @@ function initDatabase() {
   // ═══════════════════════════════════════════════════════════════════════════
 
   // --- Menu table: add sync columns ---
-  try { db.prepare("ALTER TABLE menu_items ADD COLUMN branch_id TEXT DEFAULT NULL").run(); } catch (e) {}
-  try { db.prepare("ALTER TABLE menu_items ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 0").run(); } catch (e) {}
-  try { db.prepare("ALTER TABLE menu_items ADD COLUMN created_at TEXT").run(); } catch (e) {}
-  try { db.prepare("ALTER TABLE menu_items ADD COLUMN updated_at TEXT").run(); } catch (e) {}
+  addColumnIfMissing(db, "ALTER TABLE menu_items ADD COLUMN branch_id TEXT DEFAULT NULL");
+  addColumnIfMissing(db, "ALTER TABLE menu_items ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(db, "ALTER TABLE menu_items ADD COLUMN created_at TEXT");
+  addColumnIfMissing(db, "ALTER TABLE menu_items ADD COLUMN updated_at TEXT");
 
   // --- Orders table: add sync columns (createdAt already exists) ---
-  try { db.prepare("ALTER TABLE orders ADD COLUMN branch_id TEXT DEFAULT NULL").run(); } catch (e) {}
-  try { db.prepare("ALTER TABLE orders ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 0").run(); } catch (e) {}
-  try { db.prepare("ALTER TABLE orders ADD COLUMN updated_at TEXT").run(); } catch (e) {}
+  addColumnIfMissing(db, "ALTER TABLE orders ADD COLUMN branch_id TEXT DEFAULT NULL");
+  addColumnIfMissing(db, "ALTER TABLE orders ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(db, "ALTER TABLE orders ADD COLUMN updated_at TEXT");
 
   // --- Customers table: add sync columns (createdAt already exists) ---
-  try { db.prepare("ALTER TABLE customers ADD COLUMN branch_id TEXT DEFAULT NULL").run(); } catch (e) {}
-  try { db.prepare("ALTER TABLE customers ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 0").run(); } catch (e) {}
-  try { db.prepare("ALTER TABLE customers ADD COLUMN updated_at TEXT").run(); } catch (e) {}
+  addColumnIfMissing(db, "ALTER TABLE customers ADD COLUMN branch_id TEXT DEFAULT NULL");
+  addColumnIfMissing(db, "ALTER TABLE customers ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(db, "ALTER TABLE customers ADD COLUMN updated_at TEXT");
 
   // Backfill: set timestamps on existing rows that have NULL created_at/updated_at
   try {
@@ -530,7 +525,7 @@ function initDatabase() {
   // ═══════════════════════════════════════════════════════════════════════════
   if (!isMigrationApplied('0012_phase2_columns')) {
     try {
-      const alter = (sql) => { try { db.prepare(sql).run(); } catch (e) { /* column exists */ } };
+      const alter = (sql) => addColumnIfMissing(db, sql);
 
       // Soft delete tombstones (Issue 20)
       alter("ALTER TABLE orders ADD COLUMN deleted_at TEXT");
@@ -554,6 +549,10 @@ function initDatabase() {
       alter("ALTER TABLE orders ADD COLUMN taxAmount REAL");
       alter("ALTER TABLE orders ADD COLUMN grandTotal REAL");
 
+      // What the till actually collected. Differs from grandTotal whenever loyalty points
+      // were redeemed; without it every discounted order reported its full total as revenue.
+      alter("ALTER TABLE orders ADD COLUMN paidAmount REAL");
+
       // Inventory transactions: sync column naming (Issue 27) — add updated_at for tombstone sync
       alter("ALTER TABLE inventory_transactions ADD COLUMN deleted_at TEXT");
 
@@ -574,7 +573,7 @@ function initDatabase() {
         `).run();
 
         // Indexes on hot query columns (Issue 66 support)
-        const idx = (sql) => { try { db.prepare(sql).run(); } catch (e) {} };
+        const idx = (sql) => createIndexIfPossible(db, sql);
         idx("CREATE INDEX IF NOT EXISTS idx_orders_createdAt ON orders(createdAt)");
         idx("CREATE INDEX IF NOT EXISTS idx_orders_branch ON orders(branch_id)");
         idx("CREATE INDEX IF NOT EXISTS idx_orders_synced ON orders(is_synced)");
@@ -589,7 +588,42 @@ function initDatabase() {
       markMigrationApplied('0012_phase2_columns');
       console.log('[database] Phase 2 migration complete (soft delete, retry tracking, tax snapshot, loyalty ledger).');
     } catch (e) {
-      console.error('[database] Phase 2 migration failed:', e);
+      // Do NOT mark the migration applied here. Recording a failed migration as done
+      // leaves columns permanently missing while all downstream code assumes they exist.
+      console.error('[database] Phase 2 migration failed and was NOT recorded; it will retry on next start:', e);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 0013: retry tracking on the two ledger tables. markSyncFailure and the
+  // getUnsynced* queries reference sync_attempts for every syncable table, but
+  // 0012 only added the column to four of the six.
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (!isMigrationApplied('0013_ledger_retry_tracking')) {
+    try {
+      const columnExists = (table, column) => {
+        try {
+          return db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === column);
+        } catch (e) {
+          return false;
+        }
+      };
+      const addColumn = (table, column, definition) => {
+        if (columnExists(table, column)) return;
+        // No try/catch swallow: a real failure must propagate so the migration is not
+        // recorded as applied.
+        db.prepare(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`).run();
+      };
+
+      for (const table of ['inventory_transactions', 'points_transactions']) {
+        addColumn(table, 'sync_attempts', 'INTEGER NOT NULL DEFAULT 0');
+        addColumn(table, 'last_error', 'TEXT');
+      }
+
+      markMigrationApplied('0013_ledger_retry_tracking');
+      console.log('[database] Migration 0013 complete (retry tracking on ledger tables).');
+    } catch (e) {
+      console.error('[database] Migration 0013 failed and was NOT recorded; it will retry on next start:', e);
     }
   }
 
@@ -666,14 +700,53 @@ function initDatabase() {
   }
 }
 
+// ─── Schema helpers ──────────────────────────────────────────────────────────
+
+/** True when a table already has the named column. */
+function columnExists(db, table, column) {
+  try {
+    return db.prepare(`PRAGMA table_info(${table})`).all().some(c => c.name === column);
+  } catch (e) {
+    // The table itself does not exist yet, so the column certainly does not.
+    return false;
+  }
+}
+
+/**
+ * Adds a column only when it is missing.
+ *
+ * ALTER TABLE ADD COLUMN fails when the column is already there, which is the normal case
+ * on an upgraded database. Checking first means a genuine failure — a locked database, a
+ * full disk — still surfaces instead of being indistinguishable from "already applied".
+ */
+function addColumnIfMissing(db, sql) {
+  const match = /ALTER TABLE (\w+) ADD COLUMN (\w+)/i.exec(sql);
+  if (match && columnExists(db, match[1], match[2])) return;
+  db.prepare(sql).run();
+}
+
+/** Creates an index, tolerating a table that does not exist on an older schema. */
+function createIndexIfPossible(db, sql) {
+  try {
+    db.prepare(sql).run();
+  } catch (e) {
+    console.warn('[database] Skipped index (table not present yet):', e.message);
+  }
+}
+
 // ─── Migration bookkeeping helpers (Issue 29) ────────────────────────────────
 function isMigrationApplied(name) {
+  // Fail closed. Returning false on a transient read error used to re-run data-mutating
+  // migrations — including 0010_menu_categories, which rewrites the category column of
+  // every live menu item. Treating an unreadable ledger as "already applied" is the safe
+  // direction: a skipped migration is recoverable, a repeated bulk UPDATE is not.
+  if (!db) return true;
   try {
-    if (!db) return false;
     const row = db.prepare('SELECT name FROM migrations WHERE name = ?').get(name);
     return !!row;
   } catch (e) {
-    return false;
+    console.error('[database] Could not read the migrations ledger; skipping', name, '-', e.message);
+    return true;
   }
 }
 
@@ -731,10 +804,13 @@ function deleteSetting(key) {
 function getSyncStats() {
   const sqlite = getDb();
   try {
-    const menuCount = sqlite.prepare('SELECT COUNT(*) as count FROM menu_items WHERE is_synced = 0 AND deleted_at IS NULL').get().count;
+    // Tombstones (deleted_at IS NOT NULL, is_synced = 0) are exactly what still needs
+    // pushing. Excluding them made totalPending 0 whenever the only pending change was
+    // a deletion, and syncEngine returns early on 0 — so deletions never left the device.
+    const menuCount = sqlite.prepare('SELECT COUNT(*) as count FROM menu_items WHERE is_synced = 0').get().count;
     const ordersCount = sqlite.prepare('SELECT COUNT(*) as count FROM orders WHERE is_synced = 0').get().count;
     const customersCount = sqlite.prepare('SELECT COUNT(*) as count FROM customers WHERE is_synced = 0').get().count;
-    const inventoryCount = sqlite.prepare('SELECT COUNT(*) as count FROM inventory WHERE is_synced = 0 AND deleted_at IS NULL').get().count;
+    const inventoryCount = sqlite.prepare('SELECT COUNT(*) as count FROM inventory WHERE is_synced = 0').get().count;
     const invTxCount = sqlite.prepare('SELECT COUNT(*) as count FROM inventory_transactions WHERE is_synced = 0').get().count;
     return {
       pendingMenu: menuCount,
@@ -761,8 +837,25 @@ function nextDailyOrderNumber(localDateStr) {
   return next;
 }
 
+/**
+ * The number the next order will receive, without consuming it. The POS screen used to show
+ * the count of all loaded orders plus one, which is a different measure entirely from this
+ * counter — the counter resets each local day.
+ */
+function peekDailyOrderNumber(localDateStr) {
+  const sqlite = getDb();
+  const date = localDateStr || new Date().toLocaleDateString('en-CA');
+  const row = sqlite.prepare('SELECT value FROM settings WHERE key = ?').get(`daily_counter:${date}`);
+  return (row ? parseInt(row.value, 10) || 0 : 0) + 1;
+}
+
 // ─── Sync metadata helpers (Issue 19) ────────────────────────────────────────
 const SYNCABLE_TABLES = new Set(['orders', 'customers', 'menu_items', 'inventory', 'inventory_transactions', 'points_transactions']);
+
+// After this many consecutive failures a row is parked instead of retried forever.
+// sync_attempts was previously incremented and never read, so one malformed row
+// blocked its whole table's batch on every cycle indefinitely.
+const MAX_SYNC_ATTEMPTS = 5;
 
 function markSyncFailure(table, ids, errorMessage) {
   if (!SYNCABLE_TABLES.has(table) || !ids || ids.length === 0) return;
@@ -773,8 +866,53 @@ function markSyncFailure(table, ids, errorMessage) {
       for (const id of idList) stmt.run(String(errorMessage || 'sync failed').slice(0, 500), id);
     });
     runTx(ids);
+
+    const parked = sqlite
+      .prepare(`SELECT COUNT(*) as count FROM ${table} WHERE is_synced = 0 AND sync_attempts >= ?`)
+      .get(MAX_SYNC_ATTEMPTS).count;
+    if (parked > 0) {
+      console.warn(`[database] ${parked} row(s) in ${table} parked after ${MAX_SYNC_ATTEMPTS} failed attempts; they need manual attention.`);
+    }
   } catch (e) {
     console.error(`[database] Failed to record sync failure for ${table}:`, e);
+  }
+}
+
+/** Rows that have exhausted their retry budget and are excluded from push batches. */
+function getParkedSyncRows() {
+  const sqlite = getDb();
+  const parked = [];
+  for (const table of SYNCABLE_TABLES) {
+    try {
+      const rows = sqlite
+        .prepare(`SELECT id, sync_attempts, last_error FROM ${table} WHERE is_synced = 0 AND sync_attempts >= ?`)
+        .all(MAX_SYNC_ATTEMPTS);
+      for (const row of rows) parked.push({ table, ...row });
+    } catch (e) {
+      // A table may not exist yet on an older schema; that is not an error here.
+    }
+  }
+  return parked;
+}
+
+/** Clear the retry budget so parked rows are attempted again. */
+function resetSyncAttempts(table, ids = null) {
+  if (!SYNCABLE_TABLES.has(table)) return 0;
+  const sqlite = getDb();
+  try {
+    if (ids && ids.length > 0) {
+      const stmt = sqlite.prepare(`UPDATE ${table} SET sync_attempts = 0, last_error = NULL WHERE id = ?`);
+      const runTx = sqlite.transaction((idList) => {
+        for (const id of idList) stmt.run(id);
+      });
+      runTx(ids);
+      return ids.length;
+    }
+    const info = sqlite.prepare(`UPDATE ${table} SET sync_attempts = 0, last_error = NULL WHERE is_synced = 0`).run();
+    return info.changes;
+  } catch (e) {
+    console.error(`[database] Failed to reset sync attempts for ${table}:`, e);
+    return 0;
   }
 }
 
@@ -787,5 +925,9 @@ module.exports = {
   deleteSetting,
   getSyncStats,
   nextDailyOrderNumber,
-  markSyncFailure
+  peekDailyOrderNumber,
+  markSyncFailure,
+  getParkedSyncRows,
+  resetSyncAttempts,
+  MAX_SYNC_ATTEMPTS
 };

@@ -1,6 +1,11 @@
 /**
- * Cloudflare D1 Sync API Service
- * Replaces the Appwrite REST API with standard HTTP requests to our Cloudflare Worker Proxy.
+ * Cloudflare D1 Sync Client
+ * ─────────────────────────────────────────────────────────────
+ * Talks to the Engaz workers over named endpoints. This process sends records and filters;
+ * the worker owns every SQL statement. Nothing here builds a query.
+ *
+ * Two destinations per push: the production database, and — fire and forget — the isolated
+ * reports database that backs reporting.engaz.tech.
  */
 
 const fs = require('fs');
@@ -8,84 +13,120 @@ const path = require('path');
 const https = require('https');
 const database = require('./database.cjs');
 
-// 1. Resolve Worker URL + API key from .env file or local database settings
-let WORKER_URL = "";
-let WORKER_API_KEY = "";
-try {
-  const envPath = path.join(__dirname, '..', '.env');
-  if (fs.existsSync(envPath)) {
+// Worker URL and key are resolved lazily and re-read after a TTL. This used to run once at
+// module load, so rotating the key or URL in the settings UI had no effect until a restart.
+const DEFAULT_WORKER_URL = 'https://api.engaz.tech';
+const CONFIG_TTL_MS = 30000;
+const REQUEST_TIMEOUT_MS = 15000;
+const MIRROR_TIMEOUT_MS = 10000;
+/** Worker-side cap; batches are split to stay under it. */
+const MAX_BATCH = 200;
+
+let WORKER_URL = '';
+let WORKER_API_KEY = '';
+let configLoadedAt = 0;
+
+// Isolated reports database (the reporting.engaz.tech portal reads from it). The URL is
+// fixed; the key is loaded from .env like the production key.
+const REPORTS_WORKER_URL = 'https://api-reports.engaz.tech';
+let REPORTS_WORKER_KEY = '';
+
+function readEnvFileConfig() {
+  const result = { url: '', key: '', reportsKey: '' };
+  try {
+    const envPath = path.join(__dirname, '..', '.env');
+    if (!fs.existsSync(envPath)) return result;
     const envContent = fs.readFileSync(envPath, 'utf8');
-    const urlMatch = envContent.match(/VITE_CF_WORKER_URL\s*=\s*(.*)/);
-    if (urlMatch && urlMatch[1]) {
-      WORKER_URL = urlMatch[1].trim();
-    }
-    const keyMatch = envContent.match(/VITE_CF_WORKER_API_KEY\s*=\s*(.*)/);
-    if (keyMatch && keyMatch[1]) {
-      WORKER_API_KEY = keyMatch[1].trim();
-    }
+    // Stop at the first '#' or line break so an inline comment or CR does not become
+    // part of the value.
+    const urlMatch = envContent.match(/^\s*VITE_CF_WORKER_URL\s*=\s*([^#\r\n]*)/m);
+    if (urlMatch) result.url = urlMatch[1].trim();
+    const keyMatch = envContent.match(/^\s*VITE_CF_WORKER_API_KEY\s*=\s*([^#\r\n]*)/m);
+    if (keyMatch) result.key = keyMatch[1].trim();
+    const reportsKeyMatch = envContent.match(/^\s*VITE_REPORTS_API_KEY\s*=\s*([^#\r\n]*)/m);
+    if (reportsKeyMatch) result.reportsKey = reportsKeyMatch[1].trim();
+  } catch (e) {
+    console.error('[D1 Sync API] Failed to load .env file:', e.message);
   }
-} catch (e) {
-  console.error('[D1 Sync API] Failed to load .env file:', e.message);
+  return result;
 }
 
-try {
-  const settings = database.getSettings();
-  if (!WORKER_URL && settings['brewmaster_d1_worker_url']) {
-    WORKER_URL = settings['brewmaster_d1_worker_url'];
-  }
-  if (!WORKER_API_KEY && settings['brewmaster_d1_worker_api_key']) {
-    WORKER_API_KEY = settings['brewmaster_d1_worker_api_key'];
-  }
-} catch (e) {}
+function loadConfig(force = false) {
+  const now = Date.now();
+  if (!force && configLoadedAt && now - configLoadedAt < CONFIG_TTL_MS) return;
 
-if (!WORKER_URL) {
-  WORKER_URL = "https://api.engaz.tech"; // default: BrewMaster central API
+  const fromEnv = readEnvFileConfig();
+  let url = fromEnv.url;
+  let key = fromEnv.key;
+
+  try {
+    const settings = database.getSettings();
+    if (!url && settings['engaz_d1_worker_url']) url = settings['engaz_d1_worker_url'];
+    if (!key && settings['engaz_d1_worker_api_key']) key = settings['engaz_d1_worker_api_key'];
+  } catch (e) {
+    // Worth reporting: a failure here silently degrades into "offline" behaviour.
+    console.error('[D1 Sync API] Could not read worker config from settings:', e.message);
+  }
+
+  const previousUrl = WORKER_URL;
+  WORKER_URL = url || DEFAULT_WORKER_URL;
+  WORKER_API_KEY = key;
+  REPORTS_WORKER_KEY = fromEnv.reportsKey || REPORTS_WORKER_KEY;
+  configLoadedAt = now;
+
+  if (WORKER_URL !== previousUrl) {
+    console.log('[D1 Sync API] Configured Worker URL:', WORKER_URL);
+  }
 }
 
-console.log('[D1 Sync API] Configured Worker URL:', WORKER_URL);
+/** Joins the configured worker URL with an endpoint path, honouring a sub-path mount. */
+function endpointPath(base, endpoint) {
+  return `${base.pathname.replace(/\/+$/, '')}${endpoint}`;
+}
 
-/**
- * Custom fetch implementation using standard Node.js https module
- */
-function fetchWorker(payload) {
+function postJson({ baseUrl, endpoint, body, apiKey, timeout }) {
   return new Promise((resolve, reject) => {
-    if (!WORKER_URL || WORKER_URL.includes('your-username')) {
-      return reject(new Error('Cloudflare Worker URL is not configured'));
+    let parsed;
+    try {
+      parsed = new URL(baseUrl);
+    } catch {
+      return reject(new Error(`Invalid worker URL: ${baseUrl}`));
     }
 
-    const parsedUrl = new URL(WORKER_URL);
-    const bodyStr = JSON.stringify(payload);
-
-    const options = {
-      hostname: parsedUrl.hostname,
-      port: parsedUrl.port || 443,
-      path: parsedUrl.pathname + parsedUrl.search,
+    const bodyStr = JSON.stringify(body || {});
+    const req = https.request({
+      hostname: parsed.hostname,
+      port: parsed.port || 443,
+      path: endpointPath(parsed, endpoint),
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(bodyStr),
-        ...(WORKER_API_KEY ? { 'X-API-Key': WORKER_API_KEY } : {})
+        ...(apiKey ? { 'X-API-Key': apiKey } : {}),
       },
-      timeout: 15000 // 15 seconds
-    };
-
-    const req = https.request(options, (res) => {
+      timeout,
+    }, (res) => {
       let data = '';
-      res.on('data', (chunk) => data += chunk);
+      res.on('data', (chunk) => { data += chunk; });
       res.on('end', () => {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           try {
             resolve(JSON.parse(data));
-          } catch (e) {
+          } catch {
             reject(new Error(`Failed to parse json response: ${data}`));
           }
-        } else {
-          reject(new Error(`HTTP Error ${res.statusCode}: ${data}`));
+          return;
         }
+        // 429 is worth naming: the caller should back off rather than retry immediately.
+        if (res.statusCode === 429) {
+          reject(new Error(`Rate limited by worker (retry after ${res.headers['retry-after'] || '?'}s)`));
+          return;
+        }
+        reject(new Error(`HTTP Error ${res.statusCode}: ${data}`));
       });
     });
 
-    req.on('error', (err) => reject(err));
+    req.on('error', reject);
     req.on('timeout', () => {
       req.destroy();
       reject(new Error('Connection timed out'));
@@ -96,311 +137,192 @@ function fetchWorker(payload) {
   });
 }
 
-// ─── API Sync Methods ──────────────────────────────────────────────────────────
+/** Calls the production worker, mirroring writes to the reports database. */
+async function callWorker(endpoint, body) {
+  loadConfig();
+  if (!WORKER_URL || WORKER_URL.includes('your-username')) {
+    throw new Error('Cloudflare Worker URL is not configured');
+  }
+
+  const response = await postJson({
+    baseUrl: WORKER_URL,
+    endpoint,
+    body,
+    apiKey: WORKER_API_KEY,
+    timeout: REQUEST_TIMEOUT_MS,
+  });
+
+  if (response && response.success === false) {
+    throw new Error(response.error || `Worker rejected ${endpoint}`);
+  }
+
+  // Only writes are mirrored: the reports database is a read model built from them.
+  if (endpoint.startsWith('/sync/')) {
+    mirrorToReports(endpoint, body).catch(() => {});
+  }
+
+  return response;
+}
+
+/**
+ * Copies a write to the isolated reports database. Fire and forget by design: the reports
+ * portal going stale is an inconvenience, but a mirror failure blocking the POS from
+ * syncing its own sales is not acceptable.
+ */
+async function mirrorToReports(endpoint, body) {
+  if (!REPORTS_WORKER_KEY) return;
+  try {
+    const res = await postJson({
+      baseUrl: REPORTS_WORKER_URL,
+      endpoint,
+      body,
+      apiKey: REPORTS_WORKER_KEY,
+      timeout: MIRROR_TIMEOUT_MS,
+    });
+    if (res && res.success === false) {
+      console.warn('[D1 Sync API] Reports mirror rejected (non-fatal):', res.error);
+    }
+  } catch (e) {
+    console.warn('[D1 Sync API] Reports mirror failed (non-fatal):', e.message);
+  }
+}
+
+/** Splits a push into worker-sized chunks so a large backlog is not rejected wholesale. */
+async function syncRecords(target, records) {
+  if (!records || records.length === 0) return { success: true, written: 0 };
+
+  let written = 0;
+  for (let i = 0; i < records.length; i += MAX_BATCH) {
+    const chunk = records.slice(i, i + MAX_BATCH);
+    const res = await callWorker(`/sync/${target}`, { items: chunk });
+    written += (res && res.written) || 0;
+  }
+  return { success: true, written };
+}
+
+// ─── Push methods ────────────────────────────────────────────────────────────
+// Each one hands its records to the matching endpoint. Field mapping, upsert conflict
+// rules and soft-delete handling all live in the worker now, so these are thin.
 
 async function pushMenuItems(items) {
   if (items.length === 0) return { success: true };
   console.log(`[D1 Sync API] Pushing ${items.length} menu items...`);
-
-  // Split tombstones (deletions) from upserts (Issue 20)
-  const deleted = items.filter(i => i.deletedAt);
-  const upserts = items.filter(i => !i.deletedAt);
-
-  const batch = [];
-  for (const item of upserts) {
-    batch.push({
-      sql: `INSERT OR REPLACE INTO menu_items (id, name, description, price, category, image, available, branch_id, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      params: [
-        item.id,
-        item.name,
-        item.description || "",
-        Number(item.price),
-        item.category,
-        item.image || "",
-        item.available ? 1 : 0,
-        item.branchId || item.branch_id || null,
-        item.updatedAt || new Date().toISOString()
-      ]
-    });
-  }
-  for (const item of deleted) {
-    batch.push({
-      sql: `DELETE FROM menu_items WHERE id = ?`,
-      params: [item.id]
-    });
-  }
-
-  if (batch.length === 0) return { success: true };
-  const res = await fetchWorker({ batch });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to push menu items to D1');
-  }
-  return { success: true };
+  return syncRecords('menu-items', items);
 }
 
 async function pushOrders(orders) {
   if (orders.length === 0) return { success: true };
   console.log(`[D1 Sync API] Pushing ${orders.length} orders...`);
-
-  const batch = [];
-  const deleted = orders.filter(o => o.deletedAt);
-  const upserts = orders.filter(o => !o.deletedAt);
-
-  for (const order of upserts) {
-    // Send updated_at + tax snapshot + soft-delete columns to the cloud (Issue 18 + 25)
-    batch.push({
-      sql: `INSERT OR REPLACE INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      params: [
-        order.id,
-        order.orderNumber,
-        order.tableId,
-        typeof order.items === 'string' ? order.items : JSON.stringify(order.items),
-        order.status,
-        order.paymentStatus || 'Unpaid',
-        order.paymentMethod || null,
-        Number(order.totalAmount),
-        order.subtotal != null ? Number(order.subtotal) : null,
-        order.taxRate != null ? Number(order.taxRate) : null,
-        order.taxAmount != null ? Number(order.taxAmount) : null,
-        order.grandTotal != null ? Number(order.grandTotal) : null,
-        order.createdAt,
-        order.paidAt || null,
-        order.customerPhone || null,
-        Number(order.pointsEarned) || 0,
-        Number(order.pointsRedeemed) || 0,
-        order.branchId || order.branch_id || null,
-        order.updatedAt || new Date().toISOString()
-      ]
-    });
-  }
-  for (const order of deleted) {
-    batch.push({
-      sql: `DELETE FROM orders WHERE id = ?`,
-      params: [order.id]
-    });
-  }
-
-  if (batch.length === 0) return { success: true };
-  const res = await fetchWorker({ batch });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to push orders to D1');
-  }
-  return { success: true };
+  return syncRecords('orders', orders);
 }
 
 async function pushCustomers(customers) {
   if (customers.length === 0) return { success: true };
   console.log(`[D1 Sync API] Pushing ${customers.length} customers...`);
-
-  const batch = [];
-  const deleted = customers.filter(c => c.deletedAt);
-  const upserts = customers.filter(c => !c.deletedAt);
-
-  for (const c of upserts) {
-    batch.push({
-      sql: `INSERT OR REPLACE INTO customers (id, name, phone, points, createdAt, branch_id, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      params: [
-        c.id,
-        c.name,
-        c.phone,
-        Number(c.points) || 0,
-        c.createdAt,
-        c.branchId || c.branch_id || null,
-        c.updatedAt || new Date().toISOString()
-      ]
-    });
-  }
-  for (const c of deleted) {
-    batch.push({
-      sql: `DELETE FROM customers WHERE id = ?`,
-      params: [c.id]
-    });
-  }
-
-  if (batch.length === 0) return { success: true };
-  const res = await fetchWorker({ batch });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to push customers to D1');
-  }
-  return { success: true };
+  return syncRecords('customers', customers);
 }
 
 async function pushInventory(items) {
   if (items.length === 0) return { success: true };
   console.log(`[D1 Sync API] Pushing ${items.length} inventory items...`);
-
-  const batch = [];
-  const deleted = items.filter(i => i.deleted_at);
-  const upserts = items.filter(i => !i.deleted_at);
-
-  for (const item of upserts) {
-    batch.push({
-      sql: `INSERT OR REPLACE INTO inventory (id, name, unit, stock, minStock, costPerUnit, branch_id, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      params: [
-        item.id,
-        item.name,
-        item.unit,
-        Number(item.stock) || 0,
-        Number(item.minStock) || 0,
-        Number(item.costPerUnit) || 0,
-        item.branchId || item.branch_id || null,
-        item.createdAt || item.created_at || new Date().toISOString(),
-        item.updatedAt || item.updated_at || new Date().toISOString()
-      ]
-    });
-  }
-  for (const item of deleted) {
-    batch.push({
-      sql: `DELETE FROM inventory WHERE id = ?`,
-      params: [item.id]
-    });
-  }
-
-  if (batch.length === 0) return { success: true };
-  const res = await fetchWorker({ batch });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to push inventory to D1');
-  }
-  return { success: true };
+  return syncRecords('inventory', items);
 }
 
-// Push stock MOVEMENTS (transactions) so the cloud keeps the full audit trail
-// and balances can be recomputed instead of last-write-wins overwrites (Issue 27)
 async function pushInventoryTransactions(transactions) {
   if (transactions.length === 0) return { success: true };
   console.log(`[D1 Sync API] Pushing ${transactions.length} inventory transactions...`);
-
-  const batch = transactions.map(tx => ({
-    sql: `INSERT OR IGNORE INTO inventory_transactions (id, itemId, type, quantity, referenceId, createdAt, branch_id, notes)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    params: [
-      tx.id,
-      tx.itemId,
-      tx.type,
-      Number(tx.quantity),
-      tx.referenceId || null,
-      tx.createdAt,
-      tx.branch_id || null,
-      tx.notes || null
-    ]
-  }));
-
-  const res = await fetchWorker({ batch });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to push inventory transactions to D1');
-  }
-  return { success: true };
+  return syncRecords('inventory-transactions', transactions);
 }
 
-// Push loyalty points ledger entries (Issue 26)
 async function pushPointsTransactions(entries) {
   if (entries.length === 0) return { success: true };
   console.log(`[D1 Sync API] Pushing ${entries.length} points transactions...`);
+  return syncRecords('points-transactions', entries);
+}
 
-  const batch = entries.map(e => ({
-    sql: `INSERT OR IGNORE INTO points_transactions (id, customerId, orderId, type, points, balanceAfter, createdAt, branch_id)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    params: [
-      e.id,
-      e.customerId,
-      e.orderId || null,
-      e.type,
-      Number(e.points),
-      e.balanceAfter != null ? Number(e.balanceAfter) : null,
-      e.createdAt,
-      e.branch_id || null
-    ]
-  }));
-
-  const res = await fetchWorker({ batch });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to push points transactions to D1');
-  }
+async function deleteMenuItem(id) {
+  console.log(`[D1 Sync API] Deleting menu item ${id}...`);
+  const now = new Date().toISOString();
+  // Soft delete so the tombstone is visible to incremental pulls on other branches.
+  await syncRecords('menu-items', [{ id, deletedAt: now, updatedAt: now }]);
   return { success: true };
 }
 
-// Incremental pull (Issue 21): only fetch rows changed since the last pull,
-// scoped to this branch (+ shared/branchless rows).
-async function pullOrders(since = null, branchId = null) {
-  console.log(`[D1 Sync API] Pulling orders from D1 (since=${since || 'full'}, branch=${branchId || 'all'})...`);
+// ─── Row mapping ─────────────────────────────────────────────────────────────
 
-  let sql;
-  const params = [];
-  if (since && branchId && branchId !== 'manager') {
-    sql = "SELECT * FROM orders WHERE updated_at > ? AND (branch_id = ? OR branch_id IS NULL) ORDER BY updated_at ASC LIMIT 500";
-    params.push(since, branchId);
-  } else if (since) {
-    sql = "SELECT * FROM orders WHERE updated_at > ? ORDER BY updated_at ASC LIMIT 500";
-    params.push(since);
-  } else if (branchId && branchId !== 'manager') {
-    sql = "SELECT * FROM orders WHERE (branch_id = ? OR branch_id IS NULL) ORDER BY createdAt DESC LIMIT 1000";
-    params.push(branchId);
-  } else {
-    sql = "SELECT * FROM orders ORDER BY createdAt DESC LIMIT 1000";
-  }
+function toNumberOrNull(value) {
+  if (value === null || value === undefined) return null;
+  const n = Number(value);
+  return Number.isFinite(n) ? n : null;
+}
 
-  const res = await fetchWorker(params.length ? { sql, params } : { sql });
-
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to pull orders from D1');
-  }
-
-  // D1 query response: results is under res.result[0].results
-  const rows = res.result[0]?.results || [];
-
-  return rows.map(row => ({
+function mapOrderRow(row) {
+  return {
     $id: row.id,
     $createdAt: row.createdAt,
     $updatedAt: row.updated_at || row.createdAt,
     orderNumber: row.orderNumber,
     tableId: row.tableId,
     status: row.status,
-    paymentStatus: row.paymentStatus,
-    total_amount: Number(row.totalAmount),
-    subtotal: row.subtotal,
-    taxRate: row.taxRate,
-    taxAmount: row.taxAmount,
-    grandTotal: row.grandTotal,
+    paymentStatus: row.paymentStatus || 'Unpaid',
+    total_amount: Number(row.totalAmount) || 0,
+    // The tax snapshot has to travel with the row: without it a reader cannot tell a
+    // tax-inclusive total from a pre-tax one and re-applies tax.
+    subtotal: toNumberOrNull(row.subtotal),
+    taxRate: toNumberOrNull(row.taxRate),
+    taxAmount: toNumberOrNull(row.taxAmount),
+    grandTotal: toNumberOrNull(row.grandTotal),
+    paidAmount: toNumberOrNull(row.paidAmount),
     payment_method: row.paymentMethod || null,
     paidAt: row.paidAt || null,
     customerPhone: row.customerPhone || null,
-    pointsEarned: row.pointsEarned,
-    pointsRedeemed: row.pointsRedeemed,
+    pointsEarned: toNumberOrNull(row.pointsEarned),
+    pointsRedeemed: toNumberOrNull(row.pointsRedeemed),
     items: row.items, // JSON string
     branch_id: row.branch_id,
-    deleted_at: row.deleted_at || null
-  }));
+    deleted_at: row.deleted_at || null,
+  };
 }
 
-async function deleteMenuItem(id) {
-  console.log(`[D1 Sync API] Deleting menu item ${id}...`);
-  const res = await fetchWorker({
-    sql: "DELETE FROM menu_items WHERE id = ?",
-    params: [id]
+// ─── Pull and read methods ───────────────────────────────────────────────────
+
+/**
+ * Incremental pull: only rows changed since the last pull, scoped to this branch plus
+ * shared rows.
+ *
+ * The high-water mark is inclusive on purpose. It is max(updated_at) of the previous batch,
+ * and batch writes share a millisecond timestamp, so a strict comparison skipped any row
+ * carrying that exact timestamp but cut off by the limit. The local upsert is idempotent,
+ * so re-fetching the boundary rows is harmless.
+ */
+async function pullOrders(since = null, branchId = null) {
+  console.log(`[D1 Sync API] Pulling orders from D1 (since=${since || 'full'}, branch=${branchId || 'all'})...`);
+
+  const res = await callWorker('/pull/orders', {
+    since: since || null,
+    // The manager view is not a branch; it reads everything.
+    branchId: branchId && branchId !== 'manager' ? branchId : null,
   });
-  if (!res.success) {
-    console.error(`[D1 Sync API] Failed to delete menu item ${id}:`, res.error);
-  }
+
+  return (res.orders || []).map(mapOrderRow);
 }
 
-// Liveness probe used by the sync engine's connectivity check (Issue 34)
+/** Liveness probe used by the sync engine's connectivity check. */
 async function checkWorkerHealth() {
+  loadConfig();
   try {
     const parsedUrl = new URL(WORKER_URL);
     await new Promise((resolve, reject) => {
       const req = https.request({
         hostname: parsedUrl.hostname,
         port: parsedUrl.port || 443,
-        path: '/health',
+        path: endpointPath(parsedUrl, '/health'),
         method: 'GET',
-        timeout: 5000
+        timeout: 5000,
       }, (res) => {
         res.resume();
-        res.statusCode >= 200 && res.statusCode < 300 ? resolve() : reject(new Error(`HTTP ${res.statusCode}`));
+        if (res.statusCode >= 200 && res.statusCode < 300) resolve();
+        else reject(new Error(`HTTP ${res.statusCode}`));
       });
       req.on('error', reject);
       req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
@@ -408,68 +330,51 @@ async function checkWorkerHealth() {
     });
     return true;
   } catch (e) {
+    // Distinguish "unreachable" from "reachable but unhealthy" in the log; the sync engine
+    // only needs the boolean, but a silent false hides DNS and TLS failures.
+    console.warn('[D1 Sync API] Worker health check failed:', e.message);
     return false;
   }
 }
 
+/** One round trip for the whole manager dashboard instead of three. */
+async function getManagerSnapshot() {
+  console.log('[D1 Sync API] Manager fetching snapshot...');
+  const res = await callWorker('/read/manager-snapshot', {});
+
+  return {
+    orders: (res.orders || []).map(mapOrderRow),
+    customers: (res.customers || []).map(row => ({
+      $id: row.id,
+      $createdAt: row.createdAt,
+      $updatedAt: row.updated_at || row.createdAt,
+      name: row.name,
+      phone: row.phone,
+      points: Number(row.points) || 0,
+      branchId: row.branch_id,
+    })),
+    inventory: (res.inventory || []).map(row => ({
+      $id: row.id,
+      name: row.name,
+      unit: row.unit,
+      stock: Number(row.stock) || 0,
+      minStock: Number(row.minStock) || 0,
+      costPerUnit: Number(row.costPerUnit) || 0,
+      branch_id: row.branch_id,
+    })),
+  };
+}
+
 async function getManagerOrders() {
-  console.log('[D1 Sync API] Manager fetching all orders...');
-  const res = await fetchWorker({
-    sql: "SELECT * FROM orders ORDER BY createdAt DESC LIMIT 1000"
-  });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to fetch manager orders');
-  }
-  const rows = res.result[0]?.results || [];
-  return rows.map(row => ({
-    $id: row.id,
-    $createdAt: row.createdAt,
-    $updatedAt: row.createdAt,
-    total_amount: Number(row.totalAmount),
-    payment_method: row.paymentMethod || 'Cash',
-    items: row.items,
-    branch_id: row.branch_id
-  }));
+  return (await getManagerSnapshot()).orders;
 }
 
 async function getManagerCustomers() {
-  console.log('[D1 Sync API] Manager fetching all customers...');
-  const res = await fetchWorker({
-    sql: "SELECT * FROM customers ORDER BY createdAt DESC LIMIT 1000"
-  });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to fetch manager customers');
-  }
-  const rows = res.result[0]?.results || [];
-  return rows.map(row => ({
-    $id: row.id,
-    $createdAt: row.createdAt,
-    $updatedAt: row.createdAt,
-    name: row.name,
-    phone: row.phone,
-    points: Number(row.points),
-    branchId: row.branch_id
-  }));
+  return (await getManagerSnapshot()).customers;
 }
 
 async function getManagerInventory() {
-  console.log('[D1 Sync API] Manager fetching all inventory...');
-  const res = await fetchWorker({
-    sql: "SELECT * FROM inventory ORDER BY name ASC LIMIT 1000"
-  });
-  if (!res.success) {
-    throw new Error(res.error || 'Failed to fetch manager inventory');
-  }
-  const rows = res.result[0]?.results || [];
-  return rows.map(row => ({
-    $id: row.id,
-    name: row.name,
-    unit: row.unit,
-    stock: Number(row.stock),
-    minStock: Number(row.minStock),
-    costPerUnit: Number(row.costPerUnit),
-    branch_id: row.branch_id
-  }));
+  return (await getManagerSnapshot()).inventory;
 }
 
 module.exports = {
@@ -482,7 +387,8 @@ module.exports = {
   pullOrders,
   deleteMenuItem,
   checkWorkerHealth,
+  getManagerSnapshot,
   getManagerOrders,
   getManagerCustomers,
-  getManagerInventory
+  getManagerInventory,
 };

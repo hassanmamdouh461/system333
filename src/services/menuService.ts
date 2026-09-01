@@ -1,107 +1,95 @@
 import { MenuItem } from '../types/menu';
+import { callWorker } from './workerClient';
 
-const APPWRITE_ENDPOINT = 'https://fra.cloud.appwrite.io/v1';
-const APPWRITE_PROJECT = '69879ae70002444f3f38';
-const APPWRITE_DB = '6a545eb00016d126bc82';
+interface MenuItemRow {
+  id: string;
+  name: string;
+  price: number | string;
+  category: string;
+  description?: string | null;
+  image?: string | null;
+  available?: number | boolean | null;
+}
+
+function mapRow(row: MenuItemRow): MenuItem {
+  return {
+    id: row.id,
+    name: row.name,
+    price: Number(row.price) || 0,
+    category: row.category,
+    description: row.description || '',
+    image: row.image || '',
+    available: row.available === undefined || row.available === null ? true : Boolean(row.available),
+    isSynced: true,
+  };
+}
+
+/** Throws when a mutation is attempted in the web build, which has no local database. */
+function requireDesktop(action: string) {
+  if (!window.electronAPI) {
+    throw new Error(`${action} is only available in the desktop app`);
+  }
+  return window.electronAPI;
+}
 
 /**
- * Menu Service - Handle all CRUD operations for Menu Items using SQLite via Electron IPC
+ * Menu CRUD. Reads work in both builds — the desktop app from local SQLite, the browser
+ * from the central worker — while writes are desktop-only because the branch database is
+ * the source of truth.
  */
 export const menuService = {
-  /**
-   * Fetch all menu items from local SQLite DB or Appwrite fallback
-   */
   async getAll(): Promise<MenuItem[]> {
-    const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
-    if (isElectron) {
+    if (window.electronAPI) {
       try {
         return await window.electronAPI.getMenu();
       } catch (error) {
         console.error('[menuService] Error fetching menu items from SQLite:', error);
         throw new Error('Failed to fetch menu items');
       }
-    } else {
-      // Browser/Web fallback — fetch from central Cloudflare D1 database
-      try {
-        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech';
-        const workerApiKey = import.meta.env.VITE_CF_WORKER_API_KEY || '';
-        const res = await fetch(workerUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
-          },
-          body: JSON.stringify({
-            sql: 'SELECT * FROM menu_items ORDER BY category, name'
-          })
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error || 'D1 query failed');
-        const docs = data.result[0]?.results || [];
-        return docs.map((doc: any) => ({
-          id: doc.id,
-          name: doc.name,
-          price: Number(doc.price),
-          category: doc.category,
-          description: doc.description || "",
-          image: doc.image || "",
-          available: doc.available !== undefined ? Boolean(doc.available) : true,
-          isSynced: true
-        }));
-      } catch (error) {
-        console.error('[menuService] Error fetching menu items from D1:', error);
-        throw new Error('Failed to fetch menu items');
-      }
+    }
+
+    try {
+      const data = await callWorker<{ menuItems: MenuItemRow[] }>('/read/menu-items');
+      return (data.menuItems || []).map(mapRow);
+    } catch (error) {
+      console.error('[menuService] Error fetching menu items from the worker:', error);
+      throw new Error('Failed to fetch menu items');
     }
   },
 
-  /**
-   * Create a new menu item in local SQLite DB
-   */
   async create(item: Omit<MenuItem, 'id'>): Promise<MenuItem> {
     try {
-      return await window.electronAPI.createMenuItem(item);
+      return await requireDesktop('Creating a menu item').createMenuItem(item);
     } catch (error) {
       console.error('[menuService] Error creating menu item:', error);
       throw new Error('Failed to create menu item');
     }
   },
 
-  /**
-   * Update an existing menu item in local SQLite DB
-   */
   async update(id: string, data: Partial<Omit<MenuItem, 'id'>>): Promise<MenuItem> {
     try {
-      return await window.electronAPI.updateMenuItem(id, data);
+      return await requireDesktop('Updating a menu item').updateMenuItem(id, data);
     } catch (error) {
       console.error('[menuService] Error updating menu item:', error);
       throw new Error('Failed to update menu item');
     }
   },
 
-  /**
-   * Delete a menu item from local SQLite DB
-   */
   async delete(id: string): Promise<void> {
     try {
-      await window.electronAPI.deleteMenuItem(id);
+      await requireDesktop('Deleting a menu item').deleteMenuItem(id);
     } catch (error) {
       console.error('[menuService] Error deleting menu item:', error);
       throw new Error('Failed to delete menu item');
     }
   },
 
-  /**
-   * Reset menu to default items (delete all + recreate)
-   */
   async resetToDefaults(defaultItems: Omit<MenuItem, 'id'>[]): Promise<MenuItem[]> {
     try {
-      return await window.electronAPI.resetMenu(defaultItems);
+      return await requireDesktop('Resetting the menu').resetMenu(defaultItems);
     } catch (error) {
       console.error('[menuService] Error resetting menu to defaults:', error);
       throw new Error('Failed to reset menu to defaults');
     }
   },
 };
-

@@ -1,4 +1,4 @@
-import { useState, useEffect, TouchEvent } from 'react';
+import { useState, TouchEvent } from 'react';
 
 export type SwipeDirection = 'left' | 'right' | 'up' | 'down';
 
@@ -26,16 +26,6 @@ export function useSwipe(handlers: SwipeHandlers, config: SwipeConfig = {}) {
       y: touch.clientY,
       time: Date.now(),
     });
-  };
-
-  const onTouchMove = (e: TouchEvent) => {
-    if (!touchStart) return;
-
-    const touch = e.touches[0];
-    const deltaX = Math.abs(touch.clientX - touchStart.x);
-    const deltaY = Math.abs(touch.clientY - touchStart.y);
-
-
   };
 
   const onTouchEnd = (e: TouchEvent) => {
@@ -84,7 +74,6 @@ export function useSwipe(handlers: SwipeHandlers, config: SwipeConfig = {}) {
 
   return {
     onTouchStart,
-    onTouchMove,
     onTouchEnd,
   };
 }

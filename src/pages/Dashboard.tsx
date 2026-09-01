@@ -1,17 +1,14 @@
-import React from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useLanguage } from '../context/LanguageContext';
 import { useAuth } from '../context/AuthContext';
 import { motion } from 'framer-motion';
 import { 
-  LayoutDashboard, 
   ClipboardList, 
   CreditCard, 
   UtensilsCrossed, 
   Users, 
   BarChart3, 
   Settings,
-  Languages,
   Coffee,
   Building2,
   Package
@@ -30,7 +27,7 @@ const descMap: Record<string, { en: string, ar: string }> = {
 
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { t, language, toggleLanguage } = useLanguage();
+  const { t, language } = useLanguage();
   const { branch } = useAuth();
 
   const navItems = [
@@ -117,7 +114,7 @@ export default function Dashboard() {
       {/* Grid of Pages */}
       <div className="flex-1 flex items-center justify-center">
         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4 md:gap-6 w-full max-w-5xl">
-          {navItems.map((item, index) => {
+          {navItems.map((item) => {
             const Icon = item.icon;
             const desc = descMap[item.key][language as 'en' | 'ar'];
             
@@ -127,7 +124,7 @@ export default function Dashboard() {
                 onClick={() => navigate(item.to)}
                 whileHover={{ scale: 1.04, y: -4 }}
                 whileTap={{ scale: 0.97 }}
-                className={`bg-white rounded-3xl p-5 md:p-6 border border-gray-250/60 shadow-md transition-all flex flex-col items-center text-center justify-between gap-4 cursor-pointer min-h-[170px] md:min-h-[200px] group ${item.glow}`}
+                className={`bg-white rounded-3xl p-5 md:p-6 border border-gray-300/60 shadow-md transition-all flex flex-col items-center text-center justify-between gap-4 cursor-pointer min-h-[170px] md:min-h-[200px] group ${item.glow}`}
               >
                 {/* Glowing Colored Icon Container */}
                 <div className={`p-4 rounded-2xl bg-gradient-to-br ${item.color} text-white shadow-lg transition-transform group-hover:scale-110`}>
