@@ -42,6 +42,38 @@ powershell -ExecutionPolicy Bypass -File deploy-reports.ps1
 
 السكربت يفحص المصادقة، ينشئ القاعدة إن لم تكن موجودة، يضبط الأسرار، ينشر عامل التقارير، ثم يبني الموقع وينشره ويشغّل التهجير. كل خطوة تفحص رمز الخروج، فالبناء الفاشل لا ينشر النسخة القديمة.
 
+أداة النشر ليست من تبعيات المشروع، فالسكربت يجلبها عند التشغيل. لتثبيتها مؤقتًا بدون تعديل ملف الحزم:
+
+```bash
+npm install --no-save wrangler@4.42.0
+```
+
+للنشر خطوة بخطوة بدلًا من السكربت، من جذر المشروع:
+
+```bash
+./node_modules/.bin/wrangler deploy -c wrangler-reports.toml
+cd reports-site && npm run build && cd ..
+./node_modules/.bin/wrangler deploy -c wrangler-reports-site.toml
+```
+
+## تدوير الأسرار
+
+أي قيمة تظهر داخل حزمة الموقع المنشورة تُعتبر محروقة ولا يكفي حجبها، لأن الحزمة القديمة قد تكون محفوظة في ذاكرة وسيطة أو لدى زائر. الترتيب الصحيح هو رفع السرّ الجديد إلى العامل أولًا، ثم تحديث ملف البيئة، ثم إعادة النشر:
+
+```bash
+./node_modules/.bin/wrangler secret put REPORTS_API_KEY -c wrangler-reports.toml
+./node_modules/.bin/wrangler secret put REPORTS_VIEWER_PASSWORD -c wrangler-reports.toml
+./node_modules/.bin/wrangler secret put REPORTS_TOKEN_SECRET -c wrangler-reports.toml
+```
+
+تدوير مفتاح الكتابة يوقف مزامنة تطبيق سطح المكتب حتى تُحدَّث نسخته من المفتاح في ملف البيئة بالجذر. وتدوير سرّ التوقيع يُخرج كل الزوّار الحاليين من جلساتهم فورًا.
+
+للتحقق من الأسرار المرفوعة حاليًا دون كشف قيمها:
+
+```bash
+./node_modules/.bin/wrangler secret list -c wrangler-reports.toml
+```
+
 ## نموذج الوصول
 
 - تطبيق سطح المكتب يحمل مفتاح الكتابة، ويرسل نسخة من كل سجل إلى قاعدة التقارير.
@@ -59,6 +91,34 @@ powershell -ExecutionPolicy Bypass -File deploy-reports.ps1
 | `POST /migrate` | مفتاح كتابة | إنشاء الجداول |
 
 العامل يملك كل نصوص الاستعلام؛ العميل يرسل بيانات ومرشّحات فقط.
+
+## التحقق بعد النشر
+
+الفحوص التالية تُنفَّذ من الطرفية بلا متصفح، والمتغير يحمل مفتاح الكتابة الجديد.
+
+فحص حياة العامل، ويجب أن يعود بنجاح:
+
+```bash
+curl -s https://api-reports.engaz.tech/health
+```
+
+المفتاح القديم يجب أن يُرفض بالرمز `401`
+
+طلب رمز قراءة بكلمة مرور الزائر:
+
+```bash
+curl -s -X POST https://api-reports.engaz.tech/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"password":"<كلمة المرور>"}'
+```
+
+رمز القراءة يجب أن يفشل على أي مسار كتابة بالرمز `401`
+
+وأخيرًا فحص الحزمة المنشورة: نزّلها وابحث فيها عن أي سرّ، ويجب ألّا يوجد أي مطابقة ولا أي ترويسة مفتاح:
+
+```bash
+curl -s https://reporting.engaz.tech/ | grep -o 'assets/index-[^"]*\.js'
+```
 
 ## البنية
 
