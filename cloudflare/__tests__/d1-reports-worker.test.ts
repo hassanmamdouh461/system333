@@ -7,7 +7,8 @@ import {
   __testing,
 } from '../d1-reports-worker.js';
 
-const { SYNC_TABLES, assertItems, MAX_BATCH, TOKEN_TTL_MS, LOGIN_MAX_ATTEMPTS } = __testing;
+const { SYNC_TABLES, assertItems, MAX_BATCH, MOVEMENT_LIMIT, TOKEN_TTL_MS, LOGIN_MAX_ATTEMPTS, readSnapshot } =
+  __testing;
 
 const SECRET = 'reports-token-secret-for-tests';
 
@@ -146,5 +147,96 @@ describe('checkRateLimit', () => {
     }
     expect(checkRateLimit('login:1.2.3.4', LOGIN_MAX_ATTEMPTS, now, buckets).allowed).toBe(false);
     expect(checkRateLimit('login:1.2.3.4', LOGIN_MAX_ATTEMPTS, now + 61_000, buckets).allowed).toBe(true);
+  });
+});
+
+describe('readSnapshot', () => {
+  /** Minimal D1 stand-in: records the statements and replays canned rows in order. */
+  function fakeDb(resultSets) {
+    const seen = [];
+    return {
+      seen,
+      prepare(sql) {
+        const statement = { sql, bindings: [] };
+        seen.push(statement);
+        return {
+          bind(...args) {
+            statement.bindings = args;
+            return this;
+          },
+        };
+      },
+      async batch() {
+        return resultSets.map((results) => ({ results }));
+      },
+    };
+  }
+
+  const EMPTY = [[], [], [], [], []];
+
+  it('returns every collection the portal reads, including the stock ledger', async () => {
+    const snapshot = await readSnapshot(fakeDb(EMPTY));
+    expect(Object.keys(snapshot).sort()).toEqual([
+      'customers',
+      'inventory',
+      'menuItems',
+      'movements',
+      'orders',
+      'serverTime',
+    ]);
+  });
+
+  it('maps each result set to its own collection, in order', async () => {
+    const snapshot = await readSnapshot(
+      fakeDb([
+        [{ id: 'o1' }],
+        [{ id: 'c1' }],
+        [{ id: 'i1' }],
+        [{ id: 'm1' }],
+        [{ id: 'tx1' }],
+      ])
+    );
+
+    // A swap here would silently show orders as customers, so the mapping is asserted
+    // rather than assumed from the query order.
+    expect(snapshot.orders).toEqual([{ id: 'o1' }]);
+    expect(snapshot.customers).toEqual([{ id: 'c1' }]);
+    expect(snapshot.inventory).toEqual([{ id: 'i1' }]);
+    expect(snapshot.menuItems).toEqual([{ id: 'm1' }]);
+    expect(snapshot.movements).toEqual([{ id: 'tx1' }]);
+  });
+
+  it('stamps the server time so the portal can show data age', async () => {
+    const snapshot = await readSnapshot(fakeDb(EMPTY));
+    expect(Number.isNaN(new Date(snapshot.serverTime).getTime())).toBe(false);
+  });
+
+  it('gives the movement ledger a larger cap than the row tables', async () => {
+    // One order writes one movement per ingredient, so sharing READ_LIMIT would drop the
+    // older sales from the cost of goods while their orders were still listed.
+    const db = fakeDb(EMPTY);
+    await readSnapshot(db);
+    const ledger = db.seen.find((s) => s.sql.includes('inventory_transactions'));
+    expect(ledger.bindings).toEqual([MOVEMENT_LIMIT]);
+    expect(MOVEMENT_LIMIT).toBeGreaterThan(1000);
+  });
+
+  it('reads only, and never reaches the SQLite catalogue', async () => {
+    const db = fakeDb(EMPTY);
+    await readSnapshot(db);
+    expect(db.seen).toHaveLength(5);
+    for (const { sql } of db.seen) {
+      expect(sql.trim().toUpperCase().startsWith('SELECT')).toBe(true);
+      expect(sql.toUpperCase()).not.toContain('SQLITE_MASTER');
+    }
+  });
+
+  it('hides soft-deleted rows from every table that has a tombstone', async () => {
+    const db = fakeDb(EMPTY);
+    await readSnapshot(db);
+    for (const table of ['orders', 'customers', 'inventory', 'menu_items']) {
+      const statement = db.seen.find((s) => s.sql.includes(`FROM ${table}`));
+      expect(statement.sql, `${table} tombstone filter`).toContain('deleted_at IS NULL');
+    }
   });
 });

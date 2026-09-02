@@ -77,6 +77,10 @@ export interface Snapshot {
   customers: SnapshotRow[];
   inventory: SnapshotRow[];
   menuItems: SnapshotRow[];
+  /** Stock ledger, which is where cost of goods sold is derived from. */
+  movements: SnapshotRow[];
+  /** When the worker read these rows, so the portal can show the age of what it displays. */
+  serverTime: string;
 }
 
 /** One request for the whole dashboard; the worker decides what a viewer may read. */
@@ -87,5 +91,7 @@ export async function fetchSnapshot(token: string): Promise<Snapshot> {
     customers: data.customers || [],
     inventory: data.inventory || [],
     menuItems: data.menuItems || [],
+    movements: data.movements || [],
+    serverTime: data.serverTime || new Date().toISOString(),
   };
 }

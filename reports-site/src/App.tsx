@@ -1,94 +1,74 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { AuthError, clearSession, fetchSnapshot, readSession } from './api';
 import { LoginScreen } from './LoginScreen';
+import { AnalyticsTab } from './AnalyticsTab';
+import { InventoryTab } from './InventoryTab';
+import { CustomersTab } from './CustomersTab';
+import { MenuTab } from './MenuTab';
+import { Icon } from './ui';
+import {
+  ALL_BRANCHES,
+  PERIOD_LABELS,
+  PERIOD_ORDER,
+  branchOptions,
+  formatCount,
+  formatTime,
+  inBranch,
+  inPeriod,
+  isPaid,
+  orderLines,
+  summarizeSales,
+  summarizeStock,
+  toNum,
+  type CustomerRow,
+  type InventoryRow,
+  type MenuItemRow,
+  type OrderRow,
+  type Period,
+  type StockMovementRow,
+} from './analytics';
 
-interface Order {
-  id: string;
-  createdAt: string;
-  branch_id: string | null;
-  totalAmount: number | null;
-  grandTotal: number | null;
-  paidAmount: number | null;
-  paymentStatus: string | null;
-  paymentMethod: string | null;
-  items: string | null;
-}
+type Tab = 'analytics' | 'menu' | 'inventory' | 'customers';
 
-interface Customer {
-  id: string;
-  name: string;
-  phone: string | null;
-  points: number | null;
-  createdAt: string | null;
-}
+const TABS: { id: Tab; label: string; icon: string }[] = [
+  { id: 'analytics', label: 'الإحصائيات', icon: 'trend' },
+  { id: 'menu', label: 'القائمة', icon: 'menu' },
+  { id: 'inventory', label: 'المخزون', icon: 'stock' },
+  { id: 'customers', label: 'العملاء', icon: 'users' },
+];
 
-interface InventoryItem {
-  id: string;
-  name: string;
-  stock: number | null;
-  minStock: number | null;
-  unit: string | null;
-}
+/** How often the portal re-reads the central database while the tab is visible. */
+const POLL_INTERVAL_MS = 20_000;
 
-type Period = 'today' | 'week' | 'month' | 'all';
+const BRANCH_STORAGE_KEY = 'engaz_reports_branch';
+const PERIOD_STORAGE_KEY = 'engaz_reports_period';
 
-const PERIOD_LABELS: Record<Period, string> = {
-  today: 'اليوم',
-  week: 'آخر 7 أيام',
-  month: 'آخر 30 يوم',
-  all: 'الكل',
-};
-
-const CHART_DAYS = 7;
-
-function toNum(v: unknown): number {
-  if (v === null || v === undefined) return 0;
-  const n = Number(v);
-  return Number.isFinite(n) ? n : 0;
-}
-
-/**
- * What the till actually collected for an order.
- *
- * paidAmount is below grandTotal whenever loyalty points paid part of the bill, so revenue
- * must prefer it. totalAmount is the pre-snapshot fallback for older rows.
- */
-function orderRevenue(order: Order): number {
-  if (order.paidAmount !== null && order.paidAmount !== undefined) return toNum(order.paidAmount);
-  if (order.grandTotal !== null && order.grandTotal !== undefined) return toNum(order.grandTotal);
-  return toNum(order.totalAmount);
-}
-
-/** Unpaid orders are not revenue; they are a receivable. */
-function isPaid(order: Order): boolean {
-  return order.paymentStatus === 'Paid';
-}
-
-function inPeriod(dateStr: string, period: Period): boolean {
-  const d = new Date(dateStr);
-  if (Number.isNaN(d.getTime())) return period === 'all';
-  if (period === 'all') return true;
-
-  const now = new Date();
-  const start = new Date(now);
-  if (period === 'today') start.setHours(0, 0, 0, 0);
-  else if (period === 'week') start.setDate(now.getDate() - 7);
-  else start.setMonth(now.getMonth() - 1);
-  return d >= start;
-}
-
-function formatMoney(n: number): string {
-  return n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+function readStoredPeriod(): Period {
+  const saved = localStorage.getItem(PERIOD_STORAGE_KEY);
+  return PERIOD_ORDER.includes(saved as Period) ? (saved as Period) : 'week';
 }
 
 export default function App() {
   const [token, setToken] = useState<string | null>(() => readSession()?.token ?? null);
-  const [orders, setOrders] = useState<Order[]>([]);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [inventory, setInventory] = useState<InventoryItem[]>([]);
-  const [period, setPeriod] = useState<Period>('week');
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [customers, setCustomers] = useState<CustomerRow[]>([]);
+  const [inventory, setInventory] = useState<InventoryRow[]>([]);
+  const [menuItems, setMenuItems] = useState<MenuItemRow[]>([]);
+  const [movements, setMovements] = useState<StockMovementRow[]>([]);
+
+  const [tab, setTab] = useState<Tab>('analytics');
+  const [period, setPeriod] = useState<Period>(readStoredPeriod);
+  const [branch, setBranch] = useState<string>(
+    () => localStorage.getItem(BRANCH_STORAGE_KEY) || ALL_BRANCHES
+  );
+
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [live, setLive] = useState(true);
+
+  // Monotonic token per request: a slow poll must not overwrite a newer manual refresh.
+  const requestId = useRef(0);
 
   const signOut = useCallback(() => {
     clearSession();
@@ -96,214 +76,255 @@ export default function App() {
     setOrders([]);
     setCustomers([]);
     setInventory([]);
+    setMenuItems([]);
+    setMovements([]);
+    setLastUpdated(null);
   }, []);
 
-  const loadData = useCallback(async (activeToken: string) => {
-    setLoading(true);
-    setError(null);
-    try {
-      const snapshot = await fetchSnapshot(activeToken);
-      setOrders(snapshot.orders as unknown as Order[]);
-      setCustomers(snapshot.customers as unknown as Customer[]);
-      setInventory(snapshot.inventory as unknown as InventoryItem[]);
-    } catch (e) {
-      // An expired token is not an error to display; it means signing in again.
-      if (e instanceof AuthError) {
-        signOut();
-        return;
+  const loadData = useCallback(
+    async (activeToken: string, options: { silent?: boolean } = {}) => {
+      const id = ++requestId.current;
+      if (!options.silent) setLoading(true);
+      try {
+        const snapshot = await fetchSnapshot(activeToken);
+        if (id !== requestId.current) return;
+        setOrders(snapshot.orders as unknown as OrderRow[]);
+        setCustomers(snapshot.customers as unknown as CustomerRow[]);
+        setInventory(snapshot.inventory as unknown as InventoryRow[]);
+        setMenuItems(snapshot.menuItems as unknown as MenuItemRow[]);
+        setMovements(snapshot.movements as unknown as StockMovementRow[]);
+        setLastUpdated(new Date(snapshot.serverTime));
+        setError(null);
+      } catch (e) {
+        if (id !== requestId.current) return;
+        // An expired token is not an error to display; it means signing in again.
+        if (e instanceof AuthError) {
+          signOut();
+          return;
+        }
+        setError((e as Error).message || 'تعذر تحميل البيانات');
+      } finally {
+        if (id === requestId.current && !options.silent) setLoading(false);
       }
-      setError((e as Error).message || 'تعذر تحميل البيانات');
-    } finally {
-      setLoading(false);
-    }
-  }, [signOut]);
+    },
+    [signOut]
+  );
 
   useEffect(() => {
     if (token) loadData(token);
   }, [token, loadData]);
 
-  const paidOrders = useMemo(() => orders.filter(isPaid), [orders]);
+  // Live polling. A hidden tab is not polled: a portal left open overnight would otherwise
+  // keep hitting the worker for a screen nobody is reading.
+  useEffect(() => {
+    if (!token || !live) return;
 
-  const periodOrders = useMemo(
-    () => paidOrders.filter((o) => inPeriod(o.createdAt, period)),
-    [paidOrders, period]
+    const tick = () => {
+      if (document.visibilityState === 'visible') loadData(token, { silent: true });
+    };
+    const timer = window.setInterval(tick, POLL_INTERVAL_MS);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', tick);
+    };
+  }, [token, live, loadData]);
+
+  const branches = useMemo(
+    () => branchOptions(orders, inventory, customers),
+    [orders, inventory, customers]
   );
 
-  const stats = useMemo(() => {
-    const revenue = periodOrders.reduce((s, o) => s + orderRevenue(o), 0);
-    const count = periodOrders.length;
-    return { revenue, count, avg: count ? revenue / count : 0 };
-  }, [periodOrders]);
+  const scopedOrders = useMemo(
+    () => orders.filter((o) => inBranch(o.branch_id, branch) && inPeriod(o.createdAt, period)),
+    [orders, branch, period]
+  );
 
-  const bestSellers = useMemo(() => {
-    const map = new Map<string, number>();
-    for (const o of periodOrders) {
-      if (!o.items) continue;
-      try {
-        const arr = JSON.parse(o.items);
-        if (!Array.isArray(arr)) continue;
-        for (const it of arr) {
-          const name = it?.name || it?.itemName;
-          if (!name) continue;
-          map.set(name, (map.get(name) || 0) + toNum(it?.quantity));
-        }
-      } catch {
-        // A malformed items blob contributes nothing rather than breaking the whole list.
+  const scopedInventory = useMemo(
+    () => inventory.filter((i) => inBranch(i.branch_id, branch)),
+    [inventory, branch]
+  );
+
+  const scopedMenuItems = useMemo(
+    () => menuItems.filter((m) => inBranch(m.branch_id, branch)),
+    [menuItems, branch]
+  );
+
+  const scopedCustomers = useMemo(
+    () => customers.filter((c) => inBranch(c.branch_id, branch)),
+    [customers, branch]
+  );
+
+  const newCustomerCount = useMemo(
+    () => scopedCustomers.filter((c) => inPeriod(c.createdAt, period)).length,
+    [scopedCustomers, period]
+  );
+
+  const sales = useMemo(
+    () => summarizeSales(scopedOrders, movements, inventory),
+    [scopedOrders, movements, inventory]
+  );
+
+  const stock = useMemo(() => summarizeStock(scopedInventory, sales), [scopedInventory, sales]);
+
+  /** Quantity sold per product name, for the menu tab. */
+  const soldByName = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const order of scopedOrders.filter(isPaid)) {
+      for (const line of orderLines(order)) {
+        totals.set(line.name, (totals.get(line.name) ?? 0) + line.quantity);
       }
     }
-    return [...map.entries()].sort((a, b) => b[1] - a[1]).slice(0, 8);
-  }, [periodOrders]);
+    return totals;
+  }, [scopedOrders]);
 
-  const lowStock = useMemo(
-    () => inventory.filter((i) => toNum(i.stock) <= toNum(i.minStock)).slice(0, 10),
-    [inventory]
-  );
-
-  const topCustomers = useMemo(
-    () => [...customers].sort((a, b) => toNum(b.points) - toNum(a.points)).slice(0, 10),
-    [customers]
-  );
-
-  const chartData = useMemo(() => {
-    const buckets: { label: string; total: number }[] = [];
-    for (let i = CHART_DAYS - 1; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const key = d.toISOString().slice(0, 10);
-      buckets.push({
-        label: d.toLocaleDateString('ar-EG', { weekday: 'short' }),
-        total: paidOrders
-          .filter((o) => (o.createdAt || '').slice(0, 10) === key)
-          .reduce((s, o) => s + orderRevenue(o), 0),
-      });
-    }
-    const max = Math.max(...buckets.map((b) => b.total), 1);
-    return buckets.map((b) => ({ ...b, pct: (b.total / max) * 100 }));
-  }, [paidOrders]);
+  const availableCount = scopedMenuItems.filter((item) => toNum(item.available) === 1).length;
 
   if (!token) {
     return <LoginScreen onAuthenticated={setToken} />;
   }
 
   return (
-    <div className="app">
-      <header className="header">
-        <div>
-          <h1>Engaz Reports</h1>
-          <p>تقارير المبيعات والتشغيل</p>
+    <div className="shell">
+      <header className="topbar">
+        <div className="topbar-titles">
+          <div className="brand-row">
+            <h1>لوحة تحكم المدير العام</h1>
+            <span className={`live-pill${live ? '' : ' is-paused'}`}>
+              <span className="live-dot" aria-hidden="true" />
+              {live ? 'مباشر' : 'التحديث موقوف'}
+            </span>
+          </div>
+          <p>مراقبة إيرادات ومبيعات كافة الفروع المتصلة بقاعدة البيانات المركزية</p>
         </div>
-        <div className="period-switch" role="group" aria-label="الفترة الزمنية">
-          {(Object.keys(PERIOD_LABELS) as Period[]).map((p) => (
-            <button
-              key={p}
-              className={period === p ? 'active' : ''}
-              aria-pressed={period === p}
-              onClick={() => setPeriod(p)}
-            >
-              {PERIOD_LABELS[p]}
-            </button>
-          ))}
+
+        <div className="topbar-actions">
+          <select
+            className="control"
+            aria-label="الفرع"
+            value={branch}
+            onChange={(event) => {
+              setBranch(event.target.value);
+              localStorage.setItem(BRANCH_STORAGE_KEY, event.target.value);
+            }}
+          >
+            <option value={ALL_BRANCHES}>كل الفروع</option>
+            {branches.map((id) => (
+              <option key={id} value={id}>
+                {id}
+              </option>
+            ))}
+          </select>
+
+          <select
+            className="control"
+            aria-label="الفترة الزمنية"
+            value={period}
+            onChange={(event) => {
+              setPeriod(event.target.value as Period);
+              localStorage.setItem(PERIOD_STORAGE_KEY, event.target.value);
+            }}
+          >
+            {PERIOD_ORDER.map((option) => (
+              <option key={option} value={option}>
+                {PERIOD_LABELS[option]}
+              </option>
+            ))}
+          </select>
+
+          <button
+            type="button"
+            className="control"
+            onClick={() => setLive((value) => !value)}
+            title={live ? 'إيقاف التحديث التلقائي' : 'تشغيل التحديث التلقائي'}
+            aria-pressed={live}
+          >
+            {live ? 'إيقاف التحديث' : 'تشغيل التحديث'}
+          </button>
+
+          <button
+            type="button"
+            className="control"
+            onClick={() => token && loadData(token)}
+            disabled={loading}
+            title="تحديث الآن"
+          >
+            {loading ? 'جارٍ التحديث…' : 'تحديث'}
+          </button>
+
+          <button type="button" className="control primary" onClick={() => window.print()}>
+            طباعة
+          </button>
+
+          <button type="button" className="control" onClick={signOut}>
+            خروج
+          </button>
         </div>
       </header>
 
-      {error && <div className="banner error" role="alert">خطأ في الاتصال: {error}</div>}
-      {loading && <div className="banner" role="status">جارٍ تحميل البيانات…</div>}
+      <nav className="tabbar" role="tablist" aria-label="أقسام اللوحة">
+        {TABS.map((entry) => (
+          <button
+            key={entry.id}
+            role="tab"
+            aria-selected={tab === entry.id}
+            className={tab === entry.id ? 'tab is-active' : 'tab'}
+            onClick={() => setTab(entry.id)}
+          >
+            <span className="tab-icon" aria-hidden="true">
+              <Icon name={entry.icon} />
+            </span>
+            {entry.label}
+          </button>
+        ))}
+      </nav>
 
-      <section className="stats-grid">
-        <StatCard label="إجمالي المبيعات المحصلة" value={formatMoney(stats.revenue)} suffix="ج.م" accent="accent" />
-        <StatCard label="عدد الطلبات المدفوعة" value={String(stats.count)} accent="accent-2" />
-        <StatCard label="متوسط قيمة الطلب" value={formatMoney(stats.avg)} suffix="ج.م" accent="warn" />
-        <StatCard label="العملاء" value={String(customers.length)} accent="danger" />
-      </section>
+      {error && (
+        <p className="banner is-error" role="alert">
+          تعذر الاتصال بقاعدة البيانات: {error}
+        </p>
+      )}
 
-      <div className="main-grid">
-        <section className="card">
-          <h2>المبيعات آخر 7 أيام</h2>
-          <div className="chart">
-            {chartData.map((b) => (
-              <div className="chart-col" key={b.label} title={`${b.total.toFixed(2)} ج.م`}>
-                <div className="bar" style={{ height: `${Math.max(b.pct, 2)}%` }} />
-                <span>{b.label}</span>
-              </div>
-            ))}
-          </div>
-        </section>
+      <p className="scope-line">
+        <span>
+          {branch === ALL_BRANCHES ? 'كل الفروع' : branch} — {PERIOD_LABELS[period]}
+        </span>
+        <span className="muted">
+          {lastUpdated
+            ? `آخر تحديث ${formatTime(lastUpdated)} · ${formatCount(scopedOrders.length)} طلب`
+            : 'لم يتم التحديث بعد'}
+        </span>
+      </p>
 
-        <section className="card">
-          <h2>الأصناف الأكثر مبيعًا</h2>
-          {bestSellers.length === 0 ? (
-            <Empty text="لا توجد بيانات" />
-          ) : (
-            <ul className="rank-list">
-              {bestSellers.map(([name, qty], i) => (
-                <li key={name}>
-                  <span className="rank">{i + 1}</span>
-                  <span className="name">{name}</span>
-                  <span className="val">{qty} قطعة</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+      {tab === 'analytics' && (
+        <AnalyticsTab
+          orders={scopedOrders}
+          sales={sales}
+          stock={stock}
+          menuItemCount={scopedMenuItems.length}
+          availableCount={availableCount}
+          customerCount={scopedCustomers.length}
+          newCustomerCount={newCustomerCount}
+          periodLabel={PERIOD_LABELS[period]}
+        />
+      )}
 
-        <section className="card">
-          <h2>تنبيهات المخزون</h2>
-          {lowStock.length === 0 ? (
-            <Empty text="لا توجد أصناف منخفضة المخزون" />
-          ) : (
-            <ul className="rank-list">
-              {lowStock.map((i) => (
-                <li key={i.id}>
-                  <span className="name">{i.name}</span>
-                  <span className="val warn">
-                    {toNum(i.stock)} {i.unit || ''} / حد {toNum(i.minStock)}
-                  </span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+      {tab === 'menu' && <MenuTab menuItems={scopedMenuItems} soldByName={soldByName} />}
 
-        <section className="card">
-          <h2>أعلى العملاء نقاطًا</h2>
-          {topCustomers.length === 0 ? (
-            <Empty text="لا يوجد عملاء" />
-          ) : (
-            <ul className="rank-list">
-              {topCustomers.map((c, i) => (
-                <li key={c.id}>
-                  <span className="rank">{i + 1}</span>
-                  <span className="name">{c.name}</span>
-                  <span className="val">{toNum(c.points)} نقطة</span>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
-      </div>
+      {tab === 'inventory' && <InventoryTab inventory={scopedInventory} stock={stock} />}
+
+      {tab === 'customers' && (
+        <CustomersTab
+          customers={scopedCustomers}
+          orders={scopedOrders.filter(isPaid)}
+          newCustomerCount={newCustomerCount}
+        />
+      )}
 
       <footer className="footer">
-        <button className="refresh" onClick={() => loadData(token)} disabled={loading}>
-          {loading ? 'جارٍ التحديث…' : 'تحديث البيانات'}
-        </button>
-        <button className="refresh" onClick={signOut}>تسجيل الخروج</button>
         <span className="muted">reporting.engaz.tech</span>
+        <span className="muted">قاعدة بيانات مركزية · قراءة فقط</span>
       </footer>
     </div>
   );
-}
-
-function StatCard({ label, value, suffix, accent }: { label: string; value: string; suffix?: string; accent: string }) {
-  return (
-    <div className={`stat-card ${accent}`}>
-      <span className="stat-label">{label}</span>
-      <span className="stat-value">
-        {value} {suffix && <small>{suffix}</small>}
-      </span>
-    </div>
-  );
-}
-
-function Empty({ text }: { text: string }) {
-  return <p className="empty">{text}</p>;
 }

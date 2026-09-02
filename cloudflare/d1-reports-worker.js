@@ -20,7 +20,8 @@
  *   POST /migrate                     → create tables (write key)
  *   POST /auth/login                  { password } → { token, expiresAt }
  *   POST /sync/<table>                { items: [...] } (write key)
- *   POST /read/snapshot               → orders + customers + inventory (token or write key)
+ *   POST /read/snapshot               → orders, customers, inventory, menu, stock movements
+ *                                       (token or write key)
  *
  * Secrets: REPORTS_API_KEY (write), REPORTS_VIEWER_PASSWORD, REPORTS_TOKEN_SECRET.
  */
@@ -31,6 +32,11 @@ const ALLOWED_ORIGINS = [
 
 const MAX_BATCH = 200;
 const READ_LIMIT = 1000;
+/**
+ * The stock ledger gets several rows per order, one per ingredient, so it needs a higher cap
+ * than the row tables or the portal's cost of goods would silently omit older sales.
+ */
+const MOVEMENT_LIMIT = 5000;
 /** Viewer sessions are short: the portal re-authenticates rather than holding a long token. */
 const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
 
@@ -256,11 +262,14 @@ const SYNC_TABLES = {
 };
 
 async function readSnapshot(db) {
-  const [orders, customers, inventory, menuItems] = await db.batch([
+  const [orders, customers, inventory, menuItems, movements] = await db.batch([
     db.prepare(`SELECT * FROM orders WHERE deleted_at IS NULL ORDER BY createdAt DESC LIMIT ?`).bind(READ_LIMIT),
     db.prepare(`SELECT * FROM customers WHERE deleted_at IS NULL ORDER BY points DESC LIMIT ?`).bind(READ_LIMIT),
     db.prepare(`SELECT * FROM inventory WHERE deleted_at IS NULL ORDER BY name ASC LIMIT ?`).bind(READ_LIMIT),
     db.prepare(`SELECT * FROM menu_items WHERE deleted_at IS NULL ORDER BY category, name LIMIT ?`).bind(READ_LIMIT),
+    // Cost of goods comes from this ledger rather than from recipes, so the portal reports
+    // what each sale actually consumed even after its recipe is edited.
+    db.prepare(`SELECT * FROM inventory_transactions ORDER BY createdAt DESC LIMIT ?`).bind(MOVEMENT_LIMIT),
   ]);
 
   return {
@@ -268,6 +277,9 @@ async function readSnapshot(db) {
     customers: customers.results || [],
     inventory: inventory.results || [],
     menuItems: menuItems.results || [],
+    movements: movements.results || [],
+    // Lets the portal show the age of what it is displaying rather than the age of its poll.
+    serverTime: nowIso(),
   };
 }
 
@@ -443,4 +455,4 @@ export default {
 };
 
 // Exported for the test suite; not part of the HTTP surface.
-export const __testing = { SYNC_TABLES, assertItems, MAX_BATCH, TOKEN_TTL_MS, LOGIN_MAX_ATTEMPTS };
+export const __testing = { SYNC_TABLES, assertItems, MAX_BATCH, MOVEMENT_LIMIT, TOKEN_TTL_MS, LOGIN_MAX_ATTEMPTS, readSnapshot };

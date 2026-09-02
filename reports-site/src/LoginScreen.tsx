@@ -36,21 +36,23 @@ export function LoginScreen({ onAuthenticated }: LoginScreenProps) {
   };
 
   return (
-    <div className="login-screen">
+    <div className="login">
       <form className="login-card" onSubmit={handleSubmit}>
-        <h1>Engaz Reports</h1>
-        <p>تقارير المبيعات والتشغيل</p>
+        <h1>لوحة تحكم المدير العام</h1>
+        <p>تقارير المبيعات والتشغيل لكافة الفروع</p>
 
-        <label htmlFor="reports-password">كلمة المرور</label>
-        <input
-          id="reports-password"
-          type="password"
-          value={password}
-          onChange={(e) => setPassword(e.target.value)}
-          autoComplete="current-password"
-          autoFocus
-          dir="ltr"
-        />
+        <label htmlFor="reports-password">
+          كلمة المرور
+          <input
+            id="reports-password"
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+            autoFocus
+            dir="ltr"
+          />
+        </label>
 
         {error && <p className="login-error" role="alert">{error}</p>}
 
