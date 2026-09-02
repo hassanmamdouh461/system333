@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { AnimatePresence } from 'framer-motion';
 import {
   Package, History, Plus, Search,
-  Scale, AlertTriangle, RefreshCw, TrendingUp
+  Scale, AlertTriangle, RefreshCw, TrendingUp, ChefHat
 } from 'lucide-react';
 import { useLanguage } from '../context/LanguageContext';
 import { inventoryService } from '../services/inventoryService';
@@ -10,11 +10,16 @@ import { menuService } from '../services/menuService';
 import { InventoryItem, InventoryTransaction, RecipeIngredient } from '../global';
 import { MenuItem } from '../types/menu';
 import { computeItemYields, summarizeInventory } from '../utils/inventoryMath';
+import { costRecipes, groupRecipesByMenuItem, summarizeRecipes, RecipeSummary } from '../utils/recipeMath';
 import { reportFailure } from '../utils/reportFailure';
 import { StockTable } from '../components/inventory/StockTable';
 import { TransactionTable } from '../components/inventory/TransactionTable';
+import { RecipeTable } from '../components/inventory/RecipeTable';
+import { RecipeEditorModal, RecipeLine } from '../components/inventory/RecipeEditorModal';
 import { StockItemModal, StockItemForm } from '../components/inventory/StockItemModal';
 import { AdjustStockModal, StockAdjustForm } from '../components/inventory/AdjustStockModal';
+
+type InventoryTab = 'stock' | 'recipes' | 'history';
 
 const EMPTY_ITEM_FORM: StockItemForm = {
   name: '',
@@ -30,9 +35,59 @@ const EMPTY_ADJUST_FORM: StockAdjustForm = {
   notes: '',
 };
 
+const SEARCH_PLACEHOLDER: Record<InventoryTab, string> = {
+  stock: 'Search stock items...',
+  recipes: 'Search products...',
+  history: 'Search history logs...',
+};
+
+/**
+ * What the recipe mapping is costing the business, above the table.
+ *
+ * Unmapped products are the headline number because a product with no recipe sells without
+ * deducting anything, so its ingredients silently disappear from the stock count.
+ */
+function RecipeInsights({ summary }: { summary: RecipeSummary }) {
+  const { t } = useLanguage();
+
+  return (
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 md:gap-4">
+      <div className={`bg-white border rounded-2xl p-4 shadow-sm ${summary.unmappedCount > 0 ? 'border-amber-200 bg-amber-50/40' : 'border-gray-200'}`}>
+        <p className="text-[11px] text-gray-500 font-semibold uppercase tracking-wide">{t('Products Without Recipe')}</p>
+        <p className={`text-xl md:text-2xl font-bold tabular-nums ${summary.unmappedCount > 0 ? 'text-amber-700' : 'text-green-700'}`}>
+          {summary.unmappedCount}
+        </p>
+        <p className="text-[10px] text-gray-400 mt-0.5">{t('Selling these deducts no stock')}</p>
+      </div>
+
+      <div className="bg-white border border-gray-200 rounded-2xl p-4 shadow-sm">
+        <p className="text-[11px] text-gray-500 font-semibold uppercase tracking-wide">{t('Products With Recipe')}</p>
+        <p className="text-xl md:text-2xl font-bold text-gray-900 tabular-nums">{summary.mappedCount}</p>
+        <p className="text-[10px] text-gray-400 mt-0.5">{t('Average margin')}: {summary.averageMarginPercent.toFixed(0)}%</p>
+      </div>
+
+      <div className={`bg-white border rounded-2xl p-4 shadow-sm ${summary.outOfStockCount > 0 ? 'border-red-200 bg-red-50/40' : 'border-gray-200'}`}>
+        <p className="text-[11px] text-gray-500 font-semibold uppercase tracking-wide">{t('Cannot Be Made')}</p>
+        <p className={`text-xl md:text-2xl font-bold tabular-nums ${summary.outOfStockCount > 0 ? 'text-red-700' : 'text-green-700'}`}>
+          {summary.outOfStockCount}
+        </p>
+        <p className="text-[10px] text-gray-400 mt-0.5">{t('An ingredient has run out')}</p>
+      </div>
+
+      <div className={`bg-white border rounded-2xl p-4 shadow-sm ${summary.losingMoneyCount > 0 ? 'border-red-200 bg-red-50/40' : 'border-gray-200'}`}>
+        <p className="text-[11px] text-gray-500 font-semibold uppercase tracking-wide">{t('Sold At A Loss')}</p>
+        <p className={`text-xl md:text-2xl font-bold tabular-nums ${summary.losingMoneyCount > 0 ? 'text-red-700' : 'text-green-700'}`}>
+          {summary.losingMoneyCount}
+        </p>
+        <p className="text-[10px] text-gray-400 mt-0.5">{t('Costs more than its price')}</p>
+      </div>
+    </div>
+  );
+}
+
 export default function Inventory() {
-  const { t, isRtl } = useLanguage();
-  const [activeTab, setActiveTab] = useState<'stock' | 'history'>('stock');
+  const { t } = useLanguage();
+  const [activeTab, setActiveTab] = useState<InventoryTab>('stock');
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [transactions, setTransactions] = useState<InventoryTransaction[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -43,6 +98,7 @@ export default function Inventory() {
   const [isItemModalOpen, setIsItemModalOpen] = useState(false);
   const [isAdjustModalOpen, setIsAdjustModalOpen] = useState(false);
   const [selectedItem, setSelectedItem] = useState<InventoryItem | null>(null);
+  const [recipeMenuItem, setRecipeMenuItem] = useState<MenuItem | null>(null);
   const [itemForm, setItemForm] = useState<StockItemForm>(EMPTY_ITEM_FORM);
   const [adjustForm, setAdjustForm] = useState<StockAdjustForm>(EMPTY_ADJUST_FORM);
 
@@ -105,6 +161,31 @@ export default function Inventory() {
         (tx.notes?.toLowerCase().includes(query) ?? false);
     });
   }, [transactions, searchQuery, t]);
+
+  const recipeCostings = useMemo(
+    () => costRecipes(menuItems, recipes, inventory),
+    [menuItems, recipes, inventory]
+  );
+
+  const recipeSummary = useMemo(() => summarizeRecipes(recipeCostings), [recipeCostings]);
+
+  const filteredRecipes = useMemo(() => {
+    const query = searchQuery.toLowerCase();
+    return recipeCostings.filter(costing =>
+      costing.menuItemName.toLowerCase().includes(query) ||
+      t(costing.menuItemName).toLowerCase().includes(query)
+    );
+  }, [recipeCostings, searchQuery, t]);
+
+  /** Saved lines for the product whose recipe is open, in the editor's own shape. */
+  const editingRecipeLines = useMemo<RecipeLine[]>(() => {
+    if (!recipeMenuItem) return [];
+    const lines = groupRecipesByMenuItem(recipes).get(recipeMenuItem.id) ?? [];
+    return lines.map(line => ({
+      inventoryItemId: line.inventoryItemId,
+      quantity: line.quantity,
+    }));
+  }, [recipeMenuItem, recipes]);
 
   const handleOpenItemModal = (item?: InventoryItem) => {
     if (item) {
@@ -189,6 +270,22 @@ export default function Inventory() {
       fetchData();
     } catch (error) {
       reportFailure(t('Failed to delete item'), error);
+    }
+  };
+
+  const handleOpenRecipeEditor = (menuItemId: string) => {
+    const menuItem = menuItems.find(item => item.id === menuItemId);
+    if (menuItem) setRecipeMenuItem(menuItem);
+  };
+
+  const handleSaveRecipe = async (lines: RecipeLine[]) => {
+    if (!recipeMenuItem) return;
+    try {
+      await inventoryService.saveMenuRecipe(recipeMenuItem.id, lines);
+      setRecipeMenuItem(null);
+      fetchData();
+    } catch (error) {
+      reportFailure(t('Failed to save item recipe'), error);
     }
   };
 
@@ -284,6 +381,22 @@ export default function Inventory() {
           </button>
           <button
             role="tab"
+            aria-selected={activeTab === 'recipes'}
+            onClick={() => setActiveTab('recipes')}
+            className={`px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors flex items-center gap-1.5 ${
+              activeTab === 'recipes' ? 'bg-white text-mocha-800 shadow-sm' : 'text-gray-500 hover:text-gray-900'
+            }`}
+          >
+            <ChefHat size={14} aria-hidden="true" />
+            {t('Recipes')}
+            {recipeSummary.unmappedCount > 0 && (
+              <span className="bg-amber-100 text-amber-800 text-[10px] font-bold px-1.5 py-0.5 rounded-md tabular-nums">
+                {recipeSummary.unmappedCount}
+              </span>
+            )}
+          </button>
+          <button
+            role="tab"
             aria-selected={activeTab === 'history'}
             onClick={() => setActiveTab('history')}
             className={`px-4 py-2 rounded-lg text-xs font-semibold whitespace-nowrap transition-colors flex items-center gap-1.5 ${
@@ -297,22 +410,26 @@ export default function Inventory() {
 
         <div className="relative flex-1 max-w-md">
           <label htmlFor="inventory-search" className="sr-only">
-            {activeTab === 'stock' ? t('Search stock items...') : t('Search history logs...')}
+            {t(SEARCH_PLACEHOLDER[activeTab])}
           </label>
           <Search
-            className={`absolute top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none ${isRtl ? 'right-3' : 'left-3'}`}
+            className={"absolute top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 pointer-events-none right-3"}
             aria-hidden="true"
           />
           <input
             id="inventory-search"
             type="search"
-            placeholder={activeTab === 'stock' ? t('Search stock items...') : t('Search history logs...')}
+            placeholder={t(SEARCH_PLACEHOLDER[activeTab])}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className={`w-full py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent text-sm ${isRtl ? 'pr-9 pl-4' : 'pl-9 pr-4'}`}
+            className={"w-full py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent text-sm pr-9 pl-4"}
           />
         </div>
       </div>
+
+      {activeTab === 'recipes' && !loading && (
+        <RecipeInsights summary={recipeSummary} />
+      )}
 
       {loading ? (
         <div className="flex flex-col items-center justify-center h-64 bg-white rounded-2xl border border-gray-200" role="status">
@@ -321,7 +438,7 @@ export default function Inventory() {
         </div>
       ) : (
         <div className="bg-white rounded-2xl shadow-sm border border-gray-200 overflow-hidden">
-          {activeTab === 'stock' ? (
+          {activeTab === 'stock' && (
             <StockTable
               items={filteredStock}
               itemYields={itemYields}
@@ -329,7 +446,11 @@ export default function Inventory() {
               onEdit={handleOpenItemModal}
               onDelete={handleDeleteItem}
             />
-          ) : (
+          )}
+          {activeTab === 'recipes' && (
+            <RecipeTable costings={filteredRecipes} onEdit={handleOpenRecipeEditor} />
+          )}
+          {activeTab === 'history' && (
             <TransactionTable transactions={filteredTransactions} />
           )}
         </div>
@@ -356,6 +477,18 @@ export default function Inventory() {
             onChange={setAdjustForm}
             onSubmit={handleSaveAdjustment}
             onClose={() => setIsAdjustModalOpen(false)}
+          />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {recipeMenuItem && (
+          <RecipeEditorModal
+            menuItem={recipeMenuItem}
+            inventory={inventory}
+            initialLines={editingRecipeLines}
+            onSave={handleSaveRecipe}
+            onClose={() => setRecipeMenuItem(null)}
           />
         )}
       </AnimatePresence>
