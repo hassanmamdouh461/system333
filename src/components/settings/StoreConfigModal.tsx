@@ -60,7 +60,7 @@ function StoreConfigModalBody({ onClose }: { onClose: () => void }) {
     }
 
     setStoreConfig({
-      storeName: storeName.trim() || 'BrewMaster Coffee',
+      storeName: storeName.trim() || 'إنجاز',
       address: address.trim(),
       phone: phone.trim(),
       tagline: tagline.trim(),
@@ -124,7 +124,7 @@ function StoreConfigModalBody({ onClose }: { onClose: () => void }) {
                 value={storeName}
                 onChange={(e) => setStoreName(e.target.value)}
                 className="w-full bg-white border border-gray-200 rounded-xl ps-11 pe-4 py-3 text-base font-semibold text-gray-800 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 outline-none transition-all text-right"
-                placeholder="BrewMaster Coffee"
+                placeholder="اسم المتجر / المطعم"
               />
             </div>
           </div>

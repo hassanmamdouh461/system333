@@ -197,10 +197,10 @@ export interface StoreConfig {
 }
 
 export const DEFAULT_STORE_CONFIG: StoreConfig = {
-  storeName: 'BrewMaster Coffee',
+  storeName: 'إنجاز',
   address: 'القاهرة - مصر',
   phone: '0100000000',
-  tagline: 'أفضل تجربة قهوة',
+  tagline: 'أفضل تجربة ضيافة',
   taxRate: DEFAULT_TAX_RATE,
   businessDayStartHour: 0,
 };
