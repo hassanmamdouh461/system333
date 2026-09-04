@@ -12,6 +12,7 @@ module.exports = {
     'node_modules',
     'reports-site/dist',
     'reports-site/node_modules',
+    'scratch',
     '.eslintrc.cjs',
   ],
   parser: '@typescript-eslint/parser',

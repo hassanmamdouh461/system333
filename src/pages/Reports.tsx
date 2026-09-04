@@ -10,6 +10,7 @@ import { useAnalytics, AnalyticsPeriod } from '../hooks/useAnalytics';
 import { useReportSupportData } from '../hooks/useReportSupportData';
 import { StatCard } from '../components/ui/StatCard';
 import { LoadingScreen } from '../components/ui/LoadingScreen';
+import { RevenueAreaChart } from '../components/reports/RevenueAreaChart';
 import { useLanguage } from '../context/LanguageContext';
 import { orderRevenue, orderTotals, roundMoney } from '../utils/orderTotals';
 import { computeItemYields, isLowStock, summarizeInventory } from '../utils/inventoryMath';
@@ -253,50 +254,15 @@ export default function Reports() {
       {/* ── Revenue Trend + Top Items ───────────────────────────────────────── */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 md:gap-8 text-gray-900">
 
-        {/* Chart */}
-        <div className="lg:col-span-2 bg-white p-3 md:p-6 rounded-xl md:rounded-2xl shadow-sm border border-gray-100 flex flex-col">
-          <div className="flex items-center justify-between mb-4 md:mb-6">
-            <h2 className="text-sm md:text-lg font-bold text-gray-900">{t('Revenue Trend')}</h2>
-            {analytics.totalRevenue > 0 && (
-              <span className="text-xs text-green-600 bg-green-50 px-2 py-1 rounded-full font-medium">
-                {analytics.totalRevenue.toFixed(2)} {currencyStr} {pLabel}
-              </span>
-            )}
-          </div>
-          <div className="flex-1 flex items-end justify-between gap-1 md:gap-2 h-52 md:h-64 pb-2">
-            {chartData.map((data, idx) => (
-              <div key={idx} className="flex-1 flex flex-col items-center gap-1.5 md:gap-2 group">
-                <div className="relative w-full h-44 md:h-52 flex items-end justify-center">
-                  <motion.div
-                    key={`${dateRange}-bar-${idx}`}
-                    initial={{ height: 0 }}
-                    animate={{ height: `${(data.value / maxSale) * 100}%` }}
-                    transition={{ duration: 0.7, ease: 'easeOut', delay: idx * 0.04 }}
-                    className="w-full max-w-[32px] md:max-w-[40px] rounded-t-lg transition-opacity group-hover:opacity-75 relative"
-                    style={{ background: data.value > 0 ? '#c8956c' : '#e8d5c4' }}
-                  >
-                    <div className="opacity-0 group-hover:opacity-100 absolute -top-11 left-1/2 -translate-x-1/2 bg-gray-900 text-white text-[11px] py-1 px-2 rounded pointer-events-none transition-opacity whitespace-nowrap z-10">
-                      {data.value.toFixed(2)} {currencyStr}{data.orders > 0 ? ` · ${data.orders} ${t('orders')}` : ''}
-                    </div>
-                  </motion.div>
-                </div>
-                <span className="text-[10px] md:text-xs font-medium text-gray-500">{t(data.label)}</span>
-              </div>
-            ))}
-          </div>
-          {/* Legend. There is no baseline series any more: a bar is either collected
-              revenue or an empty bucket. */}
-          <div className="flex items-center gap-4 mt-3 md:mt-4 pt-3 border-t border-gray-100">
-            <div className="flex items-center gap-1.5">
-              <div className="w-3 h-3 rounded-sm bg-caramel" />
-              <span className="text-xs text-gray-500">{t('Real orders')}</span>
-            </div>
-            <div className="flex items-center gap-1.5">
-              <div className="w-3 h-3 rounded-sm" style={{ background: '#e8d5c4' }} />
-              <span className="text-xs text-gray-500">{t('No orders')}</span>
-            </div>
-          </div>
-        </div>
+        {/* Revenue Smooth Area Chart */}
+        <RevenueAreaChart
+          data={chartData}
+          maxSale={maxSale}
+          totalRevenue={analytics.totalRevenue}
+          currencyStr={currencyStr}
+          periodLabel={pLabel}
+          dateRange={dateRange}
+        />
 
         {/* Top Selling Items */}
         <div className="bg-white p-3 md:p-6 rounded-xl md:rounded-2xl shadow-sm border border-gray-100">
