@@ -1,54 +1,32 @@
-import { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { Language, translations } from '../i18n/translations';
-
-const LS_LANGUAGE_KEY = 'engaz_language';
+import { createContext, useContext, useEffect } from 'react';
+import { translations } from '../i18n/translations';
 
 interface LanguageContextProps {
-  language: Language;
-  setLanguage: (language: Language) => void;
-  toggleLanguage: () => void;
+  /** Looks up the Arabic string for a source phrase. */
   t: (key: string) => string;
+  language: 'ar';
   isRtl: boolean;
 }
 
 const LanguageContext = createContext<LanguageContextProps | null>(null);
 
-function readStoredLanguage(): Language {
-  const saved = localStorage.getItem(LS_LANGUAGE_KEY);
-  return saved === 'en' ? 'en' : 'ar';
-}
-
+/**
+ * The interface is Arabic-only, so this provider no longer switches languages: it fixes the
+ * document direction once and exposes the lookup the components already call.
+ */
 export function LanguageProvider({ children }: { children: React.ReactNode }) {
-  const [language, setLanguageState] = useState<Language>(readStoredLanguage);
-
-  // The same key the Electron settings whitelist accepts, so a language choice survives a
-  // reinstall of the renderer's storage.
-  const setLanguage = useCallback((next: Language) => {
-    setLanguageState(next);
-    localStorage.setItem(LS_LANGUAGE_KEY, next);
+  useEffect(() => {
+    document.documentElement.dir = 'rtl';
+    document.documentElement.lang = 'ar';
+    document.body.classList.add('rtl');
   }, []);
 
-  const toggleLanguage = useCallback(() => {
-    setLanguage(language === 'ar' ? 'en' : 'ar');
-  }, [language, setLanguage]);
-
-  const t = useCallback((key: string): string => {
-    const translation = translations[key];
-    // An untranslated key falls through as its own English text, which is readable rather
-    // than blank while a translation is still missing.
-    return translation ? translation[language] : key;
-  }, [language]);
-
-  const isRtl = language === 'ar';
-
-  useEffect(() => {
-    document.documentElement.dir = isRtl ? 'rtl' : 'ltr';
-    document.documentElement.lang = language;
-    document.body.classList.toggle('rtl', isRtl);
-  }, [language, isRtl]);
+  // A missing key falls through as its own source phrase, which is readable rather than
+  // blank while a string is still untranslated.
+  const t = (key: string): string => translations[key] ?? key;
 
   return (
-    <LanguageContext.Provider value={{ language, setLanguage, toggleLanguage, t, isRtl }}>
+    <LanguageContext.Provider value={{ t, language: 'ar', isRtl: true }}>
       {children}
     </LanguageContext.Provider>
   );

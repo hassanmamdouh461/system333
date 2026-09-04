@@ -221,7 +221,7 @@ export default function PublicMenu() {
       />
 
       {/* Top Banner / Hero - Always fixed */}
-      <header className="relative bg-gradient-to-b from-mocha-900 to-mocha-900 text-white py-12 px-6 overflow-hidden rounded-b-[2.5rem] shadow-xl min-h-[180px] flex items-center justify-center z-10">
+      <header className="relative bg-gradient-to-b from-mocha-950 to-mocha-900 text-white py-12 px-6 overflow-hidden rounded-b-[2.5rem] shadow-xl min-h-[180px] flex items-center justify-center z-10">
         {/* Dynamic header background image: Drinks or Food only */}
         <div 
           className="absolute inset-0 bg-cover bg-center transition-all duration-700 ease-in-out opacity-30"
@@ -232,15 +232,16 @@ export default function PublicMenu() {
 
         <div className="max-w-md mx-auto flex flex-col items-center text-center relative z-10">
           {/* Logo */}
-          <div className="w-16 h-16 bg-white/10 border border-white/20 rounded-full flex items-center justify-center mb-4 shadow-inner backdrop-blur-sm">
-            <Coffee className="w-9 h-9 text-caramel" />
+          <div className="w-16 h-16 bg-[#1A120D]/80 border border-caramel/40 rounded-2xl flex items-center justify-center mb-3 shadow-xl backdrop-blur-md">
+            <Coffee className="w-9 h-9 text-caramel drop-shadow-md" />
           </div>
 
-          <h1 className="text-3xl font-black tracking-tight mb-2 text-white">
-            بروماستر
+          <h1 className="text-3xl font-black tracking-tight mb-1 text-white font-cairo flex items-center justify-center gap-2">
+            <span>بروماستر</span>
+            <span className="text-caramel font-sans text-2xl">BrewMaster</span>
           </h1>
-          <p className="text-mocha-200 text-sm max-w-xs font-medium">
-            قائمة المأكولات والمشروبات الفاخرة
+          <p className="text-mocha-200 text-xs max-w-xs font-semibold">
+            قائمة المأكولات والقهوة المختصة الفاخرة ☕
           </p>
         </div>
       </header>
@@ -277,12 +278,11 @@ export default function PublicMenu() {
                 <Search className="h-5 w-5 text-mocha-400" />
               </div>
               <input
-                aria-label={'بحث في المنيو'}
                 type="text"
                 placeholder="قولنا تحب تاكل او تشرب ايه النهارده"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full py-3 pe-10 ps-4 bg-white border border-mocha-100 rounded-2xl focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent text-sm shadow-inner transition-all text-end font-bold"
+                className="w-full py-3 pr-10 pl-4 bg-white border border-mocha-100 rounded-2xl focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent text-sm shadow-inner transition-all text-right font-bold"
               />
             </div>
 
@@ -343,12 +343,12 @@ export default function PublicMenu() {
                   <motion.button
                     whileTap={{ scale: 0.98 }}
                     onClick={() => setActiveSection('food')}
-                    className="h-44 w-full rounded-3xl overflow-hidden relative shadow-lg text-end flex flex-col justify-end p-6 group border border-mocha-100"
+                    className="h-44 w-full rounded-3xl overflow-hidden relative shadow-lg text-right flex flex-col justify-end p-6 group border border-mocha-100"
                   >
                     <div className="absolute inset-0 bg-cover bg-center transition-transform duration-700 group-hover:scale-105" style={{ backgroundImage: `url(${FOOD_BG})` }} />
                     <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent" />
                     <div className="relative z-10 text-white">
-                      <span className="bg-caramel text-mocha-900 font-black text-[10px] px-2.5 py-1 rounded-full uppercase mb-2 inline-block">الأصناف الرئيسية</span>
+                      <span className="bg-caramel text-mocha-950 font-black text-[10px] px-2.5 py-1 rounded-full uppercase mb-2 inline-block">الأصناف الرئيسية</span>
                       <h4 className="text-2xl font-black text-white">منيو المأكولات</h4>
                       <p className="text-xs text-mocha-200 font-medium mt-1">ساندوتشات، وجبات سريعة، ومقبلات دافئة</p>
                     </div>
@@ -358,12 +358,12 @@ export default function PublicMenu() {
                   <motion.button
                     whileTap={{ scale: 0.98 }}
                     onClick={() => setActiveSection('drinks')}
-                    className="h-44 w-full rounded-3xl overflow-hidden relative shadow-lg text-end flex flex-col justify-end p-6 group border border-mocha-100"
+                    className="h-44 w-full rounded-3xl overflow-hidden relative shadow-lg text-right flex flex-col justify-end p-6 group border border-mocha-100"
                   >
                     <div className="absolute inset-0 bg-cover bg-center transition-transform duration-700 group-hover:scale-105" style={{ backgroundImage: `url(${DRINKS_BG})` }} />
                     <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/40 to-transparent" />
                     <div className="relative z-10 text-white">
-                      <span className="bg-caramel text-mocha-900 font-black text-[10px] px-2.5 py-1 rounded-full uppercase mb-2 inline-block">القهوة والمنعشات</span>
+                      <span className="bg-caramel text-mocha-950 font-black text-[10px] px-2.5 py-1 rounded-full uppercase mb-2 inline-block">القهوة والمنعشات</span>
                       <h4 className="text-2xl font-black text-white">منيو المشروبات</h4>
                       <p className="text-xs text-mocha-200 font-medium mt-1">قهوة مختصة ساخنة وباردة، فرابيه وميلك شيك</p>
                     </div>

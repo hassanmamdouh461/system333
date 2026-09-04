@@ -49,11 +49,11 @@ function ValuationPreview({
       <div className="bg-orange-50/50 border border-orange-100 p-4 rounded-xl space-y-2 text-xs" role="status">
         <div className="flex justify-between font-bold text-gray-700">
           <span>{t('Total Cost Value')}:</span>
-          <span>EGP {costValue.toFixed(2)}</span>
+          <span>{costValue.toFixed(2)} ج.م</span>
         </div>
         <div className="flex justify-between font-bold text-orange-700">
           <span>{t('Potential Value Loss')}:</span>
-          <span>EGP {potentialSales.toFixed(2)}</span>
+          <span>{potentialSales.toFixed(2)} ج.م</span>
         </div>
       </div>
     );
@@ -63,15 +63,15 @@ function ValuationPreview({
     <div className="bg-emerald-50/50 border border-emerald-100 p-4 rounded-xl space-y-2 text-xs" role="status">
       <div className="flex justify-between font-bold text-gray-700">
         <span>{t('Total Cost Value')}:</span>
-        <span>EGP {costValue.toFixed(2)}</span>
+        <span>{costValue.toFixed(2)} ج.م</span>
       </div>
       <div className="flex justify-between font-bold text-emerald-700">
         <span>{t('Potential Selling Value')}:</span>
-        <span>EGP {potentialSales.toFixed(2)}</span>
+        <span>{potentialSales.toFixed(2)} ج.م</span>
       </div>
       <div className="flex justify-between font-bold text-sky-700">
         <span>{t('Expected Potential Profit')}:</span>
-        <span>EGP {potentialProfit.toFixed(2)}</span>
+        <span>{potentialProfit.toFixed(2)} ج.م</span>
       </div>
     </div>
   );

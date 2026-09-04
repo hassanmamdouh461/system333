@@ -29,6 +29,18 @@ If WScript.Arguments.Count > 0 Then
     mode = WScript.Arguments(0)
 End If
 
+Dim electronExe, distIndex
+electronExe = fso.BuildPath(repoRoot, "node_modules\electron\dist\electron.exe")
+distIndex = fso.BuildPath(repoRoot, "dist\index.html")
+
+' Fast path: If the production build and Electron binary are present, launch Electron directly.
+' This completely bypasses PowerShell CLR runtime overhead (~1.5-2.5s) for instant startup.
+If (mode = "Auto" Or mode = "FastElectron" Or mode = "Electron") And fso.FileExists(electronExe) And fso.FileExists(distIndex) Then
+    shell.CurrentDirectory = repoRoot
+    shell.Run """" & electronExe & """ .", 1, False
+    WScript.Quit 0
+End If
+
 ' First run (no dependencies yet) stays visible so the install is not silent.
 If fso.FolderExists(fso.BuildPath(repoRoot, "node_modules")) Then
     showWindow = 0

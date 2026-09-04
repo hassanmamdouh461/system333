@@ -1,233 +1,344 @@
-import { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { motion } from 'framer-motion';
-import { Coffee, ArrowRight, Lock, Mail, Info } from 'lucide-react';
+import { motion, AnimatePresence } from 'framer-motion';
+import { Coffee, ArrowRight, Lock, Eye, EyeOff, Building2, Delete, ExternalLink, Info, Mail } from 'lucide-react';
 import { useAuth, BRANCH_ACCOUNTS } from '../context/AuthContext';
-import { isDesktop } from '../services/desktopBridge';
+import { playKeypadClick, playPaymentSuccessChime, playWarningSound } from '../utils/soundEffects';
 
-const LS_KEY = 'engaz_remembered_email';
+const LS_REMEMBERED_EMAIL = 'brewmaster_remembered_email';
 
 export default function Login() {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [rememberMe, setRememberMe] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
   const { login, needsPasswordSetup } = useAuth();
   const navigate = useNavigate();
-  const desktop = isDesktop();
 
-  // Restore the remembered address, never a password.
+  const [selectedBranchEmail, setSelectedBranchEmail] = useState<string>(() => {
+    const saved = localStorage.getItem(LS_REMEMBERED_EMAIL);
+    if (saved && BRANCH_ACCOUNTS.some((b) => b.email === saved)) {
+      return saved;
+    }
+    return BRANCH_ACCOUNTS[0]?.email || 'branch1@system.com';
+  });
+
+  const [isCustomEmail, setIsCustomEmail] = useState(false);
+  const [customEmail, setCustomEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [rememberMe, setRememberMe] = useState(true);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [shake, setShake] = useState(false);
+  const [showNumpad, setShowNumpad] = useState(true);
+
+  const activeEmail = isCustomEmail ? customEmail.trim() : selectedBranchEmail;
+  const isFirstTimeSetup = activeEmail ? needsPasswordSetup(activeEmail) : false;
+
   useEffect(() => {
-    const saved = localStorage.getItem(LS_KEY);
+    const saved = localStorage.getItem(LS_REMEMBERED_EMAIL);
     if (saved) {
-      setEmail(saved);
-      setRememberMe(true);
+      if (BRANCH_ACCOUNTS.some((b) => b.email === saved)) {
+        setSelectedBranchEmail(saved);
+        setIsCustomEmail(false);
+      } else {
+        setCustomEmail(saved);
+        setIsCustomEmail(true);
+      }
     }
   }, []);
 
-  // Which accounts this build can sign in with, so the user knows what to type. Addresses
-  // only: the password is set per device on first use.
-  const accountsForThisBuild = useMemo(
-    () => BRANCH_ACCOUNTS.filter(acc => (desktop ? acc.role !== 'manager' : acc.role === 'manager')),
-    [desktop]
-  );
+  const triggerShake = () => {
+    setShake(true);
+    playWarningSound();
+    setTimeout(() => setShake(false), 500);
+  };
 
-  const isFirstSignIn = email.trim() !== '' && needsPasswordSetup(email);
+  const handleKeypadPress = (action: string) => {
+    playKeypadClick();
+    if (action === 'C') {
+      setPassword('');
+      return;
+    }
+    if (action === 'backspace') {
+      setPassword((prev) => prev.slice(0, -1));
+      return;
+    }
+    setPassword((prev) => prev + action);
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!activeEmail) {
+      setError('يرجى اختيار الفرع أو إدخال البريد الإلكتروني');
+      triggerShake();
+      return;
+    }
+    if (!password) {
+      setError('يرجى إدخال كلمة المرور');
+      triggerShake();
+      return;
+    }
+
     setError('');
     setLoading(true);
     try {
-      if (!email || !password) throw new Error('Please fill in all fields');
-      const loggedUser = await login(email, password, rememberMe);
-      navigate(loggedUser.role === 'manager' ? '/manager-dashboard' : '/orders');
+      await login(activeEmail, password, rememberMe);
+      if (rememberMe) {
+        localStorage.setItem(LS_REMEMBERED_EMAIL, activeEmail);
+      } else {
+        localStorage.removeItem(LS_REMEMBERED_EMAIL);
+      }
+      playPaymentSuccessChime();
+      navigate('/orders');
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Invalid credentials');
+      setError(err instanceof Error ? err.message : 'بيانات الدخول غير صحيحة');
+      triggerShake();
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <>
-      <style>{`
-        @keyframes float2d {
-          0%,  100% { transform: translateY(0px);  }
-          50%        { transform: translateY(-7px); }
-        }
-        .icon-float {
-          animation: float2d 3s ease-in-out infinite;
-          will-change: transform;
-        }
-        .cb-caramel {
-          appearance: none;
-          -webkit-appearance: none;
-          width: 1rem;
-          height: 1rem;
-          border: 1.5px solid #6b7280;
-          border-radius: 4px;
-          background: transparent;
-          cursor: pointer;
-          position: relative;
-          flex-shrink: 0;
-          transition: border-color 0.2s, background 0.2s;
-        }
-        .cb-caramel:checked {
-          background: #c8956c;
-          border-color: #c8956c;
-        }
-        .cb-caramel:checked::after {
-          content: '';
-          position: absolute;
-          left: 3px;
-          top: 0px;
-          width: 5px;
-          height: 9px;
-          border: 2px solid #fff;
-          border-top: none;
-          border-left: none;
-          transform: rotate(45deg);
-        }
-        .cb-caramel:focus {
-          outline: none;
-          box-shadow: 0 0 0 2px rgba(200,149,108,0.35);
-        }
-      `}</style>
-
-      <div className="min-h-screen flex items-center justify-center bg-gray-900 relative overflow-hidden">
-        <div className="absolute top-[-20%] left-[-10%] w-[500px] h-[500px] bg-caramel/20 rounded-full blur-[100px]" />
-        <div className="absolute bottom-[-20%] right-[-10%] w-[500px] h-[500px] bg-mocha-700/10 rounded-full blur-[100px]" />
-
-        <motion.div
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6 }}
-          className="bg-white/10 backdrop-blur-lg border border-white/20 p-8 rounded-2xl w-full max-w-md shadow-2xl relative z-10"
-        >
-          <div className="flex flex-col items-center mb-8 text-center">
-            <div className="relative mb-4 icon-float">
-              <div className="absolute inset-0 rounded-full bg-caramel/40 blur-xl scale-150" />
-              <div className="relative bg-gradient-to-br from-caramel to-mocha-600 p-3 rounded-full shadow-lg shadow-caramel/40">
-                <Coffee className="w-8 h-8 text-white" />
-              </div>
-            </div>
-            <h1 className="text-2xl font-bold text-white mb-2 tracking-tight">
-              {desktop ? 'دخول الفرع' : 'بوابة الإدارة'}
-            </h1>
-            <p className="text-gray-400 text-sm">
-              {desktop ? 'سجل دخول كاشير الفرع' : 'دخول موقع الإدارة المركزي'}
-            </p>
+    <div className="h-screen w-screen flex items-center justify-center bg-[#18110D] overflow-hidden font-cairo p-4 select-none" dir="rtl">
+      <motion.div
+        initial={{ opacity: 0, y: 10 }}
+        animate={shake ? { x: [-10, 10, -8, 8, -4, 4, 0], opacity: 1, y: 0 } : { opacity: 1, y: 0 }}
+        transition={{ duration: 0.35 }}
+        className="w-full max-w-sm sm:max-w-md bg-[#221812] border border-white/10 p-5 sm:p-6 rounded-2xl shadow-2xl relative z-10"
+      >
+        {/* Header Branding */}
+        <div className="flex flex-col items-center mb-3 sm:mb-4 text-center">
+          <div className="w-11 h-11 rounded-xl bg-caramel/15 border border-caramel/30 flex items-center justify-center mb-2 shadow-sm">
+            <Coffee className="w-6 h-6 text-caramel" />
           </div>
 
-          <form onSubmit={handleSubmit} className="space-y-6">
-            <div className="space-y-2">
-              <label htmlFor="login-email" className="block text-gray-300 text-xs uppercase tracking-wider font-semibold ms-1">
-                البريد الإلكتروني
-              </label>
-              <div className="relative group">
-                <Mail className="absolute left-3 top-3 w-5 h-5 text-gray-400 group-focus-within:text-caramel transition-colors" aria-hidden="true" />
-                <input
-                  id="login-email"
-                  type="email"
-                  autoComplete="username"
-                  dir="ltr"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  className="w-full bg-gray-800/50 border border-gray-700 text-white ps-10 pe-4 py-3 rounded-xl focus:outline-none focus:border-caramel focus:ring-1 focus:ring-caramel transition-all placeholder-gray-500"
-                  placeholder={desktop ? 'branch1@system.com' : 'manager@system.com'}
-                />
-              </div>
-            </div>
+          <h1 className="text-xl font-bold text-white tracking-tight flex items-center gap-1.5 font-sans" dir="ltr">
+            <span>Engaz</span>
+            <span className="text-caramel font-bold">POS</span>
+          </h1>
 
-            <div className="space-y-2">
-              <label htmlFor="login-password" className="block text-gray-300 text-xs uppercase tracking-wider font-semibold ms-1">
-                كلمة المرور
-              </label>
-              <div className="relative group">
-                <Lock className="absolute left-3 top-3 w-5 h-5 text-gray-400 group-focus-within:text-caramel transition-colors" aria-hidden="true" />
-                <input
-                  id="login-password"
-                  type="password"
-                  autoComplete={isFirstSignIn ? 'new-password' : 'current-password'}
-                  dir="ltr"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  className="w-full bg-gray-800/50 border border-gray-700 text-white ps-10 pe-4 py-3 rounded-xl focus:outline-none focus:border-caramel focus:ring-1 focus:ring-caramel transition-all placeholder-gray-500"
-                  placeholder="••••••••"
-                />
-              </div>
-            </div>
+          <p className="text-mocha-300 text-xs mt-0.5 font-medium">
+            تسجيل دخول الكاشير
+          </p>
+        </div>
 
-            {/* First sign-in on a device sets its password, so say so before it happens. */}
-            {isFirstSignIn && (
-              <div className="flex items-start gap-2 bg-caramel/10 border border-caramel/30 rounded-xl p-3 text-xs text-caramel">
-                <Info className="w-4 h-4 shrink-0 mt-0.5" aria-hidden="true" />
-                <p>هذا أول تسجيل دخول على هذا الجهاز، وكلمة المرور التي تكتبها الآن ستصبح كلمة مرور الفرع.</p>
-              </div>
-            )}
-
-            <label className="flex items-center gap-3 cursor-pointer select-none group">
-              <input
-                type="checkbox"
-                checked={rememberMe}
-                onChange={(e) => setRememberMe(e.target.checked)}
-                className="cb-caramel"
-              />
-              <span className="text-sm text-gray-400 group-hover:text-gray-300 transition-colors">
-                تذكرني على هذا الجهاز
-              </span>
-            </label>
-
-            {error && (
-              <motion.p
-                initial={{ opacity: 0 }}
-                animate={{ opacity: 1 }}
-                role="alert"
-                className="text-red-400 text-sm text-center bg-red-500/10 py-2 px-3 rounded-lg"
-              >
-                {error}
-              </motion.p>
-            )}
-
-            <motion.button
-              whileHover={loading ? {} : { scale: 1.02 }}
-              whileTap={loading ? {} : { scale: 0.98 }}
-              type="submit"
-              disabled={loading}
-              className="w-full bg-gradient-to-r from-caramel to-mocha-600 text-white py-3 rounded-xl font-semibold shadow-lg shadow-caramel/20 flex items-center justify-center gap-2 hover:shadow-caramel/40 transition-shadow disabled:opacity-70 disabled:cursor-not-allowed"
+        {/* Branch Selection */}
+        <div className="mb-3">
+          <div className="flex items-center justify-between mb-1.5">
+            <label className="text-xs font-bold text-mocha-200 block">اختر الفرع</label>
+            <button
+              type="button"
+              onClick={() => {
+                setIsCustomEmail(!isCustomEmail);
+                setError('');
+              }}
+              className="text-[11px] text-caramel hover:underline font-bold"
             >
-              {loading ? (
-                <span className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" role="status" aria-label="جاري تسجيل الدخول" />
-              ) : (
-                <>تسجيل الدخول <ArrowRight className="w-5 h-5" aria-hidden="true" /></>
-              )}
-            </motion.button>
+              {isCustomEmail ? 'اختيار من الفروع' : 'حساب مخصص'}
+            </button>
+          </div>
 
-            {/* Addresses this build accepts. Clicking one fills the address only — there is
-                no shared password to prefill. */}
-            <div className="mt-6 pt-6 border-t border-white/10">
-              <p className="text-gray-400 text-xs font-semibold mb-3 tracking-wide text-center">
-                الحسابات المتاحة على هذا الجهاز
-              </p>
-              <div className="grid grid-cols-1 gap-2">
-                {accountsForThisBuild.map(account => (
-                  <button
-                    key={account.branchId}
-                    type="button"
-                    onClick={() => setEmail(account.email)}
-                    className="bg-white/5 hover:bg-white/10 text-white border border-white/10 rounded-lg p-2 text-xs transition-colors flex items-center justify-between gap-2"
-                  >
-                    <span className="font-bold text-caramel">{account.branchName}</span>
-                    <span className="text-[10px] text-gray-400" dir="ltr">{account.email}</span>
-                  </button>
-                ))}
-              </div>
+          {isCustomEmail ? (
+            <div className="relative">
+              <Mail className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-mocha-400" />
+              <input
+                type="email"
+                value={customEmail}
+                onChange={(e) => setCustomEmail(e.target.value)}
+                placeholder="branch@system.com"
+                className="w-full bg-[#120C08] border border-white/10 text-white pr-9 pl-3 py-2 rounded-xl focus:outline-none focus:border-caramel focus:ring-1 focus:ring-caramel text-xs transition-all placeholder-gray-500"
+                dir="ltr"
+              />
             </div>
-          </form>
-        </motion.div>
-      </div>
-    </>
+          ) : (
+            <div className="grid grid-cols-3 gap-1.5">
+              {BRANCH_ACCOUNTS.map((b) => {
+                const isSelected = selectedBranchEmail === b.email;
+                return (
+                  <button
+                    key={b.branchId}
+                    type="button"
+                    onClick={() => {
+                      playKeypadClick();
+                      setSelectedBranchEmail(b.email);
+                      setError('');
+                    }}
+                    className={`py-2 px-1 rounded-xl border text-center transition-all ${
+                      isSelected
+                        ? 'bg-caramel text-white border-caramel shadow-sm font-bold'
+                        : 'bg-white/5 hover:bg-white/10 text-gray-300 border-white/10'
+                    }`}
+                  >
+                    <Building2 className={`w-3.5 h-3.5 mx-auto mb-0.5 ${isSelected ? 'text-white' : 'text-caramel'}`} />
+                    <div className="text-xs font-bold truncate">
+                      {b.branchName.replace(/\s*\(.*?\)/g, '')}
+                    </div>
+                    <div className="text-[10px] opacity-75">
+                      {b.branchId === 'branch_1' ? 'فرع 1' : b.branchId === 'branch_2' ? 'فرع 2' : 'فرع 3'}
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* First Time Password Setup Notice */}
+        <AnimatePresence>
+          {isFirstTimeSetup && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+              className="bg-amber-500/15 border border-amber-500/30 rounded-xl p-2.5 mb-3 flex items-start gap-2 text-xs text-amber-200"
+            >
+              <Info className="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" />
+              <div>
+                <span className="font-bold">أول تسجيل دخول لهذا الفرع على هذا الجهاز:</span>
+                <p className="mt-0.5 text-amber-300/80">
+                  يرجى تعيين كلمة مرور جديدة تتكون من 6 أحرف أو أرقام على الأقل.
+                </p>
+              </div>
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Error Banner */}
+        <AnimatePresence>
+          {error && (
+            <motion.div
+              initial={{ opacity: 0, y: -4 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+              className="bg-red-500/15 border border-red-500/30 text-red-300 text-xs font-bold py-2 px-3 rounded-xl mb-3 text-center"
+            >
+              {error}
+            </motion.div>
+          )}
+        </AnimatePresence>
+
+        {/* Form */}
+        <form onSubmit={handleSubmit} className="space-y-2.5">
+          {/* Password Field */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between">
+              <label className="text-xs font-bold text-mocha-200 block">
+                {isFirstTimeSetup ? 'تعيين كلمة مرور الفرع' : 'كلمة مرور الفرع'}
+              </label>
+              <button
+                type="button"
+                onClick={() => setShowNumpad(!showNumpad)}
+                className="text-[11px] text-mocha-400 hover:text-caramel font-semibold transition-colors"
+              >
+                {showNumpad ? 'إخفاء لوحة الأرقام' : 'إظهار لوحة الأرقام'}
+              </button>
+            </div>
+
+            <div className="relative">
+              <Lock className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-mocha-400" />
+              <input
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                className="w-full bg-[#120C08] border border-white/10 text-white pr-9 pl-9 py-2 rounded-xl focus:outline-none focus:border-caramel focus:ring-1 focus:ring-caramel text-sm transition-all placeholder-gray-500 font-mono tracking-widest text-center"
+                placeholder={isFirstTimeSetup ? '6 خانات على الأقل' : '••••••'}
+                dir="ltr"
+                autoFocus
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white transition-colors p-1"
+              >
+                {showPassword ? <EyeOff size={14} /> : <Eye size={14} />}
+              </button>
+            </div>
+          </div>
+
+          {/* Touch Numpad */}
+          {showNumpad && (
+            <div className="grid grid-cols-3 gap-1.5 font-mono">
+              {['1', '2', '3', '4', '5', '6', '7', '8', '9'].map((digit) => (
+                <motion.button
+                  key={digit}
+                  whileTap={{ scale: 0.96 }}
+                  type="button"
+                  onClick={() => handleKeypadPress(digit)}
+                  className="py-2.5 rounded-xl font-bold text-base bg-white/5 hover:bg-white/10 active:bg-caramel/20 text-white border border-white/10 transition-colors flex items-center justify-center"
+                >
+                  {digit}
+                </motion.button>
+              ))}
+              <motion.button
+                whileTap={{ scale: 0.96 }}
+                type="button"
+                onClick={() => handleKeypadPress('C')}
+                className="py-2.5 rounded-xl font-bold text-xs bg-red-500/15 hover:bg-red-500/25 text-red-300 border border-red-500/20 transition-colors flex items-center justify-center font-cairo"
+                title="مسح الكل"
+              >
+                مسح
+              </motion.button>
+              <motion.button
+                whileTap={{ scale: 0.96 }}
+                type="button"
+                onClick={() => handleKeypadPress('0')}
+                className="py-2.5 rounded-xl font-bold text-base bg-white/5 hover:bg-white/10 active:bg-caramel/20 text-white border border-white/10 transition-colors flex items-center justify-center"
+              >
+                0
+              </motion.button>
+              <motion.button
+                whileTap={{ scale: 0.96 }}
+                type="button"
+                onClick={() => handleKeypadPress('backspace')}
+                className="py-2.5 rounded-xl font-bold text-xs bg-white/5 hover:bg-white/10 text-gray-300 border border-white/10 transition-colors flex items-center justify-center"
+                title="حذف خانة"
+              >
+                <Delete size={16} />
+              </motion.button>
+            </div>
+          )}
+
+          {/* Remember Me */}
+          <label className="flex items-center gap-2 cursor-pointer select-none text-xs font-medium text-gray-300 pt-0.5">
+            <input
+              type="checkbox"
+              checked={rememberMe}
+              onChange={(e) => setRememberMe(e.target.checked)}
+              className="w-3.5 h-3.5 rounded text-caramel focus:ring-caramel border-gray-700 bg-gray-800"
+            />
+            <span>تذكر هذا الفرع على هذا الجهاز</span>
+          </label>
+
+          {/* Submit Button */}
+          <motion.button
+            whileHover={{ scale: 1.01 }}
+            whileTap={{ scale: 0.98 }}
+            type="submit"
+            disabled={loading || !password}
+            className="w-full mt-1 bg-caramel hover:bg-caramel-dark text-white py-2.5 sm:py-3 rounded-xl font-bold shadow-md flex items-center justify-center gap-2 transition-colors text-xs sm:text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {loading ? (
+              <span className="w-4 h-4 border-2 border-white/40 border-t-white rounded-full animate-spin" />
+            ) : (
+              <>
+                <span>تسجيل الدخول للكاشير</span>
+                <ArrowRight size={14} className="rotate-180" />
+              </>
+            )}
+          </motion.button>
+        </form>
+
+        {/* Central Reports Portal External Link */}
+        <div className="mt-3 pt-2.5 border-t border-white/10 text-center">
+          <a
+            href="https://reporting.engaz.tech"
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-[11px] text-mocha-300 hover:text-caramel transition-colors font-medium"
+          >
+            <span>بوابة تقارير الإدارة المركزية أونلاين</span>
+            <ExternalLink size={11} />
+          </a>
+        </div>
+      </motion.div>
+    </div>
   );
 }

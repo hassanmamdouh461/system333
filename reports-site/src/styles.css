@@ -4,32 +4,133 @@
  * Light surface with soft cards, matching the desktop manager dashboard: white panels on a
  * cool grey page, a pale tinted badge and icon per metric, and one accent colour per card so
  * a figure can be found by colour before it is read.
+ *
+ * Every colour and every spacing the settings page can change is a variable on the root
+ * element: the theme is `data-theme` and the row spacing is `data-density`, both set by the
+ * app. No component below knows which theme is active, so adding a panel cannot miss one.
  */
 
-:root {
+:root,
+[data-theme='light'] {
   --page: #f6f7fb;
   --surface: #ffffff;
+  /* Subtle fill for hover states and chips. */
+  --surface-2: #f3f4f8;
+  /* Recessed fill for inputs and hovered table rows. */
+  --surface-3: #fafbfd;
   --border: #e6e8f0;
   --border-strong: #d6d9e6;
+  --border-hover: #c3c8d9;
+  /* Divider inside a panel, lighter than its outer border. */
+  --hairline: #f1f2f6;
   --text: #16181d;
   --text-soft: #5c6172;
   --text-muted: #8b90a3;
 
+  /* Solid button and active tab: `--ink` is the fill, `--on-ink` the text on it. */
   --ink: #1a1c22;
+  --ink-hover: #000000;
+  --on-ink: #ffffff;
+
   --emerald: #0f9d58;
   --emerald-soft: #e8f6ee;
+  /* Border of a tinted pill or banner: the accent at low opacity. */
+  --emerald-line: rgba(15, 157, 88, 0.2);
   --amber: #b7791f;
   --amber-soft: #fdf3e3;
+  --amber-line: rgba(183, 121, 31, 0.22);
   --sky: #1f6feb;
   --sky-soft: #e8f1fe;
   --violet: #7c3aed;
   --violet-soft: #f1eafe;
   --rose: #d92d20;
   --rose-soft: #fdeceb;
+  --rose-line: rgba(217, 45, 32, 0.3);
+
+  --row-warn: #fffaf3;
+  --row-warn-hover: #fff5e8;
+  --chart-from: #4f95f7;
+  --chart-to: #1f6feb;
+  --focus-ring: rgba(31, 111, 235, 0.25);
 
   --radius: 16px;
   --radius-sm: 10px;
   --shadow: 0 1px 2px rgba(16, 24, 40, 0.05), 0 1px 3px rgba(16, 24, 40, 0.04);
+
+  color-scheme: light;
+}
+
+/*
+ * Dark palette. Accents are lifted rather than reused: the light emerald and rose fail against
+ * a dark surface, and a tinted fill has to be a translucent wash of the accent so the surface
+ * underneath still reads as a card.
+ */
+[data-theme='dark'] {
+  --page: #0f1115;
+  --surface: #171a21;
+  --surface-2: #1f2430;
+  --surface-3: #12151b;
+  --border: #262b36;
+  --border-strong: #333a48;
+  --border-hover: #47506180;
+  --hairline: #21262f;
+  --text: #eef1f7;
+  --text-soft: #a8b0c2;
+  --text-muted: #7b8397;
+
+  --ink: #e9edf6;
+  --ink-hover: #ffffff;
+  --on-ink: #14161c;
+
+  --emerald: #3ddc97;
+  --emerald-soft: rgba(61, 220, 151, 0.14);
+  --emerald-line: rgba(61, 220, 151, 0.34);
+  --amber: #f0b854;
+  --amber-soft: rgba(240, 184, 84, 0.14);
+  --amber-line: rgba(240, 184, 84, 0.34);
+  --sky: #63a4ff;
+  --sky-soft: rgba(99, 164, 255, 0.14);
+  --violet: #b18cff;
+  --violet-soft: rgba(177, 140, 255, 0.16);
+  --rose: #ff6f61;
+  --rose-soft: rgba(255, 111, 97, 0.14);
+  --rose-line: rgba(255, 111, 97, 0.4);
+
+  --row-warn: rgba(240, 184, 84, 0.08);
+  --row-warn-hover: rgba(240, 184, 84, 0.13);
+  --chart-from: #7cb4ff;
+  --chart-to: #3b7fe0;
+  --focus-ring: rgba(99, 164, 255, 0.35);
+
+  --shadow: 0 1px 2px rgba(0, 0, 0, 0.4), 0 1px 3px rgba(0, 0, 0, 0.3);
+
+  color-scheme: dark;
+}
+
+/* Spacing scale. The compact setting trades white space for rows on screen. */
+:root,
+[data-density='comfortable'] {
+  --shell-gap: 16px;
+  --grid-gap: 14px;
+  --panel-head-pad: 14px 18px;
+  --panel-body-pad: 16px 18px 18px;
+  --stat-pad: 16px 18px 18px;
+  --stat-icon-size: 40px;
+  --stat-value-size: 25px;
+  --list-row-pad: 10px 2px;
+  --cell-pad: 11px 12px;
+}
+
+[data-density='compact'] {
+  --shell-gap: 10px;
+  --grid-gap: 10px;
+  --panel-head-pad: 10px 14px;
+  --panel-body-pad: 11px 14px 13px;
+  --stat-pad: 12px 14px 13px;
+  --stat-icon-size: 32px;
+  --stat-value-size: 21px;
+  --list-row-pad: 6px 2px;
+  --cell-pad: 7px 10px;
 }
 
 * {
@@ -87,7 +188,7 @@ th {
   padding: 20px 18px 48px;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: var(--shell-gap);
 }
 
 .topbar {
@@ -132,13 +233,13 @@ th {
   font-weight: 700;
   background: var(--emerald-soft);
   color: var(--emerald);
-  border: 1px solid rgba(15, 157, 88, 0.2);
+  border: 1px solid var(--emerald-line);
 }
 
 .live-pill.is-paused {
   background: var(--amber-soft);
   color: var(--amber);
-  border-color: rgba(183, 121, 31, 0.22);
+  border-color: var(--amber-line);
 }
 
 .live-dot {
@@ -184,8 +285,8 @@ th {
 }
 
 .control:hover:not(:disabled) {
-  background: #f3f4f8;
-  border-color: #c3c8d9;
+  background: var(--surface-2);
+  border-color: var(--border-hover);
 }
 
 .control:disabled {
@@ -196,11 +297,41 @@ th {
 .control.primary {
   background: var(--ink);
   border-color: var(--ink);
-  color: #fff;
+  color: var(--on-ink);
 }
 
 .control.primary:hover {
-  background: #000;
+  background: var(--ink-hover);
+}
+
+.control.danger {
+  color: var(--rose);
+  border-color: var(--rose-line);
+}
+
+.control.danger:hover:not(:disabled) {
+  background: var(--rose-soft);
+  border-color: var(--rose);
+}
+
+/* Buttons that pair an icon with a word, so the icon sits on the text baseline. */
+.control-icon {
+  display: inline-flex;
+  vertical-align: -2px;
+  margin-inline-end: 6px;
+}
+
+.control-icon svg {
+  width: 14px;
+  height: 14px;
+}
+
+.control:focus-visible,
+.tab:focus-visible,
+.toggle:focus-visible,
+.segment:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
 }
 
 select.control {
@@ -237,13 +368,13 @@ select.control {
 }
 
 .tab:hover {
-  background: #f3f4f8;
+  background: var(--surface-2);
   color: var(--text);
 }
 
 .tab.is-active {
   background: var(--ink);
-  color: #fff;
+  color: var(--on-ink);
 }
 
 .tab-icon svg {
@@ -274,7 +405,7 @@ select.control {
 .banner.is-error {
   background: var(--rose-soft);
   color: var(--rose);
-  border: 1px solid rgba(217, 45, 32, 0.2);
+  border: 1px solid var(--rose-line);
 }
 
 /* ─── Metric cards ─────────────────────────────────────────────────────────── */
@@ -282,7 +413,7 @@ select.control {
 .stat-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-  gap: 14px;
+  gap: var(--grid-gap);
 }
 
 .stat-card {
@@ -290,7 +421,7 @@ select.control {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   box-shadow: var(--shadow);
-  padding: 16px 18px 18px;
+  padding: var(--stat-pad);
   display: flex;
   flex-direction: column;
   gap: 6px;
@@ -315,8 +446,8 @@ select.control {
 }
 
 .stat-icon {
-  width: 40px;
-  height: 40px;
+  width: var(--stat-icon-size);
+  height: var(--stat-icon-size);
   border-radius: 12px;
   display: grid;
   place-items: center;
@@ -335,7 +466,7 @@ select.control {
 }
 
 .stat-value {
-  font-size: 25px;
+  font-size: var(--stat-value-size);
   font-weight: 800;
   letter-spacing: -0.02em;
   line-height: 1.2;
@@ -405,7 +536,7 @@ select.control {
 .split-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
-  gap: 14px;
+  gap: var(--grid-gap);
 }
 
 .panel {
@@ -418,7 +549,7 @@ select.control {
 }
 
 .panel-head {
-  padding: 14px 18px;
+  padding: var(--panel-head-pad);
   border-bottom: 1px solid var(--border);
   display: flex;
   align-items: baseline;
@@ -438,7 +569,7 @@ select.control {
 }
 
 .panel-body {
-  padding: 16px 18px 18px;
+  padding: var(--panel-body-pad);
 }
 
 .empty {
@@ -479,7 +610,7 @@ select.control {
   width: 100%;
   max-width: 46px;
   border-radius: 8px 8px 3px 3px;
-  background: linear-gradient(180deg, #4f95f7, #1f6feb);
+  background: linear-gradient(180deg, var(--chart-from), var(--chart-to));
   min-height: 3px;
 }
 
@@ -502,8 +633,8 @@ select.control {
   grid-template-columns: 26px 1fr auto;
   align-items: center;
   gap: 10px;
-  padding: 10px 2px;
-  border-bottom: 1px solid #f1f2f6;
+  padding: var(--list-row-pad);
+  border-bottom: 1px solid var(--hairline);
   font-size: 13px;
 }
 
@@ -515,7 +646,7 @@ select.control {
   width: 24px;
   height: 24px;
   border-radius: 8px;
-  background: #f1f2f6;
+  background: var(--surface-2);
   color: var(--text-soft);
   font-size: 11px;
   font-weight: 800;
@@ -553,8 +684,9 @@ select.control {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 11px 2px;
-  border-bottom: 1px solid #f1f2f6;
+  padding: var(--cell-pad);
+  padding-inline: 2px;
+  border-bottom: 1px solid var(--hairline);
   font-size: 13px;
   color: var(--text-soft);
 }
@@ -582,12 +714,12 @@ select.control {
   padding: 10px 14px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: #fafbfd;
+  background: var(--surface-3);
   color: var(--text);
 }
 
 .search input:focus {
-  outline: 2px solid rgba(31, 111, 235, 0.25);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
   border-color: var(--sky);
 }
@@ -613,8 +745,8 @@ thead th {
 }
 
 tbody td {
-  padding: 11px 12px;
-  border-bottom: 1px solid #f1f2f6;
+  padding: var(--cell-pad);
+  border-bottom: 1px solid var(--hairline);
   color: var(--text-soft);
   white-space: nowrap;
 }
@@ -624,15 +756,15 @@ tbody tr:last-child td {
 }
 
 tbody tr:hover td {
-  background: #fafbfd;
+  background: var(--surface-3);
 }
 
 .row-warn td {
-  background: #fffaf3;
+  background: var(--row-warn);
 }
 
 .row-warn:hover td {
-  background: #fff5e8;
+  background: var(--row-warn-hover);
 }
 
 .cell-strong {
@@ -662,6 +794,144 @@ tbody tr:hover td {
 .tag-warn {
   background: var(--amber-soft);
   color: var(--amber);
+}
+
+/* ─── Settings ─────────────────────────────────────────────────────────────── */
+
+.settings-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: var(--grid-gap);
+  align-items: start;
+}
+
+.setting-list {
+  display: flex;
+  flex-direction: column;
+}
+
+.setting-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: var(--cell-pad);
+  padding-inline: 2px;
+  border-bottom: 1px solid var(--hairline);
+}
+
+.setting-row:last-child {
+  border-bottom: 0;
+}
+
+.setting-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.setting-label {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.setting-hint {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+
+/* The control column never shrinks below its content: a select must not be squeezed
+   into unreadability by a long description beside it. */
+.setting-control {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.setting-value {
+  font-size: 12.5px;
+  font-weight: 700;
+  color: var(--text-soft);
+}
+
+.setting-value.is-ok {
+  color: var(--emerald);
+}
+
+/* ─── Toggle ───────────────────────────────────────────────────────────────── */
+
+.toggle {
+  position: relative;
+  width: 42px;
+  height: 24px;
+  flex-shrink: 0;
+  border: 1px solid var(--border-strong);
+  border-radius: 999px;
+  background: var(--surface-2);
+  cursor: pointer;
+  padding: 0;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+.toggle.is-on {
+  background: var(--emerald);
+  border-color: var(--emerald);
+}
+
+.toggle-knob {
+  position: absolute;
+  top: 2px;
+  /* Logical inset, so the knob travels the correct way on this right-to-left page. */
+  inset-inline-start: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--surface);
+  box-shadow: 0 1px 2px rgba(16, 24, 40, 0.3);
+  transition: inset-inline-start 0.15s ease;
+}
+
+.toggle.is-on .toggle-knob {
+  inset-inline-start: 20px;
+}
+
+/* ─── Segmented control ────────────────────────────────────────────────────── */
+
+.segments {
+  display: inline-flex;
+  gap: 3px;
+  padding: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.segment {
+  font: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--text-soft);
+  background: transparent;
+  border: 0;
+  border-radius: 7px;
+  padding: 6px 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+
+.segment:hover {
+  color: var(--text);
+}
+
+.segment.is-active {
+  background: var(--surface);
+  color: var(--text);
+  box-shadow: var(--shadow);
 }
 
 /* ─── Footer ───────────────────────────────────────────────────────────────── */
@@ -724,12 +994,12 @@ tbody tr:hover td {
   padding: 11px 14px;
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
-  background: #fafbfd;
+  background: var(--surface-3);
   color: var(--text);
 }
 
 .login-card input:focus {
-  outline: 2px solid rgba(31, 111, 235, 0.25);
+  outline: 2px solid var(--focus-ring);
   outline-offset: 1px;
   border-color: var(--sky);
 }
@@ -742,7 +1012,7 @@ tbody tr:hover td {
   border: 0;
   border-radius: var(--radius-sm);
   background: var(--ink);
-  color: #fff;
+  color: var(--on-ink);
   cursor: pointer;
 }
 
@@ -754,7 +1024,7 @@ tbody tr:hover td {
 .login-error {
   background: var(--rose-soft);
   color: var(--rose);
-  border: 1px solid rgba(217, 45, 32, 0.2);
+  border: 1px solid var(--rose-line);
   border-radius: var(--radius-sm);
   padding: 10px 14px;
   font-size: 12.5px;
@@ -764,6 +1034,25 @@ tbody tr:hover td {
 /* ─── Print ────────────────────────────────────────────────────────────────── */
 
 @media print {
+  /* Paper is white whatever the screen theme is, so the dark palette would print
+     light-grey text onto it. Every ink colour is restated for the page. */
+  html[data-theme='dark'] {
+    --page: #ffffff;
+    --surface: #ffffff;
+    --surface-2: #ffffff;
+    --surface-3: #ffffff;
+    --border: #d6d9e6;
+    --hairline: #e6e8f0;
+    --text: #000000;
+    --text-soft: #333333;
+    --text-muted: #666666;
+    --emerald: #0f7d46;
+    --amber: #8a5a12;
+    --sky: #14539b;
+    --violet: #5b28b5;
+    --rose: #a81f14;
+  }
+
   body {
     background: #fff;
   }
@@ -789,5 +1078,17 @@ tbody tr:hover td {
 
   .chart {
     height: 170px;
+  }
+
+  /* Below this width the label and its control cannot share a line without one of them
+     wrapping mid-word, so the control moves under the label. */
+  .setting-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .setting-control {
+    justify-content: flex-start;
   }
 }

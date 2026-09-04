@@ -1,4 +1,5 @@
-import { Menu, Bell, User } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { Menu, Coffee, Clock } from 'lucide-react';
 import { useLocation } from 'react-router-dom';
 import { motion } from 'framer-motion';
 
@@ -8,66 +9,66 @@ interface MobileHeaderProps {
 
 export function MobileHeader({ onMenuClick }: MobileHeaderProps) {
   const location = useLocation();
-  
+  const [currentTime, setCurrentTime] = useState(new Date());
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    return () => clearInterval(timer);
+  }, []);
+
   const getPageTitle = () => {
     const path = location.pathname;
     const titles: Record<string, string> = {
-      '/dashboard': 'Dashboard',
-      '/menu': 'Menu',
-      '/orders': 'Orders',
-      '/payment': 'Payment',
-      '/reports': 'Reports',
-      '/manager-dashboard': 'Manager Dashboard',
-      '/settings': 'Settings',
+      '/dashboard': 'الرئيسية',
+      '/menu': 'قائمة الأصناف',
+      '/orders': 'الكاشير وتسجيل الطلبات',
+      '/payment': 'الفواتير والتحصيل',
+      '/inventory': 'المخزون والمواد الخام',
+      '/reports': 'التقارير والإحصائيات',
+      '/settings': 'إعدادات النظام',
     };
-    return titles[path] || 'Engaz';
+    return titles[path] || 'Engaz POS';
   };
 
   return (
-    <header className="md:hidden fixed top-0 left-0 right-0 z-30 pt-safe-top">
-      {/* Subtle gradient background */}
-      <div className="relative bg-gradient-to-r from-mocha-100 via-cream to-caramel-light border-b border-mocha-200/50">
-        <div className="bg-white/95 backdrop-blur-xl">
-          <div className="flex items-center justify-between px-3 py-3.5">
-            {/* Menu Button */}
-            <motion.button
-              whileTap={{ scale: 0.95 }}
-              onClick={onMenuClick}
-              className="mobile-touch-target p-2.5 rounded-xl bg-mocha-100/80 text-mocha-800 hover:bg-mocha-200/80 transition-all shadow-sm border border-mocha-200/50"
-            >
-              <Menu size={22} strokeWidth={2} />
-            </motion.button>
+    <header className="md:hidden fixed top-0 left-0 right-0 z-30 pt-safe-top font-cairo" dir="rtl">
+      <div className="bg-[#18100B] border-b border-caramel/20 shadow-md">
+        <div className="flex items-center justify-between px-3 py-2.5">
+          
+          {/* Menu Drawer Button */}
+          <motion.button
+            whileTap={{ scale: 0.92 }}
+            onClick={onMenuClick}
+            className="mobile-touch-target p-2 rounded-xl bg-white/5 text-mocha-300 hover:text-white border border-white/10 transition-all flex items-center justify-center"
+          >
+            <Menu size={20} />
+          </motion.button>
 
-            {/* Page Title - softer gradient */}
+          {/* Page Title & Brand */}
+          <div className="flex flex-col items-center">
             <motion.h1 
               key={getPageTitle()}
-              initial={{ opacity: 0, y: -10 }}
+              initial={{ opacity: 0, y: -6 }}
               animate={{ opacity: 1, y: 0 }}
-              className="text-base font-bold text-gray-800"
+              className="text-sm font-black text-white"
             >
               {getPageTitle()}
             </motion.h1>
-
-            {/* Right Actions */}
-            <div className="flex items-center gap-2">
-              {/* Notifications */}
-              <motion.button 
-                whileTap={{ scale: 0.95 }}
-                className="mobile-touch-target relative p-2.5 rounded-xl bg-blue-50/80 text-blue-600 hover:bg-blue-100/80 transition-all shadow-sm border border-blue-100/50"
-              >
-                <Bell size={20} strokeWidth={2} />
-                <span className="absolute top-1.5 right-1.5 w-2 h-2 bg-caramel rounded-full border-2 border-white shadow-sm" />
-              </motion.button>
-
-              {/* User Avatar - softer gradient */}
-              <motion.button
-                whileTap={{ scale: 0.95 }}
-                className="mobile-touch-target w-9 h-9 rounded-xl bg-gradient-to-br from-mocha-500 to-coffee-dark flex items-center justify-center text-white shadow-sm hover:shadow-md transition-all"
-              >
-                <User size={18} strokeWidth={2} />
-              </motion.button>
+            <div className="flex items-center gap-1 text-[10px] text-caramel font-mono mt-0.5">
+              <Clock size={10} />
+              <span className="tabular-nums">
+                {currentTime.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit' })}
+              </span>
             </div>
           </div>
+
+          {/* User / Branch Icon */}
+          <div className="flex items-center gap-1.5">
+            <div className="w-8 h-8 rounded-xl bg-gradient-to-br from-caramel to-mocha-700 flex items-center justify-center text-white font-bold text-xs shadow-sm border border-caramel/30">
+              <Coffee size={15} />
+            </div>
+          </div>
+
         </div>
       </div>
     </header>

@@ -7,7 +7,7 @@ import {
   __testing,
 } from '../d1-reports-worker.js';
 
-const { SYNC_TABLES, assertItems, MAX_BATCH, MOVEMENT_LIMIT, TOKEN_TTL_MS, LOGIN_MAX_ATTEMPTS, readSnapshot } =
+const { SYNC_TABLES, assertItems, MAX_BATCH, MOVEMENT_LIMIT, TOKEN_TTL_MS, LOGIN_MAX_ATTEMPTS, readSnapshot, readPublicMenu } =
   __testing;
 
 const SECRET = 'reports-token-secret-for-tests';
@@ -238,5 +238,46 @@ describe('readSnapshot', () => {
       const statement = db.seen.find((s) => s.sql.includes(`FROM ${table}`));
       expect(statement.sql, `${table} tombstone filter`).toContain('deleted_at IS NULL');
     }
+  });
+});
+
+describe('readPublicMenu', () => {
+  it('returns menu items from the database', async () => {
+    const db = {
+      prepare(sql: string) {
+        return {
+          bind(...args: unknown[]) {
+            return {
+              async all() {
+                return { results: [{ id: 'm1', name: 'Espresso', price: 35, category: 'Hot Coffee|Bar' }] };
+              },
+            };
+          },
+        };
+      },
+    };
+    const res = await readPublicMenu(db as any);
+    expect(res.menuItems).toEqual([{ id: 'm1', name: 'Espresso', price: 35, category: 'Hot Coffee|Bar' }]);
+  });
+
+  it('filters out soft-deleted and unavailable items', async () => {
+    let capturedSql = '';
+    const db = {
+      prepare(sql: string) {
+        capturedSql = sql;
+        return {
+          bind(...args: unknown[]) {
+            return {
+              async all() {
+                return { results: [] };
+              },
+            };
+          },
+        };
+      },
+    };
+    await readPublicMenu(db as any);
+    expect(capturedSql).toContain('deleted_at IS NULL');
+    expect(capturedSql).toContain('available = 1 OR available IS NULL');
   });
 });

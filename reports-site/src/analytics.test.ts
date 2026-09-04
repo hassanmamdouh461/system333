@@ -21,6 +21,7 @@ import {
 function order(overrides: Partial<OrderRow> = {}): OrderRow {
   return {
     id: 'o1',
+    orderNumber: 'A-1001',
     createdAt: '2026-09-01T10:00:00.000Z',
     branch_id: 'branch-1',
     totalAmount: 100,
@@ -30,9 +31,10 @@ function order(overrides: Partial<OrderRow> = {}): OrderRow {
     paidAmount: 100,
     paymentStatus: 'Paid',
     paymentMethod: 'Cash',
+    customerPhone: null,
     items: null,
     ...overrides,
-  };
+  } as OrderRow;
 }
 
 function material(overrides: Partial<InventoryRow> = {}): InventoryRow {

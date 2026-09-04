@@ -23,7 +23,6 @@ const orderRepository = require('./OrderRepository.cjs');
 const menuRepository = require('./MenuRepository.cjs');
 const customerRepository = require('./CustomerRepository.cjs');
 const inventoryRepository = require('./InventoryRepository.cjs');
-const mockApi = require('./mockApiService.cjs');
 const telegramService = require('./telegramService.cjs');
 const validate = require('./validate.cjs');
 
@@ -61,10 +60,14 @@ function createWindow() {
   }
 
   // Nothing in this app should open a second window or navigate away from the bundled app.
-  // Without these, a stray link or a compromised page could load arbitrary remote content
-  // inside a window that has the preload bridge attached.
+  // External links to the manager portal open in the user's default browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    console.warn('[main] Blocked window open request:', url);
+    if (url.startsWith('https://reporting.engaz.tech')) {
+      const { shell } = require('electron');
+      shell.openExternal(url);
+    } else {
+      console.warn('[main] Blocked window open request:', url);
+    }
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
@@ -80,7 +83,7 @@ function createWindow() {
   // a short grace period so the app never looks frozen.
   const showTimer = setTimeout(() => {
     if (mainWindow && !mainWindow.isVisible()) mainWindow.show();
-  }, 8000);
+  }, 2000);
   mainWindow.once('ready-to-show', () => {
     clearTimeout(showTimer);
     mainWindow.show();
@@ -161,13 +164,6 @@ function registerIpcHandlers() {
   handle('db:save-customer', (customer) => customerRepository.saveCustomer(validate.validateCustomer(customer)));
   handle('db:delete-customer', (id) => customerRepository.deleteCustomer(validate.requireId(id, 'id')));
 
-  // ─── Manager dashboard (central database) ──────────────────────────────────
-  // The snapshot handler is one round trip for all three collections; the split handlers
-  // remain for older renderers.
-  handle('db:get-manager-snapshot', () => mockApi.getManagerSnapshot());
-  handle('db:get-manager-orders', () => mockApi.getManagerOrders());
-  handle('db:get-manager-customers', () => mockApi.getManagerCustomers());
-
   // ─── Settings ──────────────────────────────────────────────────────────────
   // Explicit whitelist (Issue 30): only durable settings reach SQLite. Transient UI state
   // such as the register draft stays in the renderer.
@@ -175,11 +171,12 @@ function registerIpcHandlers() {
     /^engaz_tax_rate$/,
     /^engaz_branch_config$/,
     /^engaz_telegram_config$/,
+    /^engaz_store_config$/,
+    /^engaz_tables_config$/,
     /^engaz_admin_creds$/,
     /^engaz_d1_worker_url$/,
     /^engaz_d1_worker_api_key$/,
     /^branch_id$/,
-    /^engaz_language$/,
   ];
   const isAllowedSettingKey = (key) => typeof key === 'string' && SETTINGS_WHITELIST.some(re => re.test(key));
 

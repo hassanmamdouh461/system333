@@ -1,7 +1,8 @@
 /**
- * Categories the cashier can filter by: everything, or one of the two preparation
- * destinations a menu item can be routed to.
+ * Default categories the cashier can filter by if no items exist yet.
  */
-export const POS_CATEGORIES = ['All', 'Bar', 'Kitchen'] as const;
+export const DEFAULT_POS_CATEGORIES = ['All'] as const;
 
-export type PosCategory = (typeof POS_CATEGORIES)[number];
+export const POS_CATEGORIES = DEFAULT_POS_CATEGORIES;
+
+export type PosCategory = string;

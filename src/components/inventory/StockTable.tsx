@@ -45,10 +45,10 @@ export function StockTable({ items, itemYields, onAdjust, onEdit, onDelete }: St
                   {isLow && <span className="block text-[10px] text-red-500 font-semibold">{t('Low Stock')}</span>}
                 </td>
                 <td className="p-4 text-center text-gray-500">{item.minStock.toFixed(2)}</td>
-                <td className="p-4 text-center font-medium text-gray-700">EGP {item.costPerUnit.toFixed(2)}</td>
-                <td className="p-4 text-center font-bold text-gray-800">EGP {costValue.toFixed(2)}</td>
-                <td className="p-4 text-center font-bold text-emerald-600">EGP {potentialSales.toFixed(2)}</td>
-                <td className="p-4 text-center font-bold text-sky-600">EGP {potentialProfit.toFixed(2)}</td>
+                <td className="p-4 text-center font-medium text-gray-700">{item.costPerUnit.toFixed(2)} ج.م</td>
+                <td className="p-4 text-center font-bold text-gray-800">{costValue.toFixed(2)} ج.م</td>
+                <td className="p-4 text-center font-bold text-emerald-600">{potentialSales.toFixed(2)} ج.م</td>
+                <td className="p-4 text-center font-bold text-sky-600">{potentialProfit.toFixed(2)} ج.م</td>
                 <td className="p-4 text-end">
                   <div className="flex justify-end items-center gap-1.5">
                     <button

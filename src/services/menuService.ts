@@ -27,7 +27,7 @@ function mapRow(row: MenuItemRow): MenuItem {
 /** Throws when a mutation is attempted in the web build, which has no local database. */
 function requireDesktop(action: string) {
   if (!window.electronAPI) {
-    throw new Error(`${action} is only available in the desktop app`);
+    throw new Error(`${action} متاح فقط في تطبيق سطح المكتب`);
   }
   return window.electronAPI;
 }
@@ -44,8 +44,26 @@ export const menuService = {
         return await window.electronAPI.getMenu();
       } catch (error) {
         console.error('[menuService] Error fetching menu items from SQLite:', error);
-        throw new Error('Failed to fetch menu items');
+        throw new Error('فشل قراءة أصناف القائمة');
       }
+    }
+
+    // In the browser (public menu / web build):
+    // First try the public reports worker endpoint (engaz-reports-db) which needs no auth
+    try {
+      const reportsUrl = (import.meta.env.VITE_REPORTS_WORKER_URL as string) || 'https://api-reports.engaz.tech';
+      const res = await fetch(`${reportsUrl.replace(/\/+$/, '')}/read/public-menu`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success && Array.isArray(data.menuItems)) {
+          return data.menuItems.map(mapRow);
+        }
+      }
+    } catch (e) {
+      console.warn('[menuService] Public menu fetch from reports worker failed, falling back:', e);
     }
 
     try {
@@ -53,43 +71,43 @@ export const menuService = {
       return (data.menuItems || []).map(mapRow);
     } catch (error) {
       console.error('[menuService] Error fetching menu items from the worker:', error);
-      throw new Error('Failed to fetch menu items');
+      throw new Error('فشل قراءة أصناف القائمة');
     }
   },
 
   async create(item: Omit<MenuItem, 'id'>): Promise<MenuItem> {
     try {
-      return await requireDesktop('Creating a menu item').createMenuItem(item);
+      return await requireDesktop('إضافة صنف للقائمة').createMenuItem(item);
     } catch (error) {
       console.error('[menuService] Error creating menu item:', error);
-      throw new Error('Failed to create menu item');
+      throw new Error('فشل إضافة صنف للقائمة');
     }
   },
 
   async update(id: string, data: Partial<Omit<MenuItem, 'id'>>): Promise<MenuItem> {
     try {
-      return await requireDesktop('Updating a menu item').updateMenuItem(id, data);
+      return await requireDesktop('تعديل صنف القائمة').updateMenuItem(id, data);
     } catch (error) {
       console.error('[menuService] Error updating menu item:', error);
-      throw new Error('Failed to update menu item');
+      throw new Error('فشل تعديل صنف القائمة');
     }
   },
 
   async delete(id: string): Promise<void> {
     try {
-      await requireDesktop('Deleting a menu item').deleteMenuItem(id);
+      await requireDesktop('حذف صنف من القائمة').deleteMenuItem(id);
     } catch (error) {
       console.error('[menuService] Error deleting menu item:', error);
-      throw new Error('Failed to delete menu item');
+      throw new Error('فشل حذف صنف من القائمة');
     }
   },
 
   async resetToDefaults(defaultItems: Omit<MenuItem, 'id'>[]): Promise<MenuItem[]> {
     try {
-      return await requireDesktop('Resetting the menu').resetMenu(defaultItems);
+      return await requireDesktop('إعادة تعيين القائمة').resetMenu(defaultItems);
     } catch (error) {
       console.error('[menuService] Error resetting menu to defaults:', error);
-      throw new Error('Failed to reset menu to defaults');
+      throw new Error('فشل إعادة تعيين القائمة');
     }
   },
 };

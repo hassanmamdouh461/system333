@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { User, Store, Lock, LogOut, QrCode, Globe, Send, Building2 } from 'lucide-react';
+import { Store, LogOut, QrCode, Globe, Send, Armchair } from 'lucide-react';
 
 // Web reports portal URL. The desktop POS pushes its data to the isolated reports D1
 // database (api-reports.engaz.tech) and this link opens that data as a live dashboard
@@ -11,12 +11,11 @@ import { SyncStatus } from '../components/ui/SyncStatus';
 import { useAuth } from '../context/AuthContext';
 import { useLanguage } from '../context/LanguageContext';
 import { QrMenuModal } from '../components/settings/QrMenuModal';
-import { ProfileSettingsModal } from '../components/settings/ProfileSettingsModal';
 import { StoreConfigModal } from '../components/settings/StoreConfigModal';
-import { BranchConfigModal } from '../components/settings/BranchConfigModal';
 import { TelegramConfigModal } from '../components/settings/TelegramConfigModal';
+import { TablesConfigModal } from '../components/settings/TablesConfigModal';
 
-type ModalName = 'qr' | 'profile' | 'store' | 'branch' | 'telegram';
+type ModalName = 'qr' | 'store' | 'telegram' | 'tables';
 
 export default function Settings() {
   const [openModal, setOpenModal] = useState<ModalName | null>(null);
@@ -27,30 +26,19 @@ export default function Settings() {
 
   const sections = [
     {
-      title: t('Profile Settings'),
-      items: [
-        {
-          icon: User,
-          label: t('My Account'),
-          desc: t('Update password and user settings'),
-          onClick: () => setOpenModal('profile')
-        },
-      ]
-    },
-    {
       title: t('Store Configuration'),
       items: [
         {
           icon: Store,
-          label: t('Tax Rate Percentage'),
-          desc: t('Edit tax rates'),
+          label: t('Store Configuration'),
+          desc: t('Tax rates and general store info'),
           onClick: () => setOpenModal('store')
         },
         {
-          icon: Building2,
-          label: t('Branch Configuration'),
-          desc: t('Configure branch identity and credentials'),
-          onClick: () => setOpenModal('branch')
+          icon: Armchair,
+          label: t('Table Management'),
+          desc: t('Add or remove dining tables'),
+          onClick: () => setOpenModal('tables')
         },
       ]
     },
@@ -73,17 +61,6 @@ export default function Settings() {
           label: t('Enable Telegram Reports'),
           desc: t('Send the daily report automatically'),
           onClick: () => setOpenModal('telegram')
-        },
-      ]
-    },
-    {
-      title: t('Privacy & Security'),
-      items: [
-        {
-          icon: Lock,
-          label: t('Privacy & Security'),
-          desc: t('Update password and controls'),
-          onClick: () => setOpenModal('profile')
         },
       ]
     },
@@ -169,10 +146,9 @@ export default function Settings() {
       </div>
       
       <QrMenuModal isOpen={openModal === 'qr'} onClose={closeModal} />
-      <ProfileSettingsModal isOpen={openModal === 'profile'} onClose={closeModal} />
       <StoreConfigModal isOpen={openModal === 'store'} onClose={closeModal} />
-      <BranchConfigModal isOpen={openModal === 'branch'} onClose={closeModal} />
       <TelegramConfigModal isOpen={openModal === 'telegram'} onClose={closeModal} />
+      <TablesConfigModal isOpen={openModal === 'tables'} onClose={closeModal} />
     </div>
   );
 }

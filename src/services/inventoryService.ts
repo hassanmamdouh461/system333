@@ -10,10 +10,10 @@ export const inventoryService = {
    */
   async getAll(branchId?: string): Promise<InventoryItem[]> {
     try {
-      return await requireDesktopApi('Reading inventory').getInventory(branchId);
+      return await requireDesktopApi('قراءة المخزون').getInventory(branchId);
     } catch (error) {
       console.error('[inventoryService] Error fetching inventory:', error);
-      throw new Error('Failed to fetch inventory');
+      throw new Error('فشل قراءة المخزون');
     }
   },
 
@@ -22,10 +22,10 @@ export const inventoryService = {
    */
   async create(item: Omit<InventoryItem, 'id' | 'createdAt' | 'updatedAt'>): Promise<InventoryItem> {
     try {
-      return await requireDesktopApi('Creating a stock item').createInventoryItem(item);
+      return await requireDesktopApi('إضافة صنف مخزون').createInventoryItem(item);
     } catch (error) {
       console.error('[inventoryService] Error creating inventory item:', error);
-      throw new Error('Failed to create inventory item');
+      throw new Error('فشل إضافة صنف المخزون');
     }
   },
 
@@ -34,10 +34,10 @@ export const inventoryService = {
    */
   async update(id: string, data: Partial<Omit<InventoryItem, 'id' | 'createdAt' | 'updatedAt'>>): Promise<InventoryItem> {
     try {
-      return await requireDesktopApi('Updating a stock item').updateInventoryItem(id, data);
+      return await requireDesktopApi('تعديل صنف المخزون').updateInventoryItem(id, data);
     } catch (error) {
       console.error('[inventoryService] Error updating inventory item:', error);
-      throw new Error('Failed to update inventory item');
+      throw new Error('فشل تعديل صنف المخزون');
     }
   },
 
@@ -46,10 +46,10 @@ export const inventoryService = {
    */
   async delete(id: string): Promise<void> {
     try {
-      await requireDesktopApi('Deleting a stock item').deleteInventoryItem(id);
+      await requireDesktopApi('حذف صنف المخزون').deleteInventoryItem(id);
     } catch (error) {
       console.error('[inventoryService] Error deleting inventory item:', error);
-      throw new Error('Failed to delete inventory item');
+      throw new Error('فشل حذف صنف المخزون');
     }
   },
 
@@ -58,10 +58,10 @@ export const inventoryService = {
    */
   async getTransactions(itemId?: string, branchId?: string): Promise<InventoryTransaction[]> {
     try {
-      return await requireDesktopApi('Reading stock movements').getInventoryTransactions(itemId, branchId);
+      return await requireDesktopApi('قراءة حركة المخزون').getInventoryTransactions(itemId, branchId);
     } catch (error) {
       console.error('[inventoryService] Error fetching transactions:', error);
-      throw new Error('Failed to fetch inventory transactions');
+      throw new Error('فشل قراءة حركة المخزون');
     }
   },
 
@@ -70,10 +70,10 @@ export const inventoryService = {
    */
   async createTransaction(tx: Omit<InventoryTransaction, 'id' | 'createdAt'>): Promise<InventoryTransaction> {
     try {
-      return await requireDesktopApi('Recording a stock movement').createInventoryTransaction(tx);
+      return await requireDesktopApi('تسجيل حركة مخزون').createInventoryTransaction(tx);
     } catch (error) {
       console.error('[inventoryService] Error creating stock transaction:', error);
-      throw new Error('Failed to create stock transaction');
+      throw new Error('فشل تسجيل حركة المخزون');
     }
   },
 
@@ -82,10 +82,10 @@ export const inventoryService = {
    */
   async getMenuRecipes(): Promise<RecipeIngredient[]> {
     try {
-      return await requireDesktopApi('Reading recipes').getMenuRecipes();
+      return await requireDesktopApi('قراءة الوصفات').getMenuRecipes();
     } catch (error) {
       console.error('[inventoryService] Error fetching all recipes:', error);
-      throw new Error('Failed to fetch recipes');
+      throw new Error('فشل قراءة الوصفات');
     }
   },
 
@@ -94,7 +94,7 @@ export const inventoryService = {
    */
   async getMenuItemRecipe(menuItemId: string): Promise<RecipeIngredient[]> {
     try {
-      return await requireDesktopApi('Reading a recipe').getMenuItemRecipe(menuItemId);
+      return await requireDesktopApi('قراءة الوصفة').getMenuItemRecipe(menuItemId);
     } catch (error) {
       console.error('[inventoryService] Error fetching recipe for item:', menuItemId, error);
       return [];
@@ -106,10 +106,10 @@ export const inventoryService = {
    */
   async saveMenuRecipe(menuItemId: string, ingredients: RecipeIngredient[]): Promise<RecipeIngredient[]> {
     try {
-      return await requireDesktopApi('Saving a recipe').saveMenuRecipe(menuItemId, ingredients);
+      return await requireDesktopApi('حفظ الوصفة').saveMenuRecipe(menuItemId, ingredients);
     } catch (error) {
       console.error('[inventoryService] Error saving recipe for item:', menuItemId, error);
-      throw new Error('Failed to save item recipe');
+      throw new Error('فشل حفظ وصفة الصنف');
     }
   },
 
@@ -118,7 +118,7 @@ export const inventoryService = {
    */
   async getRecipeCost(menuItemId: string): Promise<number> {
     try {
-      return await requireDesktopApi('Reading a recipe cost').getRecipeCost(menuItemId);
+      return await requireDesktopApi('قراءة تكلفة الوصفة').getRecipeCost(menuItemId);
     } catch (error) {
       console.error('[inventoryService] Error getting recipe cost:', menuItemId, error);
       return 0;

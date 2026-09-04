@@ -115,6 +115,11 @@ function initDatabase() {
       paymentStatus TEXT NOT NULL DEFAULT 'Unpaid',
       paymentMethod TEXT,
       totalAmount REAL NOT NULL,
+      subtotal REAL,
+      taxRate REAL,
+      taxAmount REAL,
+      grandTotal REAL,
+      paidAmount REAL,
       createdAt TEXT NOT NULL,
       paidAt TEXT
     )
@@ -495,10 +500,15 @@ function initDatabase() {
   addColumnIfMissing(db, "ALTER TABLE menu_items ADD COLUMN created_at TEXT");
   addColumnIfMissing(db, "ALTER TABLE menu_items ADD COLUMN updated_at TEXT");
 
-  // --- Orders table: add sync columns (createdAt already exists) ---
+  // --- Orders table: add sync and payment snapshot columns ---
   addColumnIfMissing(db, "ALTER TABLE orders ADD COLUMN branch_id TEXT DEFAULT NULL");
   addColumnIfMissing(db, "ALTER TABLE orders ADD COLUMN is_synced INTEGER NOT NULL DEFAULT 0");
   addColumnIfMissing(db, "ALTER TABLE orders ADD COLUMN updated_at TEXT");
+  addColumnIfMissing(db, "ALTER TABLE orders ADD COLUMN subtotal REAL");
+  addColumnIfMissing(db, "ALTER TABLE orders ADD COLUMN taxRate REAL");
+  addColumnIfMissing(db, "ALTER TABLE orders ADD COLUMN taxAmount REAL");
+  addColumnIfMissing(db, "ALTER TABLE orders ADD COLUMN grandTotal REAL");
+  addColumnIfMissing(db, "ALTER TABLE orders ADD COLUMN paidAmount REAL");
 
   // --- Customers table: add sync columns (createdAt already exists) ---
   addColumnIfMissing(db, "ALTER TABLE customers ADD COLUMN branch_id TEXT DEFAULT NULL");
@@ -624,6 +634,20 @@ function initDatabase() {
       console.log('[database] Migration 0013 complete (retry tracking on ledger tables).');
     } catch (e) {
       console.error('[database] Migration 0013 failed and was NOT recorded; it will retry on next start:', e);
+    }
+  }
+
+  // ═══════════════════════════════════════════════════════════════════════════
+  // 0014: paidAmount on orders table. Ensures databases that applied 0012 before
+  // paidAmount was added receive the column.
+  // ═══════════════════════════════════════════════════════════════════════════
+  if (!isMigrationApplied('0014_orders_paid_amount')) {
+    try {
+      addColumnIfMissing(db, "ALTER TABLE orders ADD COLUMN paidAmount REAL");
+      markMigrationApplied('0014_orders_paid_amount');
+      console.log('[database] Migration 0014 complete (paidAmount on orders).');
+    } catch (e) {
+      console.error('[database] Migration 0014 failed and was NOT recorded; it will retry on next start:', e);
     }
   }
 

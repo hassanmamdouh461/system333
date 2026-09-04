@@ -49,10 +49,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (event, status) => callback(status);
     ipcRenderer.on('sync:status-update', listener);
     return () => ipcRenderer.removeListener('sync:status-update', listener);
-  },
-  
-  // Manager Dashboard cloud bypass APIs
-  getManagerSnapshot: () => ipcRenderer.invoke('db:get-manager-snapshot'),
-  getManagerOrders: () => ipcRenderer.invoke('db:get-manager-orders'),
-  getManagerCustomers: () => ipcRenderer.invoke('db:get-manager-customers')
+  }
 });

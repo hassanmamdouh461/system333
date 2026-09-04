@@ -47,57 +47,6 @@ export interface RecipeIngredient {
   quantity: number;
 }
 
-export interface ManagerOrderRecord {
-  $id: string;
-  $createdAt: string;
-  $updatedAt: string;
-  orderNumber?: string;
-  tableId?: string;
-  status?: string;
-  paymentStatus?: string;
-  total_amount: number;
-  subtotal: number | null;
-  taxRate: number | null;
-  taxAmount: number | null;
-  grandTotal: number | null;
-  paidAmount: number | null;
-  payment_method: string | null;
-  paidAt: string | null;
-  customerPhone: string | null;
-  pointsEarned: number | null;
-  pointsRedeemed: number | null;
-  /** Stringified JSON array of order items. */
-  items: string;
-  branch_id: string;
-  deleted_at?: string | null;
-}
-
-export interface ManagerCustomerRecord {
-  $id: string;
-  $createdAt: string;
-  $updatedAt: string;
-  name: string;
-  phone: string;
-  points: number;
-  branchId: string;
-}
-
-export interface ManagerInventoryRecord {
-  $id: string;
-  name: string;
-  unit: string;
-  stock: number;
-  minStock: number;
-  costPerUnit: number;
-  branch_id: string;
-}
-
-export interface ManagerSnapshotRecord {
-  orders: ManagerOrderRecord[];
-  customers: ManagerCustomerRecord[];
-  inventory: ManagerInventoryRecord[];
-}
-
 declare global {
   interface Window {
     /** Absent in the web build; every caller must guard before use. */
@@ -155,10 +104,6 @@ declare global {
         pendingCount: number;
         lastError: string | null;
       }) => void) => () => void;
-      
-      getManagerSnapshot: () => Promise<ManagerSnapshotRecord>;
-      getManagerOrders: () => Promise<ManagerOrderRecord[]>;
-      getManagerCustomers: () => Promise<ManagerCustomerRecord[]>;
 
       getDailyReportStats: () => Promise<{
         orderCount: number;

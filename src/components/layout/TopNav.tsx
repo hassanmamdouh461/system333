@@ -1,135 +1,166 @@
+import { useState, useEffect } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import { 
   ClipboardList, 
   CreditCard, 
   UtensilsCrossed, 
-  Users, 
   BarChart3, 
   Settings, 
   Coffee,
-  Building2,
   Package,
   LogOut,
-  Languages
+  Clock,
+  User
 } from 'lucide-react';
 import { useAuth } from '../../context/AuthContext';
 import { useLanguage } from '../../context/LanguageContext';
-import { clsx } from 'clsx';
+import { motion } from 'framer-motion';
+import { playKeypadClick } from '../../utils/soundEffects';
 
 export function TopNav() {
   const { user, logout } = useAuth();
-  const { t, isRtl, language, toggleLanguage } = useLanguage();
+  const { t, isRtl } = useLanguage();
   const navigate = useNavigate();
+
+  // Live Digital Clock
+  const [currentTime, setCurrentTime] = useState(new Date());
+  const [isOnline, setIsOnline] = useState(navigator.onLine);
+
+  useEffect(() => {
+    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    const handleOnline = () => setIsOnline(true);
+    const handleOffline = () => setIsOnline(false);
+
+    window.addEventListener('online', handleOnline);
+    window.addEventListener('offline', handleOffline);
+
+    return () => {
+      clearInterval(timer);
+      window.removeEventListener('online', handleOnline);
+      window.removeEventListener('offline', handleOffline);
+    };
+  }, []);
 
   const handleLogout = () => {
     logout();
     navigate('/login');
   };
 
-  // Build items based on role (excluding Dashboard for branch accounts)
-  const navItems = user?.role === 'manager' 
-    ? [
-        { icon: Building2, label: language === 'ar' ? 'لوحة المدير' : 'Manager Dashboard', to: '/manager-dashboard' },
-        { icon: Settings, label: t('Settings'), to: '/settings' },
-      ]
-    : [
-        { icon: ClipboardList, label: t('Cashier Board'), to: '/orders' },
-        { icon: CreditCard, label: t('Payment & Invoice'), to: '/payment' },
-        { icon: UtensilsCrossed, label: t('Menu'), to: '/menu' },
-        { icon: Users, label: t('Customers'), to: '/customers' },
-        { icon: Package, label: t('Inventory'), to: '/inventory' },
-        { icon: BarChart3, label: t('Reports'), to: '/reports' },
-        { icon: Settings, label: t('Settings'), to: '/settings' },
-      ];
+  const navItems = [
+    { icon: ClipboardList, label: t('Cashier Board'), to: '/orders' },
+    { icon: CreditCard, label: t('Payment & Invoice'), to: '/payment' },
+    { icon: UtensilsCrossed, label: t('Menu'), to: '/menu' },
+    { icon: Package, label: t('Inventory'), to: '/inventory' },
+    { icon: BarChart3, label: t('Reports'), to: '/reports' },
+    { icon: Settings, label: t('Settings'), to: '/settings' },
+  ];
+
+  const branchNames: Record<string, string> = {
+    branch_1: 'فرع 1 (المعادي)',
+    branch_2: 'فرع 2 (مصر الجديدة)',
+    branch_3: 'فرع 3 (الزمالك)',
+  };
+
+  const currentBranchLabel = (user?.id && branchNames[user.id]) || user?.name || 'الفرع الرئيسي';
 
   return (
-    <header className="hidden md:block w-full bg-white border-b border-gray-200 shadow-sm relative z-30">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16">
+    <header className="hidden md:block w-full bg-[#18100B] border-b border-caramel/20 shadow-sm relative z-30 font-cairo" dir="rtl">
+      <div className="w-full px-3 sm:px-4">
+        <div className="flex items-center justify-between h-10">
           
-          {/* Brand/Logo */}
-          <div className="flex items-center gap-3 shrink-0">
-            <div className="bg-gradient-to-br from-mocha-600 to-coffee-dark p-2 rounded-lg shadow-md shadow-mocha-500/10">
-              <Coffee className="w-5 h-5 text-white" />
+          {/* Brand & Branch Indicator */}
+          <div className="flex items-center gap-2 shrink-0">
+            <div className="relative bg-gradient-to-br from-caramel via-mocha-600 to-[#2D1F17] p-1.5 rounded-lg shadow-sm border border-caramel/30">
+              <Coffee className="w-3.5 h-3.5 text-white" />
             </div>
-            <div>
-              <h1 className="text-gray-900 font-black text-base leading-none">
-                Brew<span className="text-caramel">Master</span>
+            <div className="flex items-center gap-1.5">
+              <h1 className="text-white font-black text-xs leading-none tracking-tight font-sans">
+                Engaz <span className="text-caramel font-bold">POS</span>
               </h1>
-              <p className="text-gray-400 text-[10px] font-bold">Coffee POS</p>
+              <span className="text-[9px] px-1.5 py-0.5 rounded bg-caramel/15 text-caramel border border-caramel/30 font-semibold leading-none">
+                {currentBranchLabel}
+              </span>
             </div>
           </div>
 
-          {/* Navigation Items in center */}
-          <div className="flex items-center gap-1.5 bg-gray-50/80 backdrop-blur-sm p-1 rounded-xl border border-gray-200/50 shadow-sm">
+          {/* Navigation Items with Animated Active Pill */}
+          <nav className="flex items-center gap-0.5 bg-[#100B07] p-0.5 rounded-lg border border-white/5 shadow-inner">
             {navItems.map((item) => {
               const Icon = item.icon;
               return (
                 <NavLink
                   key={item.to}
                   to={item.to}
+                  onClick={() => playKeypadClick()}
                   className={({ isActive }) =>
-                    clsx(
-                      "flex items-center gap-2 px-4 py-2 rounded-lg text-xs md:text-sm font-extrabold transition-all duration-200",
+                    `relative flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-bold transition-all duration-200 ${
                       isActive
-                        ? "bg-gray-900 text-white shadow-sm"
-                        : "text-gray-500 hover:text-gray-700 hover:bg-gray-200/50"
-                    )
+                        ? 'text-white'
+                        : 'text-mocha-300 hover:text-white hover:bg-white/5'
+                    }`
                   }
                 >
-                  <Icon size={16} />
-                  <span>{item.label}</span>
+                  {({ isActive }) => (
+                    <>
+                      {isActive && (
+                        <motion.div
+                          layoutId="activeTopNavPill"
+                          className="absolute inset-0 bg-gradient-to-r from-caramel via-caramel-dark to-mocha-600 rounded-md shadow-sm"
+                          transition={{ type: 'spring', damping: 24, stiffness: 300 }}
+                        />
+                      )}
+                      <Icon size={13} className="relative z-10" />
+                      <span className="relative z-10">{item.label}</span>
+                    </>
+                  )}
                 </NavLink>
               );
             })}
-          </div>
+          </nav>
 
-          {/* Right Action Section (User Profile & Logout) */}
-          <div className="flex items-center gap-3 shrink-0">
+          {/* Right Action Section: Live Clock, Sync Heartbeat, User & Logout */}
+          <div className="flex items-center gap-2 shrink-0">
 
-            {/* User Profile Mini Card */}
-            <div className="flex items-center gap-2 px-3 py-1.5 rounded-lg bg-gray-50 border border-gray-200/40">
-              <img 
-                src="https://api.dicebear.com/7.x/avataaars/svg?seed=Felix" 
-                alt="User" 
-                className="w-7 h-7 rounded-full bg-gray-200"
-              />
-              <div className={clsx("text-left", isRtl && "text-right")}>
-                <p className="text-xs font-bold text-gray-800 leading-tight">
-                  {language === 'ar' && user?.id === 'branch_1' ? 'فرع المعادي' :
-                   language === 'ar' && user?.id === 'branch_2' ? 'فرع مصر الجديدة' :
-                   language === 'ar' && user?.id === 'branch_3' ? 'فرع الزمالك' :
-                   language === 'ar' && user?.role === 'manager' ? 'الإدارة العامة' :
-                   user?.name ?? 'Admin User'}
-                </p>
-                <p className="text-[10px] text-gray-400 font-semibold">
-                  {user?.role === 'manager' ? (language === 'ar' ? 'المدير' : 'Manager') : (language === 'ar' ? 'الفرع' : 'Branch')}
-                </p>
+            {/* Live Clock & Connection Status */}
+            <div className="flex items-center gap-2 px-2 py-0.5 rounded-lg bg-[#100B07] border border-white/5 font-mono text-[11px] text-mocha-300">
+              <div className="flex items-center gap-1 text-mocha-200" title="الوقت الحالي">
+                <Clock size={11} className="text-caramel" />
+                <span className="font-bold tabular-nums">
+                  {currentTime.toLocaleTimeString(isRtl ? 'ar-EG' : 'en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </span>
+              </div>
+
+              <div className="h-2.5 w-px bg-white/10" />
+
+              {/* Online/Offline Status Indicator */}
+              <div 
+                className="flex items-center gap-1 text-[10px]" 
+                title={isOnline ? "متصل بالسحابة (مزامنة مباشرة)" : "وضع غير متصل (حفظ محلي آمن)"}
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${isOnline ? 'bg-emerald-400 animate-pulse shadow-sm shadow-emerald-400' : 'bg-amber-500'}`} />
+                <span className="font-sans font-semibold text-mocha-400">
+                  {isOnline ? 'سحابي' : 'أوفلاين'}
+                </span>
               </div>
             </div>
 
-            {/* Language toggle. The label names the language it switches *to*, which is the
-                convention users expect from a single-button switch. */}
-            <button
-              onClick={toggleLanguage}
-              className="px-2.5 py-2 rounded-lg text-xs font-extrabold text-gray-500 hover:text-gray-800 hover:bg-gray-100 border border-gray-200/60 transition-all active:scale-95"
-              aria-label={language === 'ar' ? 'Switch to English' : 'التبديل إلى العربية'}
-              title={language === 'ar' ? 'Switch to English' : 'التبديل إلى العربية'}
-            >
-              <span className="flex items-center gap-1.5">
-                <Languages size={16} aria-hidden="true" />
-                {language === 'ar' ? 'EN' : 'ع'}
+            {/* User Role Mini Card */}
+            <div className="flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-[#100B07] border border-white/5">
+              <div className="w-5 h-5 rounded bg-gradient-to-br from-caramel to-mocha-700 flex items-center justify-center text-white shadow-inner">
+                <User size={11} />
+              </div>
+              <span className="text-[10px] text-caramel font-bold leading-none">
+                {user?.role === 'admin' ? 'مسؤول' : 'كاشير'}
               </span>
-            </button>
+            </div>
 
             {/* Logout Button */}
             <button
               onClick={handleLogout}
-              className="p-2 rounded-lg text-gray-400 hover:text-red-600 hover:bg-red-50 border border-transparent hover:border-red-100 transition-all active:scale-95"
-              aria-label={t('Log Out')}
-              title={t('Log Out')}
+              className="p-1.5 rounded-lg text-mocha-400 hover:text-red-400 hover:bg-red-500/10 border border-transparent hover:border-red-500/20 transition-all active:scale-95"
+              title="تسجيل الخروج"
             >
-              <LogOut size={16} aria-hidden="true" />
+              <LogOut size={13} />
             </button>
           </div>
 

@@ -6,6 +6,7 @@ import { POS_CATEGORIES } from '../../../utils/posCategories';
 
 interface ProductGridProps {
   items: MenuItem[];
+  categories?: string[];
   selectedCategory: string;
   searchQuery: string;
   successMessage: string | null;
@@ -16,6 +17,7 @@ interface ProductGridProps {
 
 export function ProductGrid({
   items,
+  categories = POS_CATEGORIES as unknown as string[],
   selectedCategory,
   searchQuery,
   successMessage,
@@ -23,13 +25,13 @@ export function ProductGrid({
   onSearchChange,
   onAddItem,
 }: ProductGridProps) {
-  const { t, isRtl } = useLanguage();
+  const { t } = useLanguage();
 
   return (
     <div className="flex-1 lg:h-full bg-white p-4 rounded-2xl border border-gray-200/80 shadow-sm flex flex-col overflow-hidden">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-gray-100 shrink-0">
         <div className="flex gap-2 overflow-x-auto hide-scrollbar">
-          {POS_CATEGORIES.map(cat => (
+          {categories.map(cat => (
             <button
               key={cat}
               onClick={() => onSelectCategory(cat)}
@@ -46,19 +48,19 @@ export function ProductGrid({
         </div>
 
         <div className="relative w-full sm:w-64">
-          <Search className={`absolute top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 ${isRtl ? 'right-3' : 'left-3'}`} />
+          <Search className={"absolute top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 right-3"} />
           <input
             aria-label={t('Search items...')}
             type="text"
             placeholder={t('Search items...')}
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
-            className={`w-full py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-mocha-500 focus:border-transparent text-sm font-semibold ${isRtl ? 'pr-9 pl-4' : 'pl-9 pr-4'}`}
+            className={"w-full py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-mocha-500 focus:border-transparent text-sm font-semibold pr-9 pl-4"}
           />
           {searchQuery && (
             <button
               onClick={() => onSearchChange('')}
-              className={`absolute top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 ${isRtl ? 'left-3' : 'right-3'}`}
+              className={"absolute top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 left-3"}
             >
               <XCircle size={16} />
             </button>
@@ -83,17 +85,17 @@ export function ProductGrid({
               <button
                 key={item.id}
                 onClick={() => onAddItem(item)}
-                className="bg-gray-50 hover:bg-gray-100 active:scale-95 transition-all p-2.5 rounded-xl border border-gray-200/60 hover:border-gray-300 shadow-sm flex flex-col justify-between items-start text-start h-24 sm:h-26 relative overflow-hidden group"
+                className="bg-gray-50 hover:bg-gray-100 active:scale-95 transition-all p-2.5 rounded-xl border border-gray-200/60 hover:border-gray-300 shadow-sm flex flex-col justify-between items-start text-start h-28 relative overflow-hidden group"
               >
-                <span className="font-bold text-sm sm:text-base md:text-[16px] text-gray-900 group-hover:text-mocha-700 font-sans leading-snug pt-0.5">
+                <span className="w-full font-bold text-xs sm:text-sm text-gray-900 group-hover:text-mocha-700 font-sans leading-normal line-clamp-2">
                   {t(item.name)}
                 </span>
-                <div className="w-full flex justify-between items-center z-10 mt-1">
-                  <span className="font-mono text-base sm:text-lg md:text-xl font-black text-mocha-800">
+                <div className="w-full flex justify-between items-center z-10 mt-auto pt-1 gap-1">
+                  <span className="font-mono text-xs sm:text-sm md:text-base font-black text-mocha-800 tabular-nums whitespace-nowrap">
                     {item.price.toFixed(2)}{' '}
-                    <span className="text-[10px] sm:text-xs text-gray-400 font-sans font-bold">{isRtl ? 'ج.م' : 'EGP'}</span>
+                    <span className="text-[10px] sm:text-xs text-gray-400 font-sans font-bold">ج.م</span>
                   </span>
-                  <span className="bg-mocha-50 text-mocha-600 text-sm sm:text-base px-2.5 py-0.5 rounded-lg border border-mocha-200 group-hover:bg-mocha-600 group-hover:text-white transition-colors font-black">
+                  <span className="w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center rounded-lg border border-mocha-200 bg-mocha-50 text-mocha-600 group-hover:bg-mocha-600 group-hover:text-white transition-colors font-black text-sm shrink-0">
                     +
                   </span>
                 </div>

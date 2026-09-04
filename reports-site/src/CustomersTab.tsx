@@ -16,7 +16,7 @@ export function CustomersTab({ customers, orders, newCustomerCount }: CustomersT
   const spendByPhone = useMemo(() => {
     const totals = new Map<string, { spend: number; orders: number }>();
     for (const order of orders) {
-      const phone = String((order as unknown as { customerPhone?: string }).customerPhone || '');
+      const phone = order.customerPhone || '';
       if (!phone) continue;
       const existing = totals.get(phone);
       const revenue = toNum(order.paidAmount ?? order.grandTotal ?? order.totalAmount);

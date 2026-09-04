@@ -4,21 +4,19 @@ import {
   TrendingUp, DollarSign, ShoppingBag,
   Calendar, Download,
   CheckCircle2, Utensils,
-  UserCheck, Award, Coins, TrendingDown, AlertTriangle, Scale
+  TrendingDown, AlertTriangle, Scale, Coins
 } from 'lucide-react';
 import { useAnalytics, AnalyticsPeriod } from '../hooks/useAnalytics';
 import { useReportSupportData } from '../hooks/useReportSupportData';
 import { StatCard } from '../components/ui/StatCard';
 import { LoadingScreen } from '../components/ui/LoadingScreen';
 import { useLanguage } from '../context/LanguageContext';
-import { getTaxRate } from '../utils/settingsConfig';
-import { orderRevenue } from '../utils/orderTotals';
+import { orderRevenue, orderTotals, roundMoney } from '../utils/orderTotals';
 import { computeItemYields, isLowStock, summarizeInventory } from '../utils/inventoryMath';
 import {
   computeCogs,
   computeNetProfit,
   computeRecipeCosts,
-  summarizeCustomers,
   summarizeInvoices,
   summarizeOrderModes,
   summarizePaymentMethods,
@@ -33,7 +31,7 @@ function periodLabel(p: AnalyticsPeriod, t: (k: string) => string) {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 export default function Reports() {
-  const { t, isRtl, language } = useLanguage();
+  const { t } = useLanguage();
   const [dateRange, setDateRange] = useState<AnalyticsPeriod>(() => {
     const saved = localStorage.getItem('reports_date_range');
     return (saved as AnalyticsPeriod) || 'This Week';
@@ -45,7 +43,6 @@ export default function Reports() {
   };
 
   const {
-    customers,
     inventory,
     recipes,
     menuItems,
@@ -63,12 +60,9 @@ export default function Reports() {
     [inventory, itemYields]
   );
 
-  const customerStats = useMemo(() => summarizeCustomers(customers), [customers]);
-
   // Single hook call — all computation happens inside useAnalytics.
   // When dateRange = 'Today', every stat equals Dashboard's values exactly.
   const analytics = useAnalytics(dateRange);
-  const taxRate = getTaxRate();
 
   const recipeCosts = useMemo(
     () => computeRecipeCosts(recipes, inventory),
@@ -80,9 +74,14 @@ export default function Reports() {
     [analytics.completedPeriod, recipeCosts]
   );
 
+  const periodTax = useMemo(
+    () => roundMoney(analytics.completedPeriod.reduce((sum, o) => sum + orderTotals(o).taxAmount, 0)),
+    [analytics.completedPeriod]
+  );
+
   const netProfit = useMemo(
-    () => computeNetProfit(analytics.totalRevenue, taxRate, cogs),
-    [analytics.totalRevenue, taxRate, cogs]
+    () => computeNetProfit(analytics.totalRevenue, periodTax, cogs),
+    [analytics.totalRevenue, periodTax, cogs]
   );
 
   const lowStockItems = useMemo(
@@ -106,8 +105,9 @@ export default function Reports() {
   );
 
   // Loading and error states render only after every hook has run: returning early above
-  // orderModeStats changed the hook call order between renders.
-  if (analytics.loading || auxLoading) return <LoadingScreen />;
+  if (analytics.loading || auxLoading) {
+    return <LoadingScreen message="جاري تحميل التقارير والإحصائيات..." subMessage="يتم تجميع المبيعات وحساب التكاليف..." />;
+  }
   if (analytics.error || auxError) {
     const shown = analytics.error ?? auxError;
     return (
@@ -125,7 +125,7 @@ export default function Reports() {
   const maxSale      = Math.max(...chartData.map(d => d.value), 1);
   const maxItemCount = Math.max(...topItems.map(i => i.count), 1);
 
-  const currencyStr = language === 'ar' ? 'ج.م' : 'EGP';
+  const currencyStr = 'ج.م';
 
   const statCards = [
     {
@@ -169,12 +169,12 @@ export default function Reports() {
         </div>
         <div className="flex gap-2 md:gap-3">
           <div className="relative flex-1 md:flex-initial">
-            <Calendar className={`absolute top-1/2 -translate-y-1/2 text-gray-400 w-3.5 h-3.5 md:w-4 md:h-4 ${isRtl ? 'right-3' : 'left-3'}`} />
+            <Calendar className={"absolute top-1/2 -translate-y-1/2 text-gray-400 w-3.5 h-3.5 md:w-4 md:h-4 right-3"} />
             <select
               aria-label={t('Reports & Analytics')}
               value={dateRange}
               onChange={e => handleDateRangeChange(e.target.value as AnalyticsPeriod)}
-              className={`w-full pr-3 md:pr-4 py-2 bg-white border border-gray-200 rounded-lg text-xs md:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-caramel ${isRtl ? 'pr-8 md:pr-9 pl-3 md:pl-4' : 'pl-8 md:pl-9'}`}
+              className={"w-full py-2 bg-white border border-gray-200 rounded-lg text-xs md:text-sm font-medium focus:outline-none focus:ring-2 focus:ring-caramel pr-8 md:pr-9 pl-3 md:pl-4"}
             >
               <option value="Today">{t('Today')}</option>
               <option value="This Week">{t('This Week')}</option>
@@ -423,7 +423,7 @@ export default function Reports() {
                   />
                 </div>
                 <p className="text-[10px] text-gray-400 text-start">
-                  {t('Total Paid')}: {invoiceStats.paidAmount.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}
+                  {t('Total Paid')}: {invoiceStats.paidAmount.toFixed(2)} ج.م
                 </p>
               </div>
 
@@ -448,7 +448,7 @@ export default function Reports() {
                   />
                 </div>
                 <p className="text-[10px] text-gray-400 text-start">
-                  {t('Total Open')}: {invoiceStats.openAmount.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}
+                  {t('Total Open')}: {invoiceStats.openAmount.toFixed(2)} ج.م
                 </p>
               </div>
 
@@ -483,7 +483,7 @@ export default function Reports() {
                   />
                 </div>
                 <p className="text-[10px] text-gray-400 text-start">
-                  {t('Total Cash')}: {paymentMethodStats.cashAmount.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}
+                  {t('Total Cash')}: {paymentMethodStats.cashAmount.toFixed(2)} ج.م
                 </p>
               </div>
 
@@ -508,7 +508,7 @@ export default function Reports() {
                   />
                 </div>
                 <p className="text-[10px] text-gray-400 text-start">
-                  {t('Total Card')}: {paymentMethodStats.cardAmount.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}
+                  {t('Total Card')}: {paymentMethodStats.cardAmount.toFixed(2)} ج.م
                 </p>
               </div>
             </div>
@@ -547,7 +547,7 @@ export default function Reports() {
                       </div>
                     </div>
                     <div className="text-end shrink-0">
-                      <p className="text-xs md:text-sm font-bold text-gray-900">{orderRevenue(order).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</p>
+                      <p className="text-xs md:text-sm font-bold text-gray-900">{orderRevenue(order).toFixed(2)} ج.م</p>
                       <p className="text-[11px] text-gray-400">{timeStr}</p>
                     </div>
                   </motion.div>
@@ -557,35 +557,6 @@ export default function Reports() {
           )}
         </div>
       </div>
-
-      {/* ── Loyalty & Customers Overview ── */}
-      <div className="bg-white p-3 md:p-6 rounded-xl md:rounded-2xl shadow-sm border border-gray-100/50 space-y-3 md:space-y-4 mt-6 md:mt-8">
-        <h2 className="text-sm md:text-lg font-bold text-gray-900 leading-none">{t('Loyalty & Customers')}</h2>
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-2 md:gap-6">
-          <StatCard
-            label={t('Total Registered')}
-            value={customerStats.totalCount.toLocaleString()}
-            icon={UserCheck}
-            trend={t('Loyalty members')}
-            color="blue"
-          />
-          <StatCard
-            label={t('Total Points Distributed')}
-            value={customerStats.totalPoints.toLocaleString()}
-            icon={Award}
-            trend={t('Loyalty points')}
-            color="orange"
-          />
-          <StatCard
-            label={t('Points Value')}
-            value={`${customerStats.totalValue.toFixed(2)} ${language === 'ar' ? 'ج.م' : 'EGP'}`}
-            icon={Coins}
-            trend={t('Redemption value')}
-            color="green"
-          />
-        </div>
-      </div>
-
     </div>
   );
 }

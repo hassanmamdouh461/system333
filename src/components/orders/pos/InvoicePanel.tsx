@@ -1,10 +1,11 @@
+import { useState } from 'react';
 import { clsx } from 'clsx';
 import { Coffee, Trash2, Plus, Minus, Check } from 'lucide-react';
 import { useLanguage } from '../../../context/LanguageContext';
 import { OrderItem } from '../../../types/order';
 import { OrderMode } from '../../../hooks/usePosDraft';
-
-const QUICK_TABLES = ['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'];
+import { getTables, removeTable } from '../../../utils/tablesConfig';
+import { TablesConfigModal } from '../../settings/TablesConfigModal';
 
 interface InvoicePanelProps {
   items: OrderItem[];
@@ -35,8 +36,11 @@ export function InvoicePanel({
   onSave,
   onReset,
 }: InvoicePanelProps) {
-  const { t, isRtl } = useLanguage();
-  const currency = isRtl ? 'ج.م' : 'EGP';
+  const { t } = useLanguage();
+  const currency = 'ج.م';
+  const [tables, setTablesList] = useState<string[]>(() => getTables());
+  const [isEditTablesMode, setIsEditTablesMode] = useState(false);
+  const [isTablesModalOpen, setIsTablesModalOpen] = useState(false);
 
   return (
     <div className="w-full lg:w-[23%] lg:h-full bg-white p-3 md:p-3.5 rounded-2xl border border-gray-200/80 shadow-sm flex flex-col justify-between overflow-hidden">
@@ -62,7 +66,44 @@ export function InvoicePanel({
 
         {orderMode === 'Dine-in' && (
           <div className="mt-3 shrink-0 space-y-2 border-b border-gray-100 pb-3">
-            <label className="text-sm text-gray-600 font-extrabold">{t('Table')}</label>
+            <div className="flex items-center justify-between">
+              <label className="text-sm text-gray-600 font-extrabold">{t('Table')}</label>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setIsEditTablesMode(!isEditTablesMode)}
+                  className={clsx(
+                    "text-xs font-bold px-2 py-1 rounded-lg flex items-center gap-1 transition-all",
+                    isEditTablesMode
+                      ? "bg-red-600 text-white shadow-sm"
+                      : "text-gray-500 bg-gray-100 hover:bg-gray-200"
+                  )}
+                  title={isEditTablesMode ? t('Done') : t('Delete / Edit Tables')}
+                >
+                  {isEditTablesMode ? (
+                    <>
+                      <Check size={13} />
+                      <span>{t('Done')}</span>
+                    </>
+                  ) : (
+                    <>
+                      <Trash2 size={13} />
+                      <span>{t('Delete')}</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setIsTablesModalOpen(true)}
+                  className="text-xs font-bold px-2 py-1 rounded-lg bg-mocha-50 text-mocha-700 hover:bg-mocha-100 flex items-center gap-1 transition-all"
+                  title={t('Manage Tables')}
+                >
+                  <Plus size={13} />
+                  <span>{t('Add Table')}</span>
+                </button>
+              </div>
+            </div>
+
             <input
               aria-label={t('Enter Table Number')}
               type="text"
@@ -71,21 +112,55 @@ export function InvoicePanel({
               placeholder={t('Enter Table Number')}
               className="w-full px-4 py-2.5 bg-gray-50 border border-gray-300 rounded-xl font-extrabold text-base md:text-lg focus:outline-none focus:border-mocha-600 focus:ring-2 focus:ring-mocha-100"
             />
-            <div className="flex flex-wrap gap-1.5">
-              {QUICK_TABLES.map(num => (
+
+            {isEditTablesMode && (
+              <p className="text-xs text-red-600 font-bold bg-red-50 p-1.5 rounded-lg border border-red-100 text-center animate-fade-in">
+                {t('Click on any table to delete it')}
+              </p>
+            )}
+
+            <div className="flex flex-wrap gap-1.5 items-center">
+              {tables.map(tbl => (
                 <button
-                  key={num}
-                  onClick={() => onTableIdChange(num)}
+                  key={tbl}
+                  type="button"
+                  onClick={() => {
+                    if (isEditTablesMode) {
+                      const updated = removeTable(tbl);
+                      setTablesList(updated);
+                      if (tableId === tbl) onTableIdChange('');
+                    } else {
+                      onTableIdChange(tbl);
+                    }
+                  }}
                   className={clsx(
                     'px-3.5 py-2 text-sm md:text-base font-extrabold rounded-xl border transition-all shadow-sm',
-                    tableId === num
-                      ? 'bg-mocha-600 text-white border-mocha-700'
-                      : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100'
+                    isEditTablesMode
+                      ? 'bg-red-50 text-red-600 border-red-200 hover:bg-red-600 hover:text-white'
+                      : tableId === tbl
+                        ? 'bg-mocha-600 text-white border-mocha-700'
+                        : 'bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100'
                   )}
                 >
-                  T{num}
+                  {isEditTablesMode ? (
+                    <span className="flex items-center gap-1">
+                      <span>{tbl.startsWith('T') || tbl.startsWith('ط') ? tbl : `T${tbl}`}</span>
+                      <Trash2 size={12} className="shrink-0" />
+                    </span>
+                  ) : (
+                    tbl.startsWith('T') || tbl.startsWith('ط') ? tbl : `T${tbl}`
+                  )}
                 </button>
               ))}
+
+              <button
+                type="button"
+                onClick={() => setIsTablesModalOpen(true)}
+                className="px-3 py-2 text-sm font-extrabold rounded-xl border-2 border-dashed border-gray-300 text-gray-400 hover:text-mocha-600 hover:border-mocha-400 hover:bg-mocha-50/50 flex items-center justify-center transition-all"
+                title={t('Add Table')}
+              >
+                <Plus size={16} />
+              </button>
             </div>
           </div>
         )}
@@ -160,7 +235,7 @@ export function InvoicePanel({
           <div className="bg-gray-50 p-2 rounded-xl border border-gray-200 flex flex-col justify-between shadow-sm">
             <span className="text-gray-500 text-[10px] md:text-xs font-extrabold">{t('Invoice Date')}</span>
             <span className="font-extrabold text-gray-900 mt-1 text-xs md:text-sm">
-              {new Date().toLocaleDateString(isRtl ? 'ar-EG' : 'en-US')}
+              {new Date().toLocaleDateString('ar-EG')}
             </span>
           </div>
 
@@ -170,7 +245,7 @@ export function InvoicePanel({
               {grandTotal.toFixed(2)} <span className="text-[9px] font-sans font-bold">{currency}</span>
             </span>
             <span className="absolute bottom-0.5 text-[6px] text-amber-600/60 font-sans">
-              {isRtl ? 'شامل الضريبة' : 'incl. tax'}
+              شامل الضريبة
             </span>
           </div>
         </div>
@@ -194,6 +269,12 @@ export function InvoicePanel({
           </div>
         )}
       </div>
+
+      <TablesConfigModal
+        isOpen={isTablesModalOpen}
+        onClose={() => setIsTablesModalOpen(false)}
+        onTablesChange={(newTables) => setTablesList(newTables)}
+      />
     </div>
   );
 }

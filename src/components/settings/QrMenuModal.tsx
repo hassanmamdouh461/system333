@@ -26,7 +26,20 @@ function QrMenuModalBody({ onClose }: { onClose: () => void }) {
   const { panelRef, titleId, dialogProps } = useDialog<HTMLDivElement>({ onClose });
   const [copied, setCopied] = useState(false);
   
-  const publicMenuUrl = 'https://tyt-seven.vercel.app/#/public-menu';
+  const [domainInput, setDomainInput] = useState<string>(() => {
+    return localStorage.getItem('engaz_menu_domain') || (import.meta.env.VITE_PUBLIC_MENU_URL as string) || 'https://menu.engaz.tech';
+  });
+
+  const cleanDomain = domainInput.trim().replace(/\/+$/, '');
+  const publicMenuUrl = cleanDomain.includes('#/public-menu') 
+    ? cleanDomain 
+    : `${cleanDomain}/#/public-menu`;
+
+  const handleDomainChange = (val: string) => {
+    setDomainInput(val);
+    localStorage.setItem('engaz_menu_domain', val);
+  };
+
   const qrCodeImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=${encodeURIComponent(publicMenuUrl)}`;
 
   const handleCopyLink = async () => {
@@ -64,7 +77,7 @@ function QrMenuModalBody({ onClose }: { onClose: () => void }) {
     printWindow.document.write(`
       <html>
         <head>
-          <title>Print Menu QR Code - Engaz</title>
+          <title>طباعة رمز المنيو - Engaz</title>
           <style>
             body {
               font-family: system-ui, -apple-system, sans-serif;
@@ -133,24 +146,18 @@ function QrMenuModalBody({ onClose }: { onClose: () => void }) {
               margin-bottom: 6px;
               font-size: 19px;
             }
-            .english {
-              font-weight: 500;
-              font-size: 15px;
-              color: #8B6843;
-            }
           </style>
         </head>
         <body>
           <div class="container">
             <div class="logo">Engaz</div>
-            <div class="tagline">✦ Premium Coffee & Treats ✦</div>
+            <div class="tagline">✦ Premium Coffee &amp; Treats ✦</div>
             <div class="qr-wrapper">
               <img class="qr-img" src="${qrCodeImageUrl}" alt="QR Code" />
             </div>
             <div class="divider"></div>
             <div class="instructions">
               <div class="arabic">امسح الرمز لتصفح المنيو والأسعار</div>
-              <div class="english">Scan QR Code to view menu & availability</div>
             </div>
           </div>
           <script>
@@ -225,13 +232,28 @@ function QrMenuModalBody({ onClose }: { onClose: () => void }) {
           </div>
         </div>
 
+        {/* Cloudflare Domain / Subdomain Input */}
+        <div className="w-full mb-3 text-right">
+          <label className="text-[11px] font-bold text-gray-700 block mb-1">
+            رابط أو ساب دومين المنيو (Cloudflare):
+          </label>
+          <input
+            type="text"
+            value={domainInput}
+            onChange={(e) => handleDomainChange(e.target.value)}
+            placeholder="https://menu.engaz.tech"
+            dir="ltr"
+            className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-1 focus:ring-caramel"
+          />
+        </div>
+
         {/* URL Display */}
         <div className="w-full flex items-center bg-gray-50 border border-gray-200 rounded-xl p-2.5 mb-6 text-xs text-gray-600">
           <span className="flex-1 truncate me-2 font-mono select-all text-start">{publicMenuUrl}</span>
           <button
             onClick={handleCopyLink}
             className="shrink-0 p-2 rounded-lg bg-white border border-gray-200 text-gray-500 hover:text-mocha-700 hover:bg-mocha-50 transition-colors shadow-sm flex items-center justify-center"
-            title="Copy Link"
+            title="نسخ الرابط"
           >
             {copied ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}
           </button>

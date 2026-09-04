@@ -289,7 +289,7 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
                     </div>
 
                     <div>
-                      <label htmlFor="menu-item-category" className="block text-sm font-medium text-gray-700 mb-1">{t('Category') || 'قسم المنيو'}</label>
+                      <label htmlFor="menu-item-category" className="block text-sm font-medium text-gray-700 mb-1">{t('Item Category (POS Bar)') || 'تصنيف الصنف (شريط الكاشير)'}</label>
                       <select
                         id="menu-item-category"
                         value={showNewCategoryInput ? 'CREATE_NEW' : formData.category}
@@ -304,7 +304,7 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
                     </div>
 
                     <div>
-                      <label htmlFor="menu-item-destination" className="block text-sm font-medium text-gray-700 mb-1">{t('Preparation Destination') || 'مكان التحضير (الكاشير)'}</label>
+                      <label htmlFor="menu-item-destination" className="block text-sm font-medium text-gray-700 mb-1">{t('Preparation Destination (Receipt Print)') || 'جهة التحضير (طباعة البون والفاتورة)'}</label>
                       <select
                         id="menu-item-destination"
                         value={preparation}
@@ -319,11 +319,11 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
 
                   {showNewCategoryInput && (
                     <div className="animate-fadeIn">
-                      <label htmlFor="menu-item-image" className="block text-sm font-medium text-gray-700 mb-1">
+                      <label htmlFor="menu-item-new-category" className="block text-sm font-medium text-gray-700 mb-1">
                         {t('New Category Name') || 'اسم القسم الجديد'}
                       </label>
                       <input
-                        id="menu-item-image"
+                        id="menu-item-new-category"
                         type="text"
                         required
                         placeholder={t('e.g. Tea, Desserts') || 'مثال: شاي، حلويات'}
@@ -407,12 +407,12 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
                   <div className="bg-mocha-50/50 rounded-xl p-3 border border-mocha-100 flex flex-col gap-1.5 text-xs text-mocha-900 mt-2">
                     <div className="flex justify-between items-center font-medium">
                       <span>{t('Recipe Cost')}:</span>
-                      <span className="font-bold text-gray-800">EGP {calculatedCost.toFixed(2)}</span>
+                      <span className="font-bold text-gray-800">{calculatedCost.toFixed(2)} ج.م</span>
                     </div>
                     <div className="flex justify-between items-center font-medium">
                       <span>{t('Potential Margin')}:</span>
                       <span className={`font-bold ${marginStats.profit >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                        EGP {marginStats.profit.toFixed(2)} ({marginStats.percentage.toFixed(0)}%)
+                        {marginStats.profit.toFixed(2)} ج.م ({marginStats.percentage.toFixed(0)}%)
                       </span>
                     </div>
                   </div>

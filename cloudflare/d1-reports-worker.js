@@ -28,6 +28,7 @@
 
 const ALLOWED_ORIGINS = [
   'https://reporting.engaz.tech',
+  'https://menu.engaz.tech',
 ];
 
 const MAX_BATCH = 200;
@@ -40,21 +41,21 @@ const MOVEMENT_LIMIT = 5000;
 /** Viewer sessions are short: the portal re-authenticates rather than holding a long token. */
 const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
 
-function corsHeaders(origin) {
-  const allowed = ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0];
+function corsHeaders(origin, isPublic = false) {
+  const allowed = isPublic ? '*' : (ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0]);
   return {
     'Access-Control-Allow-Origin': allowed,
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type, X-API-Key, Authorization',
     'Access-Control-Max-Age': '86400',
-    'Vary': 'Origin',
+    ...(isPublic ? {} : { 'Vary': 'Origin' }),
   };
 }
 
-function json(data, status = 200, origin = '*') {
+function json(data, status = 200, origin = '*', isPublic = false) {
   return new Response(JSON.stringify(data), {
     status,
-    headers: { 'Content-Type': 'application/json', ...corsHeaders(origin) },
+    headers: { 'Content-Type': 'application/json', ...corsHeaders(origin, isPublic) },
   });
 }
 
@@ -283,6 +284,17 @@ async function readSnapshot(db) {
   };
 }
 
+async function readPublicMenu(db) {
+  const stmt = db.prepare(
+    `SELECT id, name, description, price, category, image, available 
+     FROM menu_items 
+     WHERE deleted_at IS NULL AND (available = 1 OR available IS NULL) 
+     ORDER BY category, name LIMIT ?`
+  ).bind(READ_LIMIT);
+  const { results } = await stmt.all();
+  return { menuItems: results || [] };
+}
+
 async function runMigration(db) {
   const tryExec = async (label, sql) => {
     try {
@@ -370,6 +382,18 @@ export default {
       });
     }
 
+    if (url.pathname === '/read/public-menu' || url.pathname === '/public-menu') {
+      if (request.method !== 'GET' && request.method !== 'POST') {
+        return json({ success: false, error: 'Method not allowed' }, 405, origin, true);
+      }
+      try {
+        const data = await readPublicMenu(env.DB);
+        return json({ success: true, ...data }, 200, origin, true);
+      } catch (err) {
+        return json({ success: false, error: String(err.message || err) }, 500, origin, true);
+      }
+    }
+
     if (request.method !== 'POST') {
       return json({ success: false, error: 'Method not allowed' }, 405, origin);
     }
@@ -455,4 +479,4 @@ export default {
 };
 
 // Exported for the test suite; not part of the HTTP surface.
-export const __testing = { SYNC_TABLES, assertItems, MAX_BATCH, MOVEMENT_LIMIT, TOKEN_TTL_MS, LOGIN_MAX_ATTEMPTS, readSnapshot };
+export const __testing = { SYNC_TABLES, assertItems, MAX_BATCH, MOVEMENT_LIMIT, TOKEN_TTL_MS, LOGIN_MAX_ATTEMPTS, readSnapshot, readPublicMenu };

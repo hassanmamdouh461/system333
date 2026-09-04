@@ -1,8 +1,9 @@
 import { Order } from '../types/order';
 import { orderTotals, orderRevenue, roundMoney } from './orderTotals';
 import { filterItemsBySection } from './orderSection';
+import { getStoreConfig } from './settingsConfig';
 
-const CURRENCY = { ar: 'ج.م', en: 'EGP' } as const;
+const CURRENCY = 'ج.م';
 
 /**
  * Open a temporary window, write receipt content, trigger print, and close.
@@ -10,7 +11,7 @@ const CURRENCY = { ar: 'ج.م', en: 'EGP' } as const;
 function printHtml(htmlContent: string) {
   const printWindow = window.open('', '_blank');
   if (!printWindow) {
-    alert('Please allow popups to print tickets');
+    alert('يرجى السماح بالنوافذ المنبثقة لطباعة الفواتير');
     return;
   }
   printWindow.document.write(htmlContent);
@@ -18,15 +19,14 @@ function printHtml(htmlContent: string) {
 }
 
 /** Tables named 'Takeaway'/'Dine-in' are mode markers, not table numbers. */
-function formatTable(tableId: string, isRtl: boolean): string {
-  if (!isRtl) return tableId;
+function formatTable(tableId: string): string {
   if (tableId === 'Takeaway') return 'take away';
   if (tableId === 'Dine-in') return 'مطعم';
   return tableId;
 }
 
-function formatDate(createdAt: string, isRtl: boolean): string {
-  return new Date(createdAt).toLocaleString(isRtl ? 'ar-EG' : 'en-US');
+function formatDate(createdAt: string): string {
+  return new Date(createdAt).toLocaleString('ar-EG');
 }
 
 const AUTO_PRINT_SCRIPT = `
@@ -40,9 +40,9 @@ const AUTO_PRINT_SCRIPT = `
 /**
  * Print standard customer receipt
  */
-export function printCustomerReceipt(order: Order, lang: 'en' | 'ar' = 'ar') {
-  const isRtl = lang === 'ar';
-  const currency = CURRENCY[lang];
+export function printCustomerReceipt(order: Order) {
+  const currency = CURRENCY;
+  const storeConfig = getStoreConfig();
   // Read the snapshot stored with the order. Deriving tax from `totalAmount` here taxed
   // POS orders a second time, because that column already holds the tax-inclusive total.
   const { subtotal, taxRate, taxAmount, grandTotal } = orderTotals(order);
@@ -51,32 +51,28 @@ export function printCustomerReceipt(order: Order, lang: 'en' | 'ar' = 'ar') {
   const isPaid = order.paymentStatus === 'Paid';
   const accent = isPaid ? '#10b981' : '#ef4444';
 
-  const title = isRtl ? 'فاتورة الدفع' : 'Payment Receipt';
-  const tableLabel = isRtl ? 'الطاولة / نوع الطلب' : 'Table / Mode';
-  const orderLabel = isRtl ? 'رقم الطلب' : 'Order No.';
-  const dateLabel = isRtl ? 'التاريخ' : 'Date';
-  const itemLabel = isRtl ? 'الأصناف' : 'Items';
-  const subtotalLabel = isRtl ? 'المجموع الفرعي' : 'Subtotal';
-  const taxLabel = isRtl ? `الضريبة (${taxRate * 100}%)` : `Tax (${taxRate * 100}%)`;
-  const discountLabel = isRtl ? 'خصم نقاط الولاء' : 'Loyalty Discount';
-  const dueLabel = isRtl ? 'الإجمالي' : 'TOTAL';
-  const totalLabel = isPaid
-    ? (isRtl ? 'الإجمالي المدفوع' : 'TOTAL PAID')
-    : (isRtl ? 'المطلوب سداده' : 'TOTAL DUE');
-  const paymentMethodLabel = isRtl ? 'طريقة الدفع' : 'Payment Method';
-  const thankYou = isRtl ? 'شكراً لزيارتكم! بالهناء والشفاء ☕' : 'Thank you for your visit! Enjoy ☕';
-  const cashierStamp = isPaid
-    ? (isRtl ? '✓ مدفوع' : '✓ PAID')
-    : (isRtl ? 'غير مدفوع' : 'UNPAID');
-  const methodLabel = isRtl && order.paymentMethod === 'Cash'
+  const title = 'فاتورة الدفع';
+  const tableLabel = 'الطاولة / نوع الطلب';
+  const orderLabel = 'رقم الطلب';
+  const dateLabel = 'التاريخ';
+  const itemLabel = 'الأصناف';
+  const subtotalLabel = 'المجموع الفرعي';
+  const taxLabel = `الضريبة (${taxRate * 100}%)`;
+  const discountLabel = 'خصم نقاط الولاء';
+  const dueLabel = 'الإجمالي';
+  const totalLabel = isPaid ? 'الإجمالي المدفوع' : 'المطلوب سداده';
+  const paymentMethodLabel = 'طريقة الدفع';
+  const thankYou = 'شكراً لزيارتكم! بالهناء والشفاء ☕';
+  const cashierStamp = isPaid ? '✓ مدفوع' : 'غير مدفوع';
+  const methodLabel = order.paymentMethod === 'Cash'
     ? 'نقداً'
-    : isRtl && order.paymentMethod === 'Card'
+    : order.paymentMethod === 'Card'
       ? 'بطاقة'
       : order.paymentMethod;
 
   const html = `
     <!DOCTYPE html>
-    <html dir="${isRtl ? 'rtl' : 'ltr'}">
+    <html dir="rtl">
     <head>
       <title>${title} - ${order.orderNumber}</title>
       <meta charset="utf-8">
@@ -126,7 +122,7 @@ export function printCustomerReceipt(order: Order, lang: 'en' | 'ar' = 'ar') {
           margin: 6px 0;
           font-size: 12px;
         }
-        .item-name { flex: 1; ${isRtl ? 'padding-left' : 'padding-right'}: 8px; }
+        .item-name { flex: 1; padding-left: 8px; }
         .totals { border-top: 1px dashed #000; padding-top: 8px; margin-top: 12px; }
         .total-row {
           display: flex;
@@ -162,9 +158,10 @@ export function printCustomerReceipt(order: Order, lang: 'en' | 'ar' = 'ar') {
     </head>
     <body>
       <div class="header">
-        <h1>ENGAZ</h1>
-        <p>Premium Coffee Experience</p>
-        <p>Tel: (555) 123-4567</p>
+        <h1>${storeConfig.storeName || 'ENGAZ'}</h1>
+        ${storeConfig.tagline ? `<p>${storeConfig.tagline}</p>` : ''}
+        ${storeConfig.address ? `<p>${storeConfig.address}</p>` : ''}
+        ${storeConfig.phone ? `<p>Tel: ${storeConfig.phone}</p>` : ''}
       </div>
 
       <div class="stamp">${cashierStamp}</div>
@@ -176,11 +173,11 @@ export function printCustomerReceipt(order: Order, lang: 'en' | 'ar' = 'ar') {
         </div>
         <div class="info-row">
           <strong>${tableLabel}:</strong>
-          <span>${formatTable(order.tableId, isRtl)}</span>
+          <span>${formatTable(order.tableId)}</span>
         </div>
         <div class="info-row">
           <strong>${dateLabel}:</strong>
-          <span>${formatDate(order.createdAt, isRtl)}</span>
+          <span>${formatDate(order.createdAt)}</span>
         </div>
       </div>
 
@@ -242,22 +239,19 @@ interface TicketStyle {
   icon: string;
   /** Printer name shown in the ticket footer. */
   printerName: string;
-  titleAr: string;
-  titleEn: string;
+  title: string;
 }
 
 const TICKET_STYLES: Record<'kitchen' | 'drinks', TicketStyle> = {
   kitchen: {
     icon: '🍳',
     printerName: 'Engaz - Kitchen Printer',
-    titleAr: 'طلب المطبخ - أكل',
-    titleEn: 'KITCHEN TICKET - FOOD',
+    title: 'طلب المطبخ - أكل',
   },
   drinks: {
     icon: '☕',
     printerName: 'Engaz - Bar Printer',
-    titleAr: 'طلب المشروبات - بار',
-    titleEn: 'DRINKS TICKET - BAR',
+    title: 'طلب المشروبات - بار',
   },
 };
 
@@ -266,22 +260,21 @@ const TICKET_STYLES: Record<'kitchen' | 'drinks', TicketStyle> = {
  * share this layout and differ only by title, icon, printer name, and which items
  * of the order they carry.
  */
-function printSectionTicket(order: Order, section: 'kitchen' | 'drinks', lang: 'en' | 'ar') {
+function printSectionTicket(order: Order, section: 'kitchen' | 'drinks') {
   const items = filterItemsBySection(order.items, section);
   if (items.length === 0) return;
 
-  const isRtl = lang === 'ar';
   const style = TICKET_STYLES[section];
-  const title = isRtl ? style.titleAr : style.titleEn;
-  const tableLabel = isRtl ? 'الطاولة' : 'Table';
-  const orderLabel = isRtl ? 'طلب رقم' : 'Order #';
-  const itemsCountLabel = isRtl ? 'عدد الأصناف' : 'Items Count';
-  const dateLabel = isRtl ? 'التاريخ' : 'Date';
+  const title = style.title;
+  const tableLabel = 'الطاولة';
+  const orderLabel = 'طلب رقم';
+  const itemsCountLabel = 'عدد الأصناف';
+  const dateLabel = 'التاريخ';
   const totalQuantity = items.reduce((sum, i) => sum + i.quantity, 0);
 
   const html = `
     <!DOCTYPE html>
-    <html dir="${isRtl ? 'rtl' : 'ltr'}">
+    <html dir="rtl">
     <head>
       <title>${title} - ${order.orderNumber}</title>
       <meta charset="utf-8">
@@ -330,7 +323,7 @@ function printSectionTicket(order: Order, section: 'kitchen' | 'drinks', lang: '
         .item-qty {
           font-size: 28px;
           font-weight: 900;
-          margin-${isRtl ? 'left' : 'right'}: 15px;
+          margin-left: 15px;
           background: #000;
           color: #fff;
           padding: 2px 8px;
@@ -367,10 +360,10 @@ function printSectionTicket(order: Order, section: 'kitchen' | 'drinks', lang: '
         </div>
         <div class="details-row">
           <span><strong>${tableLabel}:</strong></span>
-          <span class="large-text">${formatTable(order.tableId, isRtl)}</span>
+          <span class="large-text">${formatTable(order.tableId)}</span>
         </div>
         <div class="details-row" style="font-size: 11px; margin-top: 6px;">
-          <span>${dateLabel}: ${formatDate(order.createdAt, isRtl)}</span>
+          <span>${dateLabel}: ${formatDate(order.createdAt)}</span>
           <span>${itemsCountLabel}: ${totalQuantity}</span>
         </div>
       </div>
@@ -398,13 +391,13 @@ ${AUTO_PRINT_SCRIPT}
 /**
  * Print kitchen receipt containing food items
  */
-export function printKitchenReceipt(order: Order, lang: 'en' | 'ar' = 'ar') {
-  printSectionTicket(order, 'kitchen', lang);
+export function printKitchenReceipt(order: Order) {
+  printSectionTicket(order, 'kitchen');
 }
 
 /**
  * Print drinks/beverage receipt
  */
-export function printDrinksReceipt(order: Order, lang: 'en' | 'ar' = 'ar') {
-  printSectionTicket(order, 'drinks', lang);
+export function printDrinksReceipt(order: Order) {
+  printSectionTicket(order, 'drinks');
 }

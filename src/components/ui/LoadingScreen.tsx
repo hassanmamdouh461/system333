@@ -1,75 +1,44 @@
 import { motion } from 'framer-motion';
 import { Coffee } from 'lucide-react';
 
-export function LoadingScreen() {
+interface LoadingScreenProps {
+  message?: string;
+  subMessage?: string;
+}
+
+export function LoadingScreen({
+  message = 'جاري تحميل البيانات...',
+  subMessage = 'يرجى الانتظار لحظات...'
+}: LoadingScreenProps) {
   return (
-    <div className="fixed inset-0 bg-gray-900 z-50 flex flex-col items-center justify-center">
-      <div className="relative">
-        {/* Pulsing Background */}
-        <motion.div
-           animate={{
-             scale: [1, 1.2, 1],
-             opacity: [0.3, 0.6, 0.3],
-           }}
-           transition={{
-             duration: 2,
-             repeat: Infinity,
-             ease: "easeInOut"
-           }}
-           className="absolute inset-0 bg-caramel rounded-full blur-xl"
-        />
+    <div className="w-full flex-1 min-h-[55vh] flex flex-col items-center justify-center py-12 select-none" dir="rtl">
+      <div className="relative flex flex-col items-center justify-center p-8 rounded-2xl bg-white/70 backdrop-blur-sm border border-gray-100 shadow-sm max-w-sm w-full mx-auto">
+        
+        {/* Animated Icon */}
+        <div className="relative mb-4">
+          <div className="w-14 h-14 rounded-2xl bg-caramel/10 flex items-center justify-center text-caramel border border-caramel/20 shadow-inner">
+            <Coffee className="w-7 h-7 text-caramel animate-pulse" />
+          </div>
+          <div className="absolute -inset-1 rounded-2xl border-2 border-caramel/20 border-t-caramel animate-spin pointer-events-none" />
+        </div>
 
-        {/* Logo Container */}
-        <motion.div
-          initial={{ scale: 0.8, opacity: 0 }}
-          animate={{ scale: 1, opacity: 1 }}
-          transition={{ duration: 0.5 }}
-          className="relative z-10 bg-gray-800 p-8 rounded-full border border-gray-700 shadow-2xl"
-        >
+        {/* Text */}
+        <h3 className="text-sm md:text-base font-bold text-gray-800 mb-1 font-cairo">
+          {message}
+        </h3>
+        <p className="text-xs text-gray-400 font-cairo">
+          {subMessage}
+        </p>
+
+        {/* Mini progress line */}
+        <div className="w-36 h-1 bg-gray-100 rounded-full overflow-hidden mt-4">
           <motion.div
-            animate={{ rotate: 360 }}
-            transition={{ duration: 3, repeat: Infinity, ease: "linear" }}
-          >
-            <Coffee className="w-16 h-16 text-caramel" />
-          </motion.div>
-        </motion.div>
-
-        {/* Floating Icons */}
-        <motion.div
-          animate={{ y: [-10, 10, -10] }}
-          transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
-          className="absolute -top-12 -right-8 text-white/20"
-        >
-          <Coffee size={32} />
-        </motion.div>
-      </div>
-
-      <motion.div
-        initial={{ opacity: 0, y: 20 }}
-        animate={{ opacity: 1, y: 0 }}
-        transition={{ delay: 0.5 }}
-        className="mt-8 text-center"
-      >
-        <h1 className="text-3xl font-bold text-white mb-2">Brew<span className="text-caramel">Master</span></h1>
-        <div className="flex items-center gap-1 justify-center">
-          <motion.div 
-            animate={{ height: [4, 12, 4] }}
-            transition={{ duration: 1, repeat: Infinity, delay: 0 }}
-            className="w-1 bg-caramel rounded-full" 
-          />
-          <motion.div 
-            animate={{ height: [4, 12, 4] }}
-            transition={{ duration: 1, repeat: Infinity, delay: 0.2 }}
-            className="w-1 bg-caramel rounded-full" 
-          />
-          <motion.div 
-            animate={{ height: [4, 12, 4] }}
-            transition={{ duration: 1, repeat: Infinity, delay: 0.4 }}
-            className="w-1 bg-caramel rounded-full" 
+            animate={{ x: ['-100%', '100%'] }}
+            transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
+            className="w-16 h-full bg-caramel rounded-full"
           />
         </div>
-        <p className="text-gray-500 text-sm mt-4 font-medium tracking-widest uppercase">Loading System</p>
-      </motion.div>
+      </div>
     </div>
   );
 }

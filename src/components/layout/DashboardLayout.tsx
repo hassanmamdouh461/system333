@@ -3,13 +3,12 @@ import { Sidebar } from './Sidebar';
 import { MobileHeader } from './MobileHeader';
 import { MobileNav } from './MobileNav';
 import { TopNav } from './TopNav';
-import { Outlet } from 'react-router-dom';
-import { useAuth } from '../../context/AuthContext';
+import { Outlet, useLocation } from 'react-router-dom';
 
 export function DashboardLayout() {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
-  const { user } = useAuth();
-  const isManager = user?.role === 'manager';
+  const location = useLocation();
+  const isPosPage = location.pathname === '/orders' || location.pathname === '/';
 
   // Prevent body scroll when mobile menu is open
   useEffect(() => {
@@ -26,31 +25,31 @@ export function DashboardLayout() {
   return (
     <div className="flex flex-col h-screen bg-gray-50 overflow-hidden">
       {/* Desktop Top Navigation Bar */}
-      {!isManager && <TopNav />}
+      <TopNav />
 
       {/* Mobile Header */}
-      {!isManager && <MobileHeader onMenuClick={() => setMobileMenuOpen(true)} />}
-      
+      <MobileHeader onMenuClick={() => setMobileMenuOpen(true)} />
+
       {/* Lower layout wrapper */}
       <div className="flex-grow flex overflow-hidden relative">
         {/* Sidebar - Mobile Drawer only */}
-        {!isManager && (
-          <Sidebar 
-            mobileOpen={mobileMenuOpen} 
-            onMobileClose={() => setMobileMenuOpen(false)} 
-          />
-        )}
-        
+        <Sidebar
+          mobileOpen={mobileMenuOpen}
+          onMobileClose={() => setMobileMenuOpen(false)}
+        />
+
         {/* Main Content */}
-        <main className={`flex-1 overflow-y-auto overflow-x-hidden bg-gray-50 p-3 sm:p-4 md:p-8 pb-24 md:pb-6 ${
-          isManager ? "pt-4 md:pt-6" : "pt-[72px] md:pt-6"
+        <main className={`flex-1 overflow-y-auto overflow-x-hidden bg-gray-50 ${
+          isPosPage
+            ? 'p-1.5 md:p-2.5 pt-[68px] md:pt-2.5 pb-2 md:pb-2.5 h-full overflow-hidden'
+            : 'p-3 sm:p-4 md:p-8 pb-24 md:pb-6 pt-[72px] md:pt-6'
         }`}>
           <Outlet />
         </main>
       </div>
 
       {/* Mobile Bottom Navigation */}
-      {!isManager && <MobileNav />}
+      <MobileNav />
     </div>
   );
 }

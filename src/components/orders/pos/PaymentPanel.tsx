@@ -20,7 +20,6 @@ interface PaymentPanelProps {
 
 /** Dark LCD-style readout used for the three money figures. */
 function Readout({ label, value, tone }: { label: string; value: string; tone: 'amber' | 'emerald' }) {
-  const { isRtl } = useLanguage();
   return (
     <div className="space-y-0.5">
       <label className="text-xs text-gray-500 font-extrabold"><span className="font-sans">{label}</span></label>
@@ -31,7 +30,7 @@ function Readout({ label, value, tone }: { label: string; value: string; tone: '
         )}
       >
         <span>{value}</span>
-        <span className="text-[10px] text-gray-500 font-sans font-bold">{isRtl ? 'ج.م' : 'EGP'}</span>
+        <span className="text-[10px] text-gray-500 font-sans font-bold">ج.م</span>
       </div>
     </div>
   );

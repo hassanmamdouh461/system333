@@ -140,6 +140,17 @@ function postJson({ baseUrl, endpoint, body, apiKey, timeout }) {
 /** Calls the production worker, mirroring writes to the reports database. */
 async function callWorker(endpoint, body) {
   loadConfig();
+
+  // Reports-only mode: when no central POS worker key is configured, push writes directly
+  // to the reports database so the manager portal gets the live data.
+  if (!WORKER_API_KEY && REPORTS_WORKER_KEY) {
+    if (endpoint.startsWith('/sync/')) {
+      const res = await mirrorToReports(endpoint, body, true);
+      return res || { success: true, written: body?.items?.length || 0 };
+    }
+    return { success: true, orders: [] };
+  }
+
   if (!WORKER_URL || WORKER_URL.includes('your-username')) {
     throw new Error('Cloudflare Worker URL is not configured');
   }
@@ -165,11 +176,10 @@ async function callWorker(endpoint, body) {
 }
 
 /**
- * Copies a write to the isolated reports database. Fire and forget by design: the reports
- * portal going stale is an inconvenience, but a mirror failure blocking the POS from
- * syncing its own sales is not acceptable.
+ * Copies a write to the isolated reports database. Fire and forget when mirroring the production
+ * worker, but throwing when operating in reports-only mode so the caller retries.
  */
-async function mirrorToReports(endpoint, body) {
+async function mirrorToReports(endpoint, body, shouldThrow = false) {
   if (!REPORTS_WORKER_KEY) return;
   try {
     const res = await postJson({
@@ -180,10 +190,13 @@ async function mirrorToReports(endpoint, body) {
       timeout: MIRROR_TIMEOUT_MS,
     });
     if (res && res.success === false) {
-      console.warn('[D1 Sync API] Reports mirror rejected (non-fatal):', res.error);
+      console.warn('[D1 Sync API] Reports mirror rejected:', res.error);
+      if (shouldThrow) throw new Error(res.error || 'Reports mirror rejected');
     }
+    return res;
   } catch (e) {
-    console.warn('[D1 Sync API] Reports mirror failed (non-fatal):', e.message);
+    console.warn('[D1 Sync API] Reports mirror failed:', e.message);
+    if (shouldThrow) throw e;
   }
 }
 
@@ -310,8 +323,9 @@ async function pullOrders(since = null, branchId = null) {
 /** Liveness probe used by the sync engine's connectivity check. */
 async function checkWorkerHealth() {
   loadConfig();
+  const targetUrl = (!WORKER_API_KEY && REPORTS_WORKER_KEY) ? REPORTS_WORKER_URL : WORKER_URL;
   try {
-    const parsedUrl = new URL(WORKER_URL);
+    const parsedUrl = new URL(targetUrl);
     await new Promise((resolve, reject) => {
       const req = https.request({
         hostname: parsedUrl.hostname,
@@ -337,46 +351,6 @@ async function checkWorkerHealth() {
   }
 }
 
-/** One round trip for the whole manager dashboard instead of three. */
-async function getManagerSnapshot() {
-  console.log('[D1 Sync API] Manager fetching snapshot...');
-  const res = await callWorker('/read/manager-snapshot', {});
-
-  return {
-    orders: (res.orders || []).map(mapOrderRow),
-    customers: (res.customers || []).map(row => ({
-      $id: row.id,
-      $createdAt: row.createdAt,
-      $updatedAt: row.updated_at || row.createdAt,
-      name: row.name,
-      phone: row.phone,
-      points: Number(row.points) || 0,
-      branchId: row.branch_id,
-    })),
-    inventory: (res.inventory || []).map(row => ({
-      $id: row.id,
-      name: row.name,
-      unit: row.unit,
-      stock: Number(row.stock) || 0,
-      minStock: Number(row.minStock) || 0,
-      costPerUnit: Number(row.costPerUnit) || 0,
-      branch_id: row.branch_id,
-    })),
-  };
-}
-
-async function getManagerOrders() {
-  return (await getManagerSnapshot()).orders;
-}
-
-async function getManagerCustomers() {
-  return (await getManagerSnapshot()).customers;
-}
-
-async function getManagerInventory() {
-  return (await getManagerSnapshot()).inventory;
-}
-
 module.exports = {
   pushMenuItems,
   pushOrders,
@@ -387,8 +361,4 @@ module.exports = {
   pullOrders,
   deleteMenuItem,
   checkWorkerHealth,
-  getManagerSnapshot,
-  getManagerOrders,
-  getManagerCustomers,
-  getManagerInventory,
 };

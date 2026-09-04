@@ -12,6 +12,7 @@
 
 export interface OrderRow {
   id: string;
+  orderNumber: string | null;
   createdAt: string;
   branch_id: string | null;
   totalAmount: number | null;
@@ -21,6 +22,7 @@ export interface OrderRow {
   paidAmount: number | null;
   paymentStatus: string | null;
   paymentMethod: string | null;
+  customerPhone: string | null;
   items: string | null;
 }
 

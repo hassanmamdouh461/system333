@@ -22,10 +22,10 @@ export function isDesktop(): boolean {
  * The bridge, or a thrown error naming the action that needed it. Use this for operations
  * that genuinely have no web equivalent, such as writing to the local branch database.
  */
-export function requireDesktopApi(action = 'This operation'): DesktopApi {
+export function requireDesktopApi(action = 'هذه العملية'): DesktopApi {
   const api = desktopApi();
   if (!api) {
-    throw new Error(`${action} is only available in the desktop app`);
+    throw new Error(`${action} متاح فقط في تطبيق سطح المكتب`);
   }
   return api;
 }

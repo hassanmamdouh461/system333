@@ -3,6 +3,7 @@ const LS_TAX_RATE_KEY = 'engaz_tax_rate';
 const LS_ADMIN_CREDS_KEY = 'engaz_admin_creds';
 const LS_BRANCH_CONFIG_KEY = 'engaz_branch_config';
 const LS_TELEGRAM_CONFIG_KEY = 'engaz_telegram_config';
+const LS_STORE_CONFIG_KEY = 'engaz_store_config';
 
 /**
  * Persist a settings value through the explicit, whitelisted Electron settings
@@ -184,3 +185,56 @@ export function setTelegramConfig(config: Partial<TelegramConfig>): void {
   const updated = { ...current, ...config };
   persistSetting(LS_TELEGRAM_CONFIG_KEY, JSON.stringify(updated));
 }
+
+// ─── Store config ───────────────────────────────────────────────────────────
+export interface StoreConfig {
+  storeName: string;
+  address: string;
+  phone: string;
+  tagline: string;
+  taxRate: number;
+  businessDayStartHour: number;
+}
+
+export const DEFAULT_STORE_CONFIG: StoreConfig = {
+  storeName: 'BrewMaster Coffee',
+  address: 'القاهرة - مصر',
+  phone: '0100000000',
+  tagline: 'أفضل تجربة قهوة',
+  taxRate: DEFAULT_TAX_RATE,
+  businessDayStartHour: 0,
+};
+
+export function getStoreConfig(): StoreConfig {
+  const currentTaxRate = getTaxRate();
+  const saved = localStorage.getItem(LS_STORE_CONFIG_KEY);
+  if (saved) {
+    try {
+      const parsed = JSON.parse(saved);
+      return {
+        storeName: typeof parsed.storeName === 'string' && parsed.storeName.trim() ? parsed.storeName : DEFAULT_STORE_CONFIG.storeName,
+        address: typeof parsed.address === 'string' ? parsed.address : DEFAULT_STORE_CONFIG.address,
+        phone: typeof parsed.phone === 'string' ? parsed.phone : DEFAULT_STORE_CONFIG.phone,
+        tagline: typeof parsed.tagline === 'string' ? parsed.tagline : DEFAULT_STORE_CONFIG.tagline,
+        taxRate: typeof parsed.taxRate === 'number' && !isNaN(parsed.taxRate) ? parsed.taxRate : currentTaxRate,
+        businessDayStartHour: typeof parsed.businessDayStartHour === 'number' && !isNaN(parsed.businessDayStartHour) ? parsed.businessDayStartHour : 0,
+      };
+    } catch {
+      // JSON parse error, fallback
+    }
+  }
+  return {
+    ...DEFAULT_STORE_CONFIG,
+    taxRate: currentTaxRate,
+  };
+}
+
+export function setStoreConfig(config: Partial<StoreConfig>): void {
+  const current = getStoreConfig();
+  const updated: StoreConfig = { ...current, ...config };
+  persistSetting(LS_STORE_CONFIG_KEY, JSON.stringify(updated));
+  if (config.taxRate !== undefined) {
+    setTaxRate(config.taxRate);
+  }
+}
+

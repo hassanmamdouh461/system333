@@ -1,10 +1,8 @@
 import { createContext, useContext, useState, ReactNode, useCallback } from 'react';
 import { getBranchConfig, setBranchConfig, verifyPassword, hashPassword } from '../utils/settingsConfig';
-import { isDesktop } from '../services/desktopBridge';
 
 const LS_EMAIL_KEY = 'engaz_remembered_email';
 const LS_SESSION_KEY = 'auth_session';
-const LS_LANGUAGE_KEY = 'engaz_language';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -18,7 +16,7 @@ export interface User {
   id: string;
   name: string;
   email: string;
-  role: 'admin' | 'staff' | 'manager';
+  role: 'admin' | 'staff';
 }
 
 interface AuthContextType {
@@ -48,30 +46,20 @@ export const BRANCH_ACCOUNTS = [
   {
     branchId: 'branch_1',
     branchName: 'فرع المعادي (فرع 1)',
-    branchNameEn: 'Maadi Branch (Branch 1)',
     email: 'branch1@system.com',
     role: 'admin' as const,
   },
   {
     branchId: 'branch_2',
     branchName: 'فرع مصر الجديدة (فرع 2)',
-    branchNameEn: 'Heliopolis Branch (Branch 2)',
     email: 'branch2@system.com',
     role: 'admin' as const,
   },
   {
     branchId: 'branch_3',
     branchName: 'فرع الزمالك (فرع 3)',
-    branchNameEn: 'Zamalek Branch (Branch 3)',
     email: 'branch3@system.com',
     role: 'admin' as const,
-  },
-  {
-    branchId: 'manager',
-    branchName: 'الإدارة العامة',
-    branchNameEn: 'General Management',
-    email: 'manager@system.com',
-    role: 'manager' as const,
   },
 ];
 
@@ -81,11 +69,6 @@ const MIN_PASSWORD_LENGTH = 6;
 function findAccount(email: string) {
   const target = email.trim().toLowerCase();
   return BRANCH_ACCOUNTS.find(acc => acc.email.toLowerCase() === target);
-}
-
-/** The interface language, used to pick the language of a thrown error message. */
-function isArabic(): boolean {
-  return (localStorage.getItem(LS_LANGUAGE_KEY) || 'ar') === 'ar';
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -129,7 +112,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Same rejection for an unknown address and a wrong password: telling them apart lets
     // an attacker enumerate valid accounts.
     if (!account) {
-      throw new Error(isArabic() ? 'بيانات الدخول غير صحيحة' : 'Invalid email or password');
+      throw new Error('بيانات الدخول غير صحيحة');
     }
 
     const config = getBranchConfig();
@@ -137,46 +120,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (storedHash) {
       if (!(await verifyPassword(password, storedHash))) {
-        throw new Error(isArabic() ? 'بيانات الدخول غير صحيحة' : 'Invalid email or password');
+        throw new Error('بيانات الدخول غير صحيحة');
       }
     } else if (password.length < MIN_PASSWORD_LENGTH) {
       // First sign-in on this device sets the password, so it has to be worth keeping.
       throw new Error(
-        isArabic()
-          ? `هذا أول تسجيل دخول على هذا الجهاز؛ اختر كلمة مرور من ${MIN_PASSWORD_LENGTH} أحرف على الأقل`
-          : `This is the first sign-in on this device; choose a password of at least ${MIN_PASSWORD_LENGTH} characters`
-      );
-    }
-
-    // ── Environment restrictions ──
-    // A UX rule, not a security boundary: the check is client-side and the manager portal
-    // enforces its own access separately.
-    const desktop = isDesktop();
-    if (desktop && account.role === 'manager') {
-      throw new Error(
-        isArabic()
-          ? 'حساب المدير يمكنه تسجيل الدخول فقط من خلال موقع الإدارة الإلكتروني.'
-          : 'Manager account can only log in through the online management portal.'
-      );
-    }
-    if (!desktop && account.role !== 'manager') {
-      throw new Error(
-        isArabic()
-          ? 'حسابات الفروع يمكنها تسجيل الدخول فقط من خلال برنامج الكاشير المكتبي.'
-          : 'Branch accounts can only log in through the desktop POS application.'
+        `هذا أول تسجيل دخول على هذا الجهاز؛ اختر كلمة مرور من ${MIN_PASSWORD_LENGTH} أحرف على الأقل`
       );
     }
 
     const userData: User = {
       id: account.branchId,
-      name: account.branchNameEn,
+      name: account.branchName,
       email: account.email,
       role: account.role,
     };
 
     const branchSession: BranchSession = {
       branchId: account.branchId,
-      branchName: account.branchNameEn,
+      branchName: account.branchName,
       authToken: `local-${crypto.randomUUID()}`,
     };
 
@@ -187,7 +149,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // a changed password back to the shipped default.
     await setBranchConfig({
       branchId: account.branchId,
-      branchName: account.branchNameEn,
+      branchName: account.branchName,
       email: account.email,
       ...(storedHash ? {} : { password: await hashPassword(password) }),
     });

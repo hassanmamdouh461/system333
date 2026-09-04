@@ -11,7 +11,7 @@ interface SyncStatusData {
 }
 
 export function SyncStatus() {
-  const { t, language } = useLanguage();
+  const { t } = useLanguage();
   const [syncStatus, setSyncStatus] = useState<SyncStatusData>({
     state: 'idle',
     lastSyncAt: null,
@@ -58,16 +58,14 @@ export function SyncStatus() {
 
   const getStatusConfig = () => {
     if (!isElectron) {
-      // Web Manager Portal Live Status Card
+      // Live status card shown when the app runs in a browser rather than Electron.
       return {
         icon: CheckCircle2,
         color: 'text-emerald-600',
         bgColor: 'bg-emerald-50',
         borderColor: 'border-emerald-200',
-        label: language === 'ar' ? 'قناة المزامنة نشطة' : 'Live Channel Active',
-        description: language === 'ar' 
-          ? 'الموقع متصل بقناة الاستقبال المباشرة للمبيعات من كافة الفروع' 
-          : 'Portal is connected to central cloud channel for real-time sales updates',
+        label: 'قناة المزامنة نشطة',
+        description: 'الموقع متصل بقناة الاستقبال المباشرة للمبيعات من كافة الفروع',
         spin: false
       };
     }
@@ -151,7 +149,7 @@ export function SyncStatus() {
             <div className="flex items-center gap-2 mb-1">
               <Cloud size={16} className="text-gray-400 flex-shrink-0" />
               <h3 className={`font-semibold ${config.color} text-sm md:text-base`}>
-                {language === 'ar' ? 'قناة المزامنة:' : 'Sync Channel:'} {config.label}
+                قناة المزامنة: {config.label}
               </h3>
             </div>
             
@@ -171,21 +169,21 @@ export function SyncStatus() {
                   {syncStatus.lastSyncAt && (
                     <div className="flex items-center gap-2">
                       <span className="font-semibold text-gray-700">{t('Last synced:')}</span>
-                      <span>{new Date(syncStatus.lastSyncAt).toLocaleString()}</span>
+                      <span>{new Date(syncStatus.lastSyncAt).toLocaleString('ar-EG')}</span>
                     </div>
                   )}
                 </>
               ) : (
                 <>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-gray-700">{language === 'ar' ? 'الحالة:' : 'Status:'}</span>
+                    <span className="font-semibold text-gray-700">الحالة:</span>
                     <span className="font-bold text-green-600 bg-green-100 px-2 py-0.5 rounded-full text-[11px]">
-                      {language === 'ar' ? 'متصل ومستعد' : 'Connected & Active'}
+                      متصل ومستعد
                     </span>
                   </div>
                   <div className="flex items-center gap-2 flex-wrap">
-                    <span className="font-semibold text-gray-700">{language === 'ar' ? 'الفروع المربوطة:' : 'Connected Branches:'}</span>
-                    <span>{language === 'ar' ? '3 فروع (نشطة)' : '3 Branches (Active)'}</span>
+                    <span className="font-semibold text-gray-700">الفروع المربوطة:</span>
+                    <span>3 فروع (نشطة)</span>
                   </div>
                 </>
               )}

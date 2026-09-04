@@ -4,9 +4,10 @@ import { Order } from '../../types/order';
 import { X, CheckCircle2, Printer, CreditCard, Banknote } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useLanguage } from '../../context/LanguageContext';
-import { useDialog } from '../../hooks/useDialog';
-import { orderTotals, orderRevenue, roundMoney } from '../../utils/orderTotals';
+import { orderTotals } from '../../utils/orderTotals';
+import { getStoreConfig } from '../../utils/settingsConfig';
 import { printCustomerReceipt } from '../../utils/printReceipts';
+import { playPaymentSuccessChime } from '../../utils/soundEffects';
 
 interface PaymentModalProps {
   order: Order | null;
@@ -20,44 +21,35 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
   const [isProcessing, setIsProcessing] = useState(false);
   const [showReceipt, setShowReceipt] = useState(false);
   const { t, language } = useLanguage();
-  const { panelRef, titleId, dialogProps } = useDialog<HTMLDivElement>({
-    onClose,
-    enabled: isOpen && !!order,
-  });
   // Track whether onPaymentComplete has already been called for this session.
   // Prevents double-firing if the user clicks Done twice or if any stale timer fires.
   const paymentFiredRef = useRef(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // An already-paid order opens straight onto its receipt; an unpaid one opens on the
-  // method picker. Keyed on the order's identity and payment state rather than the whole
-  // object, so an unrelated field change does not reset the modal mid-interaction.
-  const orderId = order?.id;
-  const orderPaymentStatus = order?.paymentStatus;
-  const orderPaymentMethod = order?.paymentMethod;
-
+  // Reset all state when the modal opens on a fresh order
   useEffect(() => {
-    if (isOpen && orderId) {
-      const alreadyPaid = orderPaymentStatus === 'Paid';
-      setPaymentMethod(alreadyPaid ? orderPaymentMethod || 'Cash' : 'Cash');
-      setIsProcessing(false);
-      setShowReceipt(alreadyPaid);
+    if (isOpen && order) {
+      if (order.paymentStatus === 'Paid') {
+        setPaymentMethod(order.paymentMethod || 'Cash');
+        setIsProcessing(false);
+        setShowReceipt(true);
+      } else {
+        setPaymentMethod('Cash');
+        setIsProcessing(false);
+        setShowReceipt(false);
+      }
       paymentFiredRef.current = false;
     }
-    // Cancel any pending timer if the modal is closed externally, e.g. via the backdrop.
+    // Cleanup: cancel any pending timer if the modal is closed externally (e.g. backdrop)
     return () => {
       if (timerRef.current) clearTimeout(timerRef.current);
     };
-  }, [isOpen, orderId, orderPaymentStatus, orderPaymentMethod]);
+  }, [isOpen, order?.id]); // re-run only when a different order opens
 
   if (!isOpen || !order) return null;
 
-  // The order carries its own tax snapshot; reading the live setting here made a receipt
-  // change retroactively whenever the branch edited its tax rate.
-  const { subtotal, taxRate, taxAmount, grandTotal } = orderTotals(order);
-  const total = orderRevenue(order);
-  const discount = roundMoney(grandTotal - total);
-  const currency = language === 'ar' ? 'ج.م' : 'EGP';
+  const storeConfig = getStoreConfig();
+  const { subtotal, taxRate, taxAmount: tax, grandTotal: total } = orderTotals(order);
 
   const handleProcessPayment = () => {
     setIsProcessing(true);
@@ -70,6 +62,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
         paymentFiredRef.current = true;
         onPaymentComplete(orderId, method);
       }
+      playPaymentSuccessChime();
       setIsProcessing(false);
       setShowReceipt(true);
     }, 100);
@@ -87,7 +80,9 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
   };
 
   const handlePrintReceipt = () => {
-    printCustomerReceipt(order, language);
+    if (order) {
+      printCustomerReceipt(order);
+    }
   };
 
   return (
@@ -102,21 +97,19 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
         />
 
         <motion.div
-           ref={panelRef}
-           {...dialogProps}
            initial={{ opacity: 0, scale: 0.95 }}
            animate={{ opacity: 1, scale: 1 }}
            exit={{ opacity: 0, scale: 0.95 }}
-           className="bg-white rounded-2xl w-full max-w-lg shadow-2xl relative z-50 overflow-hidden flex flex-col max-h-[90dvh] outline-none"
+           className="bg-white rounded-2xl w-full max-w-lg shadow-2xl relative z-50 overflow-hidden flex flex-col max-h-[90dvh]"
         >
           {/* Header */}
           <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
-            <h2 id={titleId} className="text-lg font-bold text-gray-900 flex items-center gap-2">
+            <h2 className="text-lg font-bold text-gray-900 flex items-center gap-2">
               <CreditCard className="text-mocha-700" />
               {showReceipt ? t('Payment Successful') : t('Process Payment')}
             </h2>
-            <button type="button" onClick={handleClose} aria-label={t('Close')} className="p-2 hover:bg-gray-200 rounded-full transition-colors text-gray-500">
-              <X size={20} aria-hidden="true" />
+            <button onClick={handleClose} className="p-2 hover:bg-gray-200 rounded-full transition-colors text-gray-500">
+              <X size={20} />
             </button>
           </div>
 
@@ -144,7 +137,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                               <span className="text-gray-400 font-mono">x{item.quantity}</span>
                               <span className="font-medium">{t(item.name)}</span>
                             </div>
-                            <span className="font-mono">{roundMoney(item.price * item.quantity).toFixed(2)} {currency}</span>
+                            <span className="font-mono">{(item.price * item.quantity).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
                           </div>
                         ))}
                       </div>
@@ -155,24 +148,18 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                     <div className="space-y-1.5 text-xs text-gray-500">
                       <div className="flex justify-between">
                         <span>{t('Subtotal')} ({t('Price')})</span>
-                        <span className="font-mono">{subtotal.toFixed(2)} {currency}</span>
+                        <span className="font-mono">{subtotal.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
                       </div>
                       <div className="flex justify-between items-center text-gray-500 mb-2">
-                        <span>{language === 'ar' ? `الضريبة (${taxRate * 100}%)` : `Tax (${taxRate * 100}%)`}</span>
-                        <span className="font-mono">{taxAmount.toFixed(2)} {currency}</span>
+                        <span>{language === 'ar' ? `الضريبة (${Math.round(taxRate * 100)}%)` : `Tax (${Math.round(taxRate * 100)}%)`}</span>
+                        <span className="font-mono">{tax.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
                       </div>
-                      {discount > 0 && (
-                        <div className="flex justify-between items-center text-green-600 mb-2">
-                          <span>{t('Loyalty Discount')}</span>
-                          <span className="font-mono">-{discount.toFixed(2)} {currency}</span>
-                        </div>
-                      )}
                     </div>
 
                     <div className="border-t border-gray-200 my-3" />
                     <div className="flex justify-between items-center text-lg font-bold">
                        <span>{t('Total to Pay')}</span>
-                       <span className="text-mocha-700">{total.toFixed(2)} {currency}</span>
+                       <span className="text-mocha-700">{total.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
                     </div>
                  </div>
 
@@ -208,7 +195,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                     disabled={isProcessing}
                     className="w-full bg-mocha-700 text-white py-4 rounded-xl font-bold text-lg hover:bg-mocha-800 transition-all disabled:opacity-70 disabled:cursor-not-allowed flex items-center justify-center gap-2"
                  >
-                    {isProcessing ? t('Processing...') : `${t('Pay')} ${total.toFixed(2)} ${currency}`}
+                    {isProcessing ? t('Processing...') : `${t('Pay')} ${total.toFixed(2)} ${language === 'ar' ? 'ج.م' : 'EGP'}`}
                  </button>
               </div>
             ) : (
@@ -220,53 +207,55 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                  <div>
                     <h3 className="text-2xl font-bold text-gray-900 mb-1">{t('Payment Received!')}</h3>
                     <p className="text-gray-500">{t('Transaction completed successfully.')}</p>
-                 </div>
-
-                 {/* Mock Receipt Preview */}
-                 <div className="bg-gray-50 p-6 rounded-xl border border-gray-100 text-start font-mono text-sm shadow-inner relative overflow-hidden text-gray-900">
-                    {/* Jaggered edge effect */}
-                    <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-transparent to-white bg-[length:10px_100%]" />
                     
-                    <div className="text-center border-b border-gray-200 pb-4 mb-4">
-                       <p className="font-bold text-lg">{t('ENGAZ')}</p>
-                       <p className="text-xs text-gray-400">{t('42 Roast Street, Coffee District')}</p>
-                    </div>
+                    {/* Mock Realistic Thermal Receipt Preview */}
+                    <motion.div 
+                      initial={{ y: -24, opacity: 0 }}
+                      animate={{ y: 0, opacity: 1 }}
+                      transition={{ type: 'spring', damping: 20 }}
+                      className="bg-amber-50/20 p-6 rounded-2xl border-2 border-dashed border-gray-300 text-left font-mono text-sm shadow-md relative overflow-hidden text-gray-900 mx-auto max-w-md mt-6"
+                    >
+                       <div className="text-center border-b border-dashed border-gray-300 pb-3 mb-3">
+                          <p className="font-black text-xl tracking-tight text-mocha-900">☕ {storeConfig.storeName || 'Engaz POS'}</p>
+                          <p className="text-[11px] text-gray-500 font-sans">{t('نظام الكاشير الذكي للكافيهات والمطاعم')}</p>
+                          <p className="text-[10px] text-gray-400 mt-1 font-mono">INV #{order.orderNumber} • {t(order.tableId)}</p>
+                       </div>
 
-                    <div className="space-y-2 mb-4">
-                       {order.items.map((item, i) => (
-                          <div key={i} className="flex justify-between">
-                             <span>{item.quantity}x {t(item.name)}</span>
-                             <span>{roundMoney(item.price * item.quantity).toFixed(2)} {currency}</span>
+                       <div className="space-y-1.5 mb-3 border-b border-dashed border-gray-300 pb-3">
+                          {order.items.map((item: any, i: number) => (
+                             <div key={i} className="flex justify-between text-xs">
+                                <span>{item.quantity}× {t(item.name)}</span>
+                                <span className="tabular-nums font-bold">{(item.price * item.quantity).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                             </div>
+                          ))}
+                       </div>
+
+                       <div className="space-y-1 text-xs">
+                          <div className="flex justify-between text-gray-600">
+                             <span>{t('Subtotal')}</span>
+                             <span className="tabular-nums">{subtotal.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
                           </div>
-                       ))}
-                    </div>
-
-                    <div className="border-t border-gray-200 pt-4 space-y-1">
-                       <div className="flex justify-between">
-                          <span>{t('Subtotal')}</span>
-                          <span>{subtotal.toFixed(2)} {currency}</span>
+                          <div className="flex justify-between text-gray-600">
+                             <span>{language === 'ar' ? `الضريبة (${Math.round(taxRate * 100)}%)` : `Tax (${Math.round(taxRate * 100)}%)`}</span>
+                             <span className="tabular-nums">{tax.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                          </div>
+                          <div className="flex justify-between font-black text-base pt-2 border-t border-dashed border-gray-300 text-mocha-800">
+                             <span>{t('TOTAL')}</span>
+                             <span className="tabular-nums">{total.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                          </div>
                        </div>
-                       <div className="flex justify-between items-center text-sm font-bold text-gray-700">
-                          <span>{language === 'ar' ? `الضريبة (${taxRate * 100}%)` : `Tax (${taxRate * 100}%)`}</span>
-                          <span>{taxAmount.toFixed(2)} {currency}</span>
+                       
+                       {/* Simulated Thermal Barcode */}
+                       <div className="mt-4 pt-3 border-t border-dashed border-gray-300 text-center flex flex-col items-center">
+                          <div className="flex gap-[2px] h-8 items-center justify-center opacity-75 mb-1">
+                            {[3, 1, 2, 4, 1, 3, 2, 1, 4, 2, 3, 1, 2, 4, 3, 1, 2].map((w, i) => (
+                              <div key={i} className="bg-gray-800 h-full" style={{ width: `${w * 1.5}px` }} />
+                            ))}
+                          </div>
+                          <p className="text-[9px] text-gray-400 font-mono tracking-widest">{order.id.slice(0, 16).toUpperCase()}</p>
+                          <p className="text-[10px] text-gray-400 mt-1 font-sans">{t('Thank you for choosing Engaz POS! ☕')}</p>
                        </div>
-                       {discount > 0 && (
-                         <div className="flex justify-between items-center text-sm text-green-600">
-                            <span>{t('Loyalty Discount')}</span>
-                            <span>-{discount.toFixed(2)} {currency}</span>
-                         </div>
-                       )}
-                       <div className="flex justify-between font-bold text-base pt-2">
-                          <span>{t('TOTAL')}</span>
-                          <span>{total.toFixed(2)} {currency}</span>
-                       </div>
-                    </div>
-                    
-                    <div className="text-center mt-6 text-xs text-gray-400">
-                       <p>{t('Paid via')} {t(paymentMethod)}</p>
-                       <p>{new Date().toLocaleString()}</p>
-                       <p>{t('Thank you for choosing Engaz! ☕')}</p>
-                    </div>
+                    </motion.div>
                  </div>
 
                  <div className="flex gap-4">

@@ -71,7 +71,7 @@ export function RecipeEditorModal({
   return (
     <Modal
       title={t('Edit Recipe')}
-      description={`${t(menuItem.name)} — EGP ${menuItem.price.toFixed(2)}`}
+      description={`${t(menuItem.name)} — ${menuItem.price.toFixed(2)} ج.م`}
       onClose={onClose}
       maxWidth="max-w-lg"
     >
@@ -163,12 +163,12 @@ export function RecipeEditorModal({
         <div className="bg-mocha-50/50 rounded-xl p-3 border border-mocha-100 flex flex-col gap-1.5 text-xs text-mocha-900">
           <div className="flex justify-between items-center font-medium">
             <span>{t('Recipe Cost')}:</span>
-            <span className="font-bold text-gray-800">EGP {cost.toFixed(2)}</span>
+            <span className="font-bold text-gray-800">{cost.toFixed(2)} ج.م</span>
           </div>
           <div className="flex justify-between items-center font-medium">
             <span>{t('Potential Margin')}:</span>
             <span className={`font-bold ${profit >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-              EGP {profit.toFixed(2)} ({marginPercent.toFixed(0)}%)
+              {profit.toFixed(2)} ج.م ({marginPercent.toFixed(0)}%)
             </span>
           </div>
         </div>

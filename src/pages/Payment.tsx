@@ -5,7 +5,7 @@ import { CreditCard, DollarSign, Search, Calculator } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useOrders } from '../hooks/useOrders';
 import { useLanguage } from '../context/LanguageContext';
-import { getTaxRate } from '../utils/settingsConfig';
+import { orderTotals, orderRevenue } from '../utils/orderTotals';
 import { reportFailure } from '../utils/reportFailure';
 
 /**
@@ -17,7 +17,7 @@ import { reportFailure } from '../utils/reportFailure';
 const STATUS_PRIORITY: Record<string, number> = { Ready: 1, Preparing: 2, New: 3, Completed: 4, Cancelled: 5 };
 
 export default function Payment() {
-  const { t, isRtl, language } = useLanguage();
+  const { t } = useLanguage();
   // Use local SQLite database - sync with Orders page
   const { orders: allOrders, error, completeWithPayment } = useOrders();
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
@@ -119,7 +119,7 @@ export default function Payment() {
   const today = new Date().toDateString();
   const totalRevenue = allOrders
     .filter(o => o.paymentStatus === 'Paid' && new Date(o.paidAt || o.createdAt).toDateString() === today)
-    .reduce((sum, o) => sum + o.totalAmount * (1 + getTaxRate()), 0);
+    .reduce((sum, o) => sum + orderRevenue(o), 0);
 
   return (
     <div className="space-y-4 md:space-y-8">
@@ -136,7 +136,7 @@ export default function Payment() {
             <div>
                 <p className="text-[10px] md:text-xs text-gray-500 font-medium">{t("Today's Revenue (incl. tax)")}</p>
                 <p className="text-base md:text-lg font-bold text-gray-900">
-                  {totalRevenue.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}
+                  {totalRevenue.toFixed(2)} ج.م
                 </p>
             </div>
         </div>
@@ -182,14 +182,14 @@ export default function Payment() {
       <div className="flex flex-col xl:flex-row gap-3 items-stretch xl:items-center">
         {/* Search */}
         <div className="relative flex-1 max-w-full xl:max-w-md">
-          <Search className={`absolute top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 md:w-5 md:h-5 ${isRtl ? 'right-3' : 'left-3'}`} />
+          <Search className={"absolute top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 md:w-5 md:h-5 right-3"} />
           <input
             aria-label={t('Search by Table or Order ID...')}
             type="text"
             placeholder={t('Search by Table or Order ID...')}
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className={`w-full py-2.5 md:py-3 bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent shadow-sm text-sm md:text-base ${isRtl ? 'pr-9 md:pr-10 pl-4' : 'pl-9 md:pl-10 pr-4'}`}
+            className={"w-full py-2.5 md:py-3 bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent shadow-sm text-sm md:text-base pr-9 md:pr-10 pl-4"}
           />
         </div>
 
@@ -273,7 +273,7 @@ export default function Payment() {
                 {order.items.slice(0, 2).map((item, idx) => (
                    <div key={idx} className="flex justify-between text-sm text-gray-600">
                       <span>{item.quantity}x {t(item.name)}</span>
-                      <span>{(item.price * item.quantity).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                      <span>{(item.price * item.quantity).toFixed(2)} ج.م</span>
                    </div>
                 ))}
                 {order.items.length > 2 && (
@@ -281,7 +281,7 @@ export default function Payment() {
                 )}
                 <div className="border-t border-gray-100 pt-2 flex justify-between font-bold text-lg text-gray-900">
                    <span>{t('Total')}</span>
-                   <span>{(order.totalAmount * (1 + getTaxRate())).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                   <span>{orderTotals(order).grandTotal.toFixed(2)} ج.م</span>
                 </div>
               </div>
 

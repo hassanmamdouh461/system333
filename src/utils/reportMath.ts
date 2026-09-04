@@ -33,25 +33,12 @@ export function computeCogs(
 }
 
 /**
- * Revenue is collected tax-inclusive, so the tax portion is removed before subtracting
+ * Revenue is collected tax-inclusive, so the tax amount is removed before subtracting
  * ingredient cost. Floored at zero: a negative figure on a profit card reads as a data
  * problem rather than a loss.
  */
-export function computeNetProfit(revenue: number, taxRate: number, cogs: number): number {
-  const taxPortion = revenue - revenue / (1 + taxRate);
-  return Math.max(0, roundMoney(revenue - taxPortion - cogs));
-}
-
-export interface CustomerStats {
-  totalCount: number;
-  totalPoints: number;
-  /** Points redeem one-for-one, so the outstanding liability equals the point balance. */
-  totalValue: number;
-}
-
-export function summarizeCustomers(customers: { points: number }[]): CustomerStats {
-  const totalPoints = customers.reduce((sum, c) => sum + c.points, 0);
-  return { totalCount: customers.length, totalPoints, totalValue: totalPoints };
+export function computeNetProfit(revenue: number, taxAmount: number, cogs: number): number {
+  return Math.max(0, roundMoney(revenue - taxAmount - cogs));
 }
 
 export interface InvoiceStats {

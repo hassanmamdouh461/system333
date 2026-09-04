@@ -1,7 +1,6 @@
 import { NavLink } from 'react-router-dom';
 import { LucideIcon } from 'lucide-react';
 import { clsx } from 'clsx';
-import { useLanguage } from '../../context/LanguageContext';
 
 interface SidebarItemProps {
   icon: LucideIcon;
@@ -12,7 +11,6 @@ interface SidebarItemProps {
 }
 
 export function SidebarItem({ icon: Icon, label, to, collapsed, onClick }: SidebarItemProps) {
-  const { isRtl } = useLanguage();
   return (
     <NavLink
       to={to}
@@ -33,10 +31,7 @@ export function SidebarItem({ icon: Icon, label, to, collapsed, onClick }: Sideb
         </span>
       )}
       {collapsed && (
-        <div className={clsx(
-          "absolute px-2 py-1 bg-gray-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 whitespace-nowrap",
-          isRtl ? "right-full mr-2" : "left-full ml-2"
-        )}>
+        <div className="absolute right-full mr-2 px-2 py-1 bg-gray-800 text-white text-xs rounded opacity-0 group-hover:opacity-100 pointer-events-none transition-opacity z-50 whitespace-nowrap">
           {label}
         </div>
       )}

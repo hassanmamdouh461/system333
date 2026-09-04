@@ -54,15 +54,15 @@ export function RecipeTable({ costings, onEdit }: RecipeTableProps) {
                 </td>
 
                 <td className="p-4 text-center font-medium text-gray-700">
-                  EGP {money(costing.price)}
+                  {money(costing.price)} ج.م
                 </td>
 
                 <td className="p-4 text-center font-bold text-gray-800">
-                  {isUnmapped ? <span className="text-gray-300">—</span> : `EGP ${money(costing.cost)}`}
+                  {isUnmapped ? <span className="text-gray-300">—</span> : `${money(costing.cost)} ج.م`}
                 </td>
 
                 <td className={`p-4 text-center font-bold ${isLosingMoney ? 'text-red-600' : 'text-emerald-600'}`}>
-                  {isUnmapped ? <span className="text-gray-300">—</span> : `EGP ${money(costing.profit)}`}
+                  {isUnmapped ? <span className="text-gray-300">—</span> : `${money(costing.profit)} ج.م`}
                 </td>
 
                 <td className={`p-4 text-center font-bold ${isLosingMoney ? 'text-red-600' : 'text-sky-600'}`}>

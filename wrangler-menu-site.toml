@@ -1,0 +1,19 @@
+# Engaz Public Customer Menu (static SPA)
+# Deploys dist to menu.engaz.tech as a Cloudflare Workers static site.
+#
+# Build first:  npm run build
+# Deploy:       node ./node_modules/wrangler/wrangler-dist/cli.js deploy -c wrangler-menu-site.toml
+
+name = "engaz-menu-portal"
+compatibility_date = "2025-01-01"
+workers_dev = true
+
+main = "reports-site/empty-worker.js"
+
+routes = [
+  { pattern = "menu.engaz.tech/*", zone_name = "engaz.tech" },
+]
+
+[assets]
+directory = "dist"
+not_found_handling = "single-page-application"

@@ -13,6 +13,7 @@ import { useOrders } from './useOrders';
 import { useMenu } from './useMenu';
 import { Order, OrderStatus } from '../types/order';
 import { MenuItem } from '../types/menu';
+import { getStoreConfig } from '../utils/settingsConfig';
 
 // ─── Period type ──────────────────────────────────────────────────────────────
 export type AnalyticsPeriod = 'Today' | 'This Week' | 'This Month' | 'This Year';
@@ -41,9 +42,20 @@ const CHART_CONFIG: Record<AnalyticsPeriod, {
 };
 
 // ─── Period filter ────────────────────────────────────────────────────────────
+function shiftDateByBusinessHour(date: Date, startHour: number): Date {
+  if (startHour <= 0 || startHour > 23) return date;
+  const shifted = new Date(date);
+  shifted.setHours(shifted.getHours() - startHour);
+  return shifted;
+}
+
 function inPeriod(dateStr: string, period: AnalyticsPeriod): boolean {
-  const d   = new Date(dateStr);
-  const now = new Date();
+  const rawD = new Date(dateStr);
+  const rawNow = new Date();
+  const startHour = getStoreConfig().businessDayStartHour;
+  const d = shiftDateByBusinessHour(rawD, startHour);
+  const now = shiftDateByBusinessHour(rawNow, startHour);
+
   switch (period) {
     case 'Today':
       return d.toDateString() === now.toDateString();

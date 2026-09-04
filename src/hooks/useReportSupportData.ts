@@ -1,13 +1,10 @@
 import { useEffect, useState } from 'react';
-import { customersService } from '../services/customersService';
 import { inventoryService } from '../services/inventoryService';
 import { menuService } from '../services/menuService';
-import { Customer } from '../types/customer';
 import { MenuItem } from '../types/menu';
 import { InventoryItem, RecipeIngredient } from '../global';
 
 export interface ReportSupportData {
-  customers: Customer[];
   inventory: InventoryItem[];
   recipes: RecipeIngredient[];
   menuItems: MenuItem[];
@@ -16,16 +13,10 @@ export interface ReportSupportData {
 }
 
 /**
- * Loads the customer, stock, recipe and menu data that the reports page needs on top of
+ * Loads the stock, recipe and menu data that the reports page needs on top of
  * order analytics.
- *
- * These four feed cost of goods sold, stock valuation and loyalty. Swallowing their
- * failures to the console made an unreachable database render as genuine zeros, so a
- * failure is surfaced as an error the page can block on. Results are dropped if the
- * component unmounted first.
  */
 export function useReportSupportData(): ReportSupportData {
-  const [customers, setCustomers] = useState<Customer[]>([]);
   const [inventory, setInventory] = useState<InventoryItem[]>([]);
   const [recipes, setRecipes] = useState<RecipeIngredient[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
@@ -38,14 +29,12 @@ export function useReportSupportData(): ReportSupportData {
     setError(null);
 
     Promise.all([
-      customersService.getAll(),
       inventoryService.getAll(),
       inventoryService.getMenuRecipes(),
       menuService.getAll(),
     ])
-      .then(([customerList, inventoryList, recipeList, menuList]) => {
+      .then(([inventoryList, recipeList, menuList]) => {
         if (!active) return;
-        setCustomers(customerList);
         setInventory(inventoryList);
         setRecipes(recipeList);
         setMenuItems(menuList);
@@ -62,5 +51,5 @@ export function useReportSupportData(): ReportSupportData {
     return () => { active = false; };
   }, []);
 
-  return { customers, inventory, recipes, menuItems, loading, error };
+  return { inventory, recipes, menuItems, loading, error };
 }

@@ -40,7 +40,7 @@ export function StockItemModal({ item, form, onChange, onSubmit, onClose }: Stoc
             value={form.name}
             onChange={(e) => onChange({ ...form, name: e.target.value })}
             className={FIELD_CLASS}
-            placeholder="e.g. Espresso Beans"
+            placeholder="مثال: حبوب إسبريسو"
           />
         </div>
 
