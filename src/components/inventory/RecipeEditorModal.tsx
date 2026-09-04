@@ -5,10 +5,22 @@ import { InventoryItem } from '../../global';
 import { MenuItem } from '../../types/menu';
 import { draftRecipeCost } from '../../utils/recipeMath';
 import { Modal } from '../ui/Modal';
+import {
+  convertToBaseQuantity,
+  convertFromBaseQuantity,
+  getInitialDisplayUnitAndQty,
+} from '../../utils/unitConversion';
 
 export interface RecipeLine {
   inventoryItemId: string;
   quantity: number;
+}
+
+interface RecipeLineRow {
+  inventoryItemId: string;
+  quantity: number;
+  displayQuantity: number | string;
+  displayUnit: string;
 }
 
 interface RecipeEditorModalProps {
@@ -34,8 +46,21 @@ export function RecipeEditorModal({
   onSave,
   onClose,
 }: RecipeEditorModalProps) {
-  const { t } = useLanguage();
-  const [lines, setLines] = useState<RecipeLine[]>(initialLines);
+  const { t, language } = useLanguage();
+
+  const [lines, setLines] = useState<RecipeLineRow[]>(() => {
+    return initialLines.map((line) => {
+      const mat = inventory.find((item) => item.id === line.inventoryItemId);
+      const baseUnit = mat ? mat.unit : 'piece';
+      const { displayQty, displayUnit } = getInitialDisplayUnitAndQty(line.quantity, baseUnit);
+      return {
+        inventoryItemId: line.inventoryItemId,
+        quantity: line.quantity,
+        displayQuantity: displayQty,
+        displayUnit,
+      };
+    });
+  });
   const [saving, setSaving] = useState(false);
 
   const cost = draftRecipeCost(lines, inventory);
@@ -45,11 +70,87 @@ export function RecipeEditorModal({
   const addLine = () => {
     const [first] = inventory;
     if (!first) return;
-    setLines((prev) => [...prev, { inventoryItemId: first.id, quantity: 0 }]);
+    const { displayUnit } = getInitialDisplayUnitAndQty(0, first.unit);
+    setLines((prev) => [
+      ...prev,
+      {
+        inventoryItemId: first.id,
+        quantity: 0,
+        displayQuantity: '',
+        displayUnit,
+      },
+    ]);
   };
 
-  const updateLine = (index: number, next: RecipeLine) => {
-    setLines((prev) => prev.map((line, i) => (i === index ? next : line)));
+  const handleItemChange = (index: number, newItemId: string) => {
+    const newItem = inventory.find((i) => i.id === newItemId);
+    const baseUnit = newItem ? newItem.unit : 'piece';
+    const { displayUnit } = getInitialDisplayUnitAndQty(0, baseUnit);
+    setLines((prev) =>
+      prev.map((line, i) => {
+        if (i !== index) return line;
+        const num =
+          typeof line.displayQuantity === 'number'
+            ? line.displayQuantity
+            : parseFloat(line.displayQuantity as string) || 0;
+        const baseQty = convertToBaseQuantity(num, displayUnit, baseUnit);
+        return {
+          inventoryItemId: newItemId,
+          quantity: baseQty,
+          displayQuantity: line.displayQuantity,
+          displayUnit,
+        };
+      })
+    );
+  };
+
+  const handleQuantityChange = (index: number, valStr: string) => {
+    setLines((prev) =>
+      prev.map((line, i) => {
+        if (i !== index) return line;
+        const mat = inventory.find((it) => it.id === line.inventoryItemId);
+        const baseUnit = mat ? mat.unit : 'piece';
+        const num = parseFloat(valStr) || 0;
+        const baseQty = convertToBaseQuantity(num, line.displayUnit, baseUnit);
+        return {
+          ...line,
+          displayQuantity: valStr,
+          quantity: baseQty,
+        };
+      })
+    );
+  };
+
+  const handleUnitChange = (index: number, newUnit: string) => {
+    setLines((prev) =>
+      prev.map((line, i) => {
+        if (i !== index) return line;
+        const mat = inventory.find((it) => it.id === line.inventoryItemId);
+        const baseUnit = mat ? mat.unit : 'piece';
+        const currentVal =
+          typeof line.displayQuantity === 'number'
+            ? line.displayQuantity
+            : parseFloat(line.displayQuantity as string) || 0;
+
+        const baseQty = convertToBaseQuantity(currentVal, line.displayUnit, baseUnit);
+        const newDisplayVal =
+          currentVal > 0
+            ? convertFromBaseQuantity(baseQty, baseUnit, newUnit)
+            : line.displayQuantity;
+
+        const roundedVal =
+          typeof newDisplayVal === 'number'
+            ? Math.round(newDisplayVal * 1000) / 1000
+            : newDisplayVal;
+
+        return {
+          ...line,
+          displayUnit: newUnit,
+          displayQuantity: roundedVal,
+          quantity: baseQty,
+        };
+      })
+    );
   };
 
   const removeLine = (index: number) => {
@@ -60,9 +161,13 @@ export function RecipeEditorModal({
     e.preventDefault();
     setSaving(true);
     try {
-      // A zero quantity would be rejected by the validator, and an empty line is how a
-      // half-finished row looks — dropping them lets the rest of the recipe save.
-      await onSave(lines.filter((line) => line.quantity > 0));
+      const validLines = lines
+        .filter((line) => line.quantity > 0)
+        .map((line) => ({
+          inventoryItemId: line.inventoryItemId,
+          quantity: line.quantity,
+        }));
+      await onSave(validLines);
     } finally {
       setSaving(false);
     }
@@ -108,7 +213,6 @@ export function RecipeEditorModal({
         ) : (
           <div className="space-y-2 max-h-[260px] overflow-y-auto pr-1">
             {lines.map((line, index) => {
-              const material = inventory.find((item) => item.id === line.inventoryItemId);
               return (
                 <div
                   key={index}
@@ -117,8 +221,8 @@ export function RecipeEditorModal({
                   <select
                     aria-label={t('Ingredient')}
                     value={line.inventoryItemId}
-                    onChange={(e) => updateLine(index, { ...line, inventoryItemId: e.target.value })}
-                    className="flex-1 px-3 py-1.5 rounded-lg border border-gray-200 text-xs focus:outline-none bg-white font-medium"
+                    onChange={(e) => handleItemChange(index, e.target.value)}
+                    className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-gray-200 text-xs focus:outline-none bg-white font-medium truncate"
                   >
                     {inventory.map((item) => (
                       <option key={item.id} value={item.id}>
@@ -127,23 +231,41 @@ export function RecipeEditorModal({
                     ))}
                   </select>
 
-                  <div className="flex items-center gap-1.5 w-28">
+                  <div className="flex items-center gap-1.5 shrink-0">
                     <input
                       aria-label={t('Quantity Used')}
                       type="number"
-                      step="0.001"
+                      step="any"
                       min="0"
                       dir="ltr"
-                      value={line.quantity || ''}
-                      onChange={(e) =>
-                        updateLine(index, { ...line, quantity: parseFloat(e.target.value) || 0 })
-                      }
-                      className="w-full px-2 py-1.5 rounded-lg border border-gray-200 text-xs focus:outline-none text-center font-bold"
+                      required
+                      value={line.displayQuantity}
+                      onChange={(e) => handleQuantityChange(index, e.target.value)}
+                      className="w-20 px-2 py-1.5 rounded-lg border border-gray-200 text-xs focus:outline-none text-center font-bold"
                       placeholder="0"
                     />
-                    <span className="text-[10px] text-gray-400 font-semibold whitespace-nowrap">
-                      {material ? t(material.unit) : ''}
-                    </span>
+                    <select
+                      value={line.displayUnit}
+                      onChange={(e) => handleUnitChange(index, e.target.value)}
+                      aria-label={t('Unit')}
+                      className="px-2 py-1.5 rounded-lg border border-gray-200 text-xs focus:outline-none bg-white font-bold text-mocha-800 cursor-pointer shadow-xs min-w-[78px]"
+                    >
+                      <optgroup label={language === 'ar' ? 'أوزان' : 'Weights'}>
+                        <option value="g">{language === 'ar' ? 'جرام (g)' : 'g'}</option>
+                        <option value="kg">{language === 'ar' ? 'كجم (kg)' : 'kg'}</option>
+                      </optgroup>
+                      <optgroup label={language === 'ar' ? 'سوائل' : 'Volumes'}>
+                        <option value="ml">{language === 'ar' ? 'مل (ml)' : 'ml'}</option>
+                        <option value="liter">{language === 'ar' ? 'لتر (L)' : 'liter'}</option>
+                        <option value="cup">{language === 'ar' ? 'كوب' : 'cup'}</option>
+                        <option value="shot">{language === 'ar' ? 'شوت' : 'shot'}</option>
+                      </optgroup>
+                      <optgroup label={language === 'ar' ? 'قطع ووحدات' : 'Count'}>
+                        <option value="piece">{language === 'ar' ? 'قطعة' : 'piece'}</option>
+                        <option value="portion">{language === 'ar' ? 'حصة' : 'portion'}</option>
+                        <option value="can">{language === 'ar' ? 'علبة' : 'can'}</option>
+                      </optgroup>
+                    </select>
                   </div>
 
                   <button
