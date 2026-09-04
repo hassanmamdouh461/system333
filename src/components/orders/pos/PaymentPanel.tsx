@@ -1,5 +1,5 @@
 import { clsx } from 'clsx';
-import { CreditCard, DollarSign, Check, Printer } from 'lucide-react';
+import { CreditCard, DollarSign, Check, Printer, AlertCircle } from 'lucide-react';
 import { useLanguage } from '../../../context/LanguageContext';
 import { PaymentMethod } from '../../../hooks/usePosDraft';
 
@@ -47,7 +47,12 @@ export function PaymentPanel({
   onSave,
   onReset,
 }: PaymentPanelProps) {
-  const { t } = useLanguage();
+  const { t, isRtl } = useLanguage();
+
+  const numReceived = parseFloat(receivedAmount);
+  const isCash = paymentMethod === 'Cash';
+  const isCashCovered = !isCash || (!isNaN(numReceived) && numReceived >= grandTotal && grandTotal > 0);
+  const cashRemaining = Math.max(0, grandTotal - (isNaN(numReceived) ? 0 : numReceived));
 
   const handleKeypadPress = (key: string) => {
     if (key === 'C') return onReceivedAmountChange('0');
@@ -65,8 +70,18 @@ export function PaymentPanel({
   return (
     <div className="w-full lg:w-[28%] lg:h-full bg-white p-2 md:p-2.5 rounded-2xl border border-gray-200/80 shadow-sm flex flex-col justify-between overflow-hidden pos-calculator">
       <div className="overflow-y-auto hide-scrollbar flex-1 pe-0.5 flex flex-col justify-start gap-2 h-full">
-        <h2 className="font-extrabold text-xs md:text-sm text-mocha-800 border-b border-gray-100 pb-1.5 shrink-0">
+        <h2 className="font-extrabold text-xs md:text-sm text-mocha-800 border-b border-gray-100 pb-1.5 shrink-0 flex items-center justify-between">
           <span className="font-sans">{t('Payment & Invoice')}</span>
+          {grandTotal > 0 && (
+            <button
+              type="button"
+              onClick={() => onReceivedAmountChange(grandTotal.toFixed(2))}
+              className="text-[10px] text-mocha-700 bg-mocha-50 hover:bg-mocha-100 border border-mocha-200 px-2 py-0.5 rounded-lg font-bold transition-all"
+              title={t('Exact')}
+            >
+              {t('Exact')} ({grandTotal.toFixed(2)})
+            </button>
+          )}
         </h2>
 
         <div className="grid grid-cols-2 gap-2 shrink-0">
@@ -140,9 +155,28 @@ export function PaymentPanel({
       </div>
 
       <div className="space-y-1.5 mt-2 pt-1.5 border-t border-gray-100 shrink-0">
+        {/* Cash validation alert banner */}
+        {isCash && grandTotal > 0 && !isCashCovered && (
+          <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-2 text-amber-800 text-xs flex items-center gap-2 font-bold animate-pulse">
+            <AlertCircle size={16} className="shrink-0 text-amber-600" />
+            <div className="flex-1 flex justify-between items-center">
+              <span>{t('Cannot complete cash order without receiving full amount')}</span>
+              <span className="font-mono text-xs font-black bg-amber-100 px-1.5 py-0.5 rounded text-amber-900">
+                {t('Remaining')}: {cashRemaining.toFixed(2)} {isRtl ? 'ج.م' : 'EGP'}
+              </span>
+            </div>
+          </div>
+        )}
+
         <button
           onClick={onPrintAndPay}
-          className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-1.5 rounded-xl border border-emerald-700 transition-all active:scale-95 text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm"
+          disabled={grandTotal <= 0 || (isCash && !isCashCovered)}
+          className={clsx(
+            "w-full font-black py-1.5 rounded-xl border transition-all text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm",
+            grandTotal <= 0 || (isCash && !isCashCovered)
+              ? "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed shadow-none"
+              : "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 active:scale-95 shadow-emerald-600/20"
+          )}
         >
           <Printer size={14} />
           <span className="font-sans">{t('Print & Pay')}</span>
@@ -157,7 +191,13 @@ export function PaymentPanel({
           </button>
           <button
             onClick={onSave}
-            className="bg-mocha-600 hover:bg-mocha-700 text-white font-black py-1.5 rounded-xl border border-mocha-700 transition-all active:scale-95 text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm"
+            disabled={grandTotal <= 0 || (isCash && !isCashCovered)}
+            className={clsx(
+              "font-black py-1.5 rounded-xl border transition-all text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm",
+              grandTotal <= 0 || (isCash && !isCashCovered)
+                ? "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed shadow-none"
+                : "bg-mocha-600 hover:bg-mocha-700 text-white border-mocha-700 active:scale-95 shadow-mocha-600/20"
+            )}
           >
             <Check size={14} />
             <span className="font-sans">{t('Save Invoice')}</span>

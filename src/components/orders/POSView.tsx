@@ -3,7 +3,7 @@ import { getTaxRate } from '../../utils/settingsConfig';
 import { MenuItem } from '../../types/menu';
 import { OrderItem, Order } from '../../types/order';
 import { useLanguage } from '../../context/LanguageContext';
-import { Coffee, Trash2, Plus, Minus, CreditCard, DollarSign, Check, XCircle, Printer, Search } from 'lucide-react';
+import { Coffee, Trash2, Plus, Minus, CreditCard, DollarSign, Check, XCircle, Printer, Search, AlertCircle } from 'lucide-react';
 import { clsx } from 'clsx';
 import { printCustomerReceipt } from '../../utils/printReceipts';
 import { playKeypadClick, playAddItemSound, playPaymentSuccessChime, playWarningSound } from '../../utils/soundEffects';
@@ -179,6 +179,12 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     return received - grandTotal;
   }, [receivedAmount, grandTotal]);
 
+  // Cash payment validation: strictly require cash received >= grandTotal
+  const numReceived = parseFloat(receivedAmount);
+  const isCash = paymentMethod === 'Cash';
+  const isCashCovered = !isCash || (!isNaN(numReceived) && numReceived >= grandTotal && grandTotal > 0);
+  const cashRemaining = Math.max(0, grandTotal - (isNaN(numReceived) ? 0 : numReceived));
+
   // Map of item quantities already added to invoice
   const cartItemCounts = useMemo(() => {
     const map: Record<string, number> = {};
@@ -192,8 +198,10 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
   const smartCashButtons = useMemo(() => {
     if (grandTotal <= 0) return [10, 20, 50, 100, 200, 500];
     const rounded = Math.ceil(grandTotal);
+    const exact = Number(grandTotal.toFixed(2));
     const set = new Set<number>();
-    set.add(rounded); // Exact amount
+    set.add(exact);
+    set.add(rounded);
     [10, 20, 50, 100, 200, 500].forEach(base => {
       const val = Math.ceil(rounded / base) * base;
       if (val >= rounded) set.add(val);
@@ -298,6 +306,13 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       return;
     }
 
+    // Cash validation: Never allow cash order to be saved as paid without full amount received
+    if (paymentMethod === 'Cash' && (orderMode === 'Takeaway' || paymentStatus === 'Paid') && !isCashCovered) {
+      playWarningSound();
+      alert(t('Cannot complete cash order without receiving full amount'));
+      return;
+    }
+
     try {
       const finalTableId = orderMode === 'Takeaway' ? 'Takeaway' : `${t('Table')} ${tableId}`;
       const paidAmt = paymentStatus === 'Paid' ? grandTotal : undefined;
@@ -323,6 +338,13 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
 
     if (orderMode === 'Dine-in' && !tableId.trim()) {
       alert(t('Please select table number first'));
+      return;
+    }
+
+    // Cash validation: Never allow cash order to be printed & paid without full amount received
+    if (paymentMethod === 'Cash' && !isCashCovered) {
+      playWarningSound();
+      alert(t('Cannot complete cash order without receiving full amount'));
       return;
     }
 
@@ -358,7 +380,19 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
           <div className="overflow-y-auto hide-scrollbar flex-1 pr-0.5 flex flex-col justify-start gap-2 h-full">
             <h2 className="font-extrabold text-xs md:text-sm text-mocha-800 border-b border-gray-100 pb-1.5 shrink-0 flex items-center justify-between">
               <span className="font-sans">{t('Payment & Invoice')}</span>
-              <span className="text-[10px] text-caramel font-bold">كاش سريع</span>
+              {grandTotal > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    playKeypadClick();
+                    setReceivedAmount(grandTotal.toFixed(2));
+                  }}
+                  className="text-[10px] text-mocha-700 bg-mocha-50 hover:bg-mocha-100 border border-mocha-200 px-2 py-0.5 rounded-lg font-bold transition-all"
+                  title={t('Exact')}
+                >
+                  {t('Exact')} ({grandTotal.toFixed(2)})
+                </button>
+              )}
             </h2>
             
             {/* Total Due & Received Amount Input */}
@@ -391,19 +425,25 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
 
             {/* Dynamic Smart Cash Buttons */}
             <div className="grid grid-cols-3 gap-1.5 shrink-0">
-              {smartCashButtons.map(amt => (
-                <button
-                  key={amt}
-                  onClick={() => handleQuickCash(amt)}
-                  className={`active:scale-95 transition-all text-xs md:text-sm font-black py-1.5 rounded-xl border shadow-sm ${
-                    parseFloat(receivedAmount) === amt 
-                      ? 'bg-mocha-700 text-white border-mocha-800 shadow-mocha-500/30' 
-                      : 'bg-gray-100 hover:bg-gray-200 text-gray-800 border-gray-200'
-                  }`}
-                >
-                  {amt} {amt === Math.ceil(grandTotal) && grandTotal > 0 ? <span className="text-[9px] block text-caramel">ضبط</span> : ''}
-                </button>
-              ))}
+              {smartCashButtons.map(amt => {
+                const isExact = grandTotal > 0 && Math.abs(amt - grandTotal) < 0.001;
+                const isRound = grandTotal > 0 && Math.abs(amt - Math.ceil(grandTotal)) < 0.001 && !isExact;
+                return (
+                  <button
+                    key={amt}
+                    onClick={() => handleQuickCash(amt)}
+                    className={`active:scale-95 transition-all text-xs md:text-sm font-black py-1.5 rounded-xl border shadow-sm ${
+                      parseFloat(receivedAmount) === amt 
+                        ? 'bg-mocha-700 text-white border-mocha-800 shadow-mocha-500/30' 
+                        : 'bg-gray-100 hover:bg-gray-200 text-gray-800 border-gray-200'
+                    }`}
+                  >
+                    {amt}
+                    {isExact && <span className="text-[9px] block text-emerald-600 font-bold">ضبط</span>}
+                    {isRound && <span className="text-[9px] block text-caramel">تقريب</span>}
+                  </button>
+                );
+              })}
             </div>
 
             {/* Keypad */}
@@ -457,9 +497,28 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
 
           {/* Action Button Row */}
           <div className="space-y-1.5 mt-2 pt-1.5 border-t border-gray-100 shrink-0">
+            {/* Cash validation alert banner */}
+            {isCash && invoiceItems.length > 0 && !isCashCovered && (
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-2 text-amber-800 text-xs flex items-center gap-2 font-bold animate-pulse">
+                <AlertCircle size={16} className="shrink-0 text-amber-600" />
+                <div className="flex-1 flex justify-between items-center">
+                  <span>{t('Cannot complete cash order without receiving full amount')}</span>
+                  <span className="font-mono text-xs font-black bg-amber-100 px-1.5 py-0.5 rounded text-amber-900">
+                    {t('Remaining')}: {cashRemaining.toFixed(2)} {isRtl ? 'ج.م' : 'EGP'}
+                  </span>
+                </div>
+              </div>
+            )}
+
             <button
               onClick={handlePrintAndPay}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-1.5 rounded-xl border border-emerald-700 transition-all active:scale-95 text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm"
+              disabled={invoiceItems.length === 0 || (isCash && !isCashCovered)}
+              className={clsx(
+                "w-full font-black py-1.5 rounded-xl border transition-all text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm",
+                invoiceItems.length === 0 || (isCash && !isCashCovered)
+                  ? "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed shadow-none"
+                  : "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 active:scale-95 shadow-emerald-600/20"
+              )}
             >
               <Printer size={14} />
               <span className="font-sans">{t('Print & Pay')}</span>
@@ -474,7 +533,13 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
               </button>
               <button
                 onClick={handleSaveOrder}
-                className="bg-mocha-600 hover:bg-mocha-700 text-white font-black py-1.5 rounded-xl border border-mocha-700 transition-all active:scale-95 text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm"
+                disabled={invoiceItems.length === 0 || ((orderMode === 'Takeaway' || paymentStatus === 'Paid') && isCash && !isCashCovered)}
+                className={clsx(
+                  "font-black py-1.5 rounded-xl border transition-all text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm",
+                  invoiceItems.length === 0 || ((orderMode === 'Takeaway' || paymentStatus === 'Paid') && isCash && !isCashCovered)
+                    ? "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed shadow-none"
+                    : "bg-mocha-600 hover:bg-mocha-700 text-white border-mocha-700 active:scale-95 shadow-mocha-600/20"
+                )}
               >
                 <Check size={14} />
                 <span className="font-sans">{t('Save Invoice')}</span>
