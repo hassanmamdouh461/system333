@@ -285,6 +285,19 @@ async function readSnapshot(db) {
 }
 
 async function readPublicMenu(db) {
+  let config = null;
+  try {
+    const configStmt = db.prepare(`SELECT data FROM public_menu_config WHERE id = 'current' LIMIT 1`);
+    if (configStmt && typeof configStmt.first === 'function') {
+      const row = await configStmt.first();
+      if (row && row.data) {
+        config = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+      }
+    }
+  } catch {
+    // Table not created yet or fallback
+  }
+
   const stmt = db.prepare(
     `SELECT id, name, description, price, category, image, available 
      FROM menu_items 
@@ -292,7 +305,27 @@ async function readPublicMenu(db) {
      ORDER BY category, name LIMIT ?`
   ).bind(READ_LIMIT);
   const { results } = await stmt.all();
-  return { menuItems: results || [] };
+
+  return { menuItems: results || [], config };
+}
+
+async function savePublicMenuConfig(db, config) {
+  try {
+    await db.prepare(
+      `CREATE TABLE IF NOT EXISTS public_menu_config (
+        id TEXT PRIMARY KEY,
+        data TEXT,
+        updated_at TEXT
+      )`
+    ).run();
+  } catch {
+    // Table already exists or creation ignored
+  }
+
+  const serialized = typeof config === 'string' ? config : JSON.stringify(config || {});
+  await db.prepare(
+    `INSERT OR REPLACE INTO public_menu_config (id, data, updated_at) VALUES (?, ?, ?)`
+  ).bind('current', serialized, nowIso()).run();
 }
 
 async function runMigration(db) {
@@ -442,6 +475,16 @@ export default {
     // ─── Everything below writes, so it needs the write key ───
     if (!hasWriteKey) {
       return json({ success: false, error: 'Unauthorized' }, 401, origin);
+    }
+
+    if (url.pathname === '/public-menu-config' || url.pathname === '/save/public-menu-config') {
+      try {
+        const configData = payload.config || payload;
+        await savePublicMenuConfig(env.DB, configData);
+        return json({ success: true }, 200, origin);
+      } catch (err) {
+        return json({ success: false, error: String(err.message || err) }, 500, origin);
+      }
     }
 
     if (url.pathname === '/migrate') {

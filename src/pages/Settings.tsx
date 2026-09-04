@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Store, LogOut, QrCode, Globe, Send, Armchair } from 'lucide-react';
+import { Store, LogOut, QrCode, Globe, Send, Armchair, Palette } from 'lucide-react';
 
 // Web reports portal URL. The desktop POS pushes its data to the isolated reports D1
 // database (api-reports.engaz.tech) and this link opens that data as a live dashboard
@@ -14,8 +14,9 @@ import { QrMenuModal } from '../components/settings/QrMenuModal';
 import { StoreConfigModal } from '../components/settings/StoreConfigModal';
 import { TelegramConfigModal } from '../components/settings/TelegramConfigModal';
 import { TablesConfigModal } from '../components/settings/TablesConfigModal';
+import { MenuBrandingModal } from '../components/settings/MenuBrandingModal';
 
-type ModalName = 'qr' | 'store' | 'telegram' | 'tables';
+type ModalName = 'qr' | 'store' | 'telegram' | 'tables' | 'branding';
 
 export default function Settings() {
   const [openModal, setOpenModal] = useState<ModalName | null>(null);
@@ -50,6 +51,12 @@ export default function Settings() {
           label: t('Customer QR Menu'),
           desc: t('Generate & print QR code for customer view'),
           onClick: () => setOpenModal('qr')
+        },
+        {
+          icon: Palette,
+          label: 'هوية ومظهر المنيو الإلكتروني',
+          desc: 'تخصيص اسم المنيو، اللوجو، صور الغلاف، والألوان',
+          onClick: () => setOpenModal('branding')
         },
       ]
     },
@@ -149,6 +156,7 @@ export default function Settings() {
       <StoreConfigModal isOpen={openModal === 'store'} onClose={closeModal} />
       <TelegramConfigModal isOpen={openModal === 'telegram'} onClose={closeModal} />
       <TablesConfigModal isOpen={openModal === 'tables'} onClose={closeModal} />
+      <MenuBrandingModal isOpen={openModal === 'branding'} onClose={closeModal} />
     </div>
   );
 }

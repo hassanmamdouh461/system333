@@ -197,7 +197,7 @@ export interface StoreConfig {
 }
 
 export const DEFAULT_STORE_CONFIG: StoreConfig = {
-  storeName: 'إنجاز',
+  storeName: '',
   address: 'القاهرة - مصر',
   phone: '0100000000',
   tagline: 'أفضل تجربة ضيافة',

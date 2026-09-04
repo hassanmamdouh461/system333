@@ -1,4 +1,5 @@
 import { MenuItem } from '../types/menu';
+import { PublicMenuConfig } from '../types/menuBranding';
 import { callWorker } from './workerClient';
 
 interface MenuItemRow {
@@ -73,6 +74,30 @@ export const menuService = {
       console.error('[menuService] Error fetching menu items from the worker:', error);
       throw new Error('فشل قراءة أصناف القائمة');
     }
+  },
+
+  async getPublicMenuData(): Promise<{ menuItems: MenuItem[]; config: PublicMenuConfig | null }> {
+    try {
+      const reportsUrl = (import.meta.env.VITE_REPORTS_WORKER_URL as string) || 'https://api-reports.engaz.tech';
+      const res = await fetch(`${reportsUrl.replace(/\/+$/, '')}/read/public-menu`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success && Array.isArray(data.menuItems)) {
+          return {
+            menuItems: data.menuItems.map(mapRow),
+            config: data.config || null,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('[menuService] Public menu fetch with config failed, falling back:', e);
+    }
+
+    const fallbackItems = await this.getAll();
+    return { menuItems: fallbackItems, config: null };
   },
 
   async create(item: Omit<MenuItem, 'id'>): Promise<MenuItem> {

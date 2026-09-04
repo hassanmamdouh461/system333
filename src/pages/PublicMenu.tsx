@@ -2,8 +2,9 @@ import { useState, useEffect, useMemo } from 'react';
 import { Search, AlertCircle, UtensilsCrossed, X, RefreshCw, Sparkles } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { menuService } from '../services/menuService';
+import { menuBrandingService } from '../services/menuBrandingService';
 import { MenuItem } from '../types/menu';
-import { getStoreConfig } from '../utils/settingsConfig';
+import { PublicMenuConfig, MenuTheme } from '../types/menuBranding';
 
 const CATEGORY_TRANSLATIONS: Record<string, string> = {
   'Hot Coffee': 'قهوة ساخنة',
@@ -35,6 +36,59 @@ const ITEM_TRANSLATIONS: Record<string, { name: string; desc: string }> = {
   'cafe mocha': { name: 'كافيه موكا', desc: 'إسبريسو ممزوج بالشوكولاتة الغنية والحليب الساخن.' },
   'turkish coffee': { name: 'قهوة تركي', desc: 'بن مطحون ناعم ومحضر على الطريقة التقليدية.' },
   'french coffee': { name: 'قهوة فرنساوي', desc: 'قهوة تقليدية محضرة بالحليب المبخر.' },
+};
+
+const THEME_STYLES: Record<
+  MenuTheme,
+  {
+    headerGradient: string;
+    accentText: string;
+    accentGlow: string;
+    priceBadge: string;
+    activeTab: string;
+    bg: string;
+  }
+> = {
+  dark: {
+    headerGradient: 'from-stone-950 via-stone-900 to-neutral-900',
+    accentText: 'text-amber-400',
+    accentGlow: 'bg-amber-500/10',
+    priceBadge: 'bg-amber-500/10 text-amber-950 border-amber-500/20',
+    activeTab: 'bg-stone-900 text-white shadow-stone-900/20',
+    bg: 'bg-[#f8f7f5]',
+  },
+  amber: {
+    headerGradient: 'from-[#2C1810] via-[#3D2314] to-[#1F110B]',
+    accentText: 'text-amber-300',
+    accentGlow: 'bg-amber-500/15',
+    priceBadge: 'bg-[#3D2314]/10 text-[#3D2314] border-[#3D2314]/20',
+    activeTab: 'bg-[#3D2314] text-white shadow-[#3D2314]/20',
+    bg: 'bg-[#faf7f2]',
+  },
+  emerald: {
+    headerGradient: 'from-[#062c1e] via-[#0b3d2b] to-[#041a12]',
+    accentText: 'text-emerald-300',
+    accentGlow: 'bg-emerald-500/15',
+    priceBadge: 'bg-emerald-500/10 text-emerald-950 border-emerald-500/20',
+    activeTab: 'bg-[#0b3d2b] text-white shadow-[#0b3d2b]/20',
+    bg: 'bg-[#f4f8f5]',
+  },
+  burgundy: {
+    headerGradient: 'from-[#380e15] via-[#4d131d] to-[#24080d]',
+    accentText: 'text-rose-300',
+    accentGlow: 'bg-rose-500/15',
+    priceBadge: 'bg-rose-500/10 text-rose-950 border-rose-500/20',
+    activeTab: 'bg-[#4d131d] text-white shadow-[#4d131d]/20',
+    bg: 'bg-[#f9f5f6]',
+  },
+  navy: {
+    headerGradient: 'from-[#0b1b36] via-[#12284d] to-[#060f21]',
+    accentText: 'text-sky-300',
+    accentGlow: 'bg-sky-500/15',
+    priceBadge: 'bg-sky-500/10 text-sky-950 border-sky-500/20',
+    activeTab: 'bg-[#12284d] text-white shadow-[#12284d]/20',
+    bg: 'bg-[#f4f6fa]',
+  },
 };
 
 const containerVariants = {
@@ -72,30 +126,25 @@ export default function PublicMenu() {
   const [error, setError] = useState<string | null>(null);
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState('');
+  const [config, setConfig] = useState<PublicMenuConfig>(() => menuBrandingService.getLocalConfig());
 
-  // Extract store display name (avoiding default "BrewMaster" branding)
-  const storeDisplayName = useMemo(() => {
-    try {
-      const cfg = getStoreConfig();
-      if (
-        cfg.storeName &&
-        !cfg.storeName.toLowerCase().includes('brewmaster') &&
-        cfg.storeName.trim().length > 0
-      ) {
-        return cfg.storeName.trim();
-      }
-    } catch {
-      // ignore
-    }
-    return 'قائمة الطعام والأسعار';
-  }, []);
+  const themeStyle = THEME_STYLES[config.theme] || THEME_STYLES.dark;
+  const storeDisplayName = config.storeName?.trim() || 'قائمة الطعام والأسعار';
+  const subtitle = config.subtitle?.trim() || 'أهلاً بكم • تصفح أحدث الأصناف والأسعار';
+  const footerText = config.footerText?.trim() || 'نتمنى لكم تجربة مميزة وبالهناء والشفاء';
 
   const loadMenu = async () => {
     try {
       setLoading(true);
       setError(null);
-      const fetchedItems = await menuService.getAll();
-      setItems(fetchedItems);
+      const { menuItems, config: remoteConfig } = await menuService.getPublicMenuData();
+      setItems(menuItems);
+      if (remoteConfig && typeof remoteConfig === 'object') {
+        setConfig(prev => ({
+          ...prev,
+          ...remoteConfig,
+        }));
+      }
     } catch (err) {
       console.error('Error fetching public menu:', err);
       setError('تعذر تحميل القائمة. يرجى التحقق من الاتصال بالإنترنت.');
@@ -106,8 +155,11 @@ export default function PublicMenu() {
 
   useEffect(() => {
     document.title = `${storeDisplayName} | المنيو الإلكتروني`;
-    loadMenu();
   }, [storeDisplayName]);
+
+  useEffect(() => {
+    loadMenu();
+  }, []);
 
   // Filter only actually available items from the database
   const activeItems = useMemo(() => {
@@ -169,29 +221,41 @@ export default function PublicMenu() {
   }, [activeItems, selectedCategory, searchQuery]);
 
   return (
-    <div className="min-h-screen bg-[#f8f7f5] text-stone-800 font-sans flex flex-col antialiased selection:bg-amber-100 selection:text-amber-900" dir="rtl">
+    <div className={`min-h-screen ${themeStyle.bg} text-stone-800 font-sans flex flex-col antialiased selection:bg-amber-100 selection:text-amber-900 transition-colors duration-300`} dir="rtl">
       {/* Top Banner / Header */}
-      <header className="relative bg-gradient-to-br from-stone-900 via-stone-850 to-neutral-900 text-white pt-8 pb-14 px-4 sm:px-8 rounded-b-[2rem] sm:rounded-b-[2.5rem] shadow-xl overflow-hidden z-0">
-        {/* Subtle decorative background gradient accents */}
-        <div className="absolute -top-24 -right-24 w-72 h-72 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
-        <div className="absolute -bottom-24 -left-24 w-72 h-72 bg-stone-700/20 rounded-full blur-3xl pointer-events-none" />
+      <header className={`relative bg-gradient-to-br ${themeStyle.headerGradient} text-white pt-8 pb-14 px-4 sm:px-8 rounded-b-[2rem] sm:rounded-b-[2.5rem] shadow-xl overflow-hidden z-0`}>
+        {/* Custom Banner Cover Image (if set by owner) */}
+        {config.bannerUrl && (
+          <div
+            className="absolute inset-0 bg-cover bg-center opacity-30 pointer-events-none transition-opacity duration-700"
+            style={{ backgroundImage: `url(${config.bannerUrl})` }}
+          />
+        )}
+        <div className="absolute inset-0 bg-gradient-to-t from-black/40 via-transparent to-black/20 pointer-events-none" />
+
+        {/* Decorative background glow accents */}
+        <div className={`absolute -top-24 -right-24 w-72 h-72 ${themeStyle.accentGlow} rounded-full blur-3xl pointer-events-none`} />
 
         <div className="max-w-4xl mx-auto flex flex-col items-center text-center relative z-10">
           {/* Logo / Badge */}
-          <div className="w-14 h-14 sm:w-16 sm:h-16 bg-white/10 border border-white/15 rounded-2xl flex items-center justify-center mb-3 shadow-lg backdrop-blur-md">
-            <UtensilsCrossed className="w-7 h-7 sm:w-8 sm:h-8 text-amber-400" />
+          <div className="w-16 h-16 sm:w-20 sm:h-20 bg-white/10 border border-white/20 rounded-2xl sm:rounded-3xl flex items-center justify-center mb-3.5 shadow-xl backdrop-blur-md overflow-hidden shrink-0">
+            {config.logoUrl ? (
+              <img src={config.logoUrl} alt={storeDisplayName} className="w-full h-full object-cover" />
+            ) : (
+              <UtensilsCrossed className={`w-8 h-8 sm:w-9 sm:h-9 ${themeStyle.accentText}`} />
+            )}
           </div>
 
           <h1 className="text-2xl sm:text-3xl lg:text-4xl font-black tracking-tight mb-2 text-white">
             {storeDisplayName}
           </h1>
           <p className="text-stone-300 text-xs sm:text-sm font-medium max-w-md leading-relaxed">
-            أهلاً بكم • تصفح أحدث الأصناف والأسعار
+            {subtitle}
           </p>
 
           {!loading && !error && activeItems.length > 0 && (
-            <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-white/10 text-stone-200 text-xs font-semibold backdrop-blur-sm border border-white/10">
-              <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+            <div className="mt-3.5 inline-flex items-center gap-1.5 px-3.5 py-1 rounded-full bg-white/10 text-stone-200 text-xs font-semibold backdrop-blur-sm border border-white/10">
+              <Sparkles className={`w-3.5 h-3.5 ${themeStyle.accentText}`} />
               <span>{activeItems.length} صنف متاح</span>
             </div>
           )}
@@ -232,7 +296,7 @@ export default function PublicMenu() {
             <motion.div
               animate={{ rotate: 360 }}
               transition={{ duration: 1.5, repeat: Infinity, ease: 'linear' }}
-              className="mb-4 text-amber-600"
+              className={`mb-4 ${themeStyle.accentText}`}
             >
               <RefreshCw className="w-10 h-10" />
             </motion.div>
@@ -273,7 +337,7 @@ export default function PublicMenu() {
                   onClick={() => setSelectedCategory('ALL')}
                   className={`px-4 sm:px-5 py-2.5 rounded-full text-xs sm:text-sm font-black whitespace-nowrap shrink-0 transition-all duration-200 ${
                     selectedCategory === 'ALL'
-                      ? 'bg-stone-900 text-white shadow-md shadow-stone-900/20 scale-[1.02]'
+                      ? `${themeStyle.activeTab} scale-[1.02]`
                       : 'bg-white text-stone-700 border border-stone-200/80 hover:bg-stone-100/80'
                   }`}
                 >
@@ -290,7 +354,7 @@ export default function PublicMenu() {
                       onClick={() => setSelectedCategory(cat.id)}
                       className={`px-4 sm:px-5 py-2.5 rounded-full text-xs sm:text-sm font-black whitespace-nowrap shrink-0 transition-all duration-200 ${
                         isSelected
-                          ? 'bg-stone-900 text-white shadow-md shadow-stone-900/20 scale-[1.02]'
+                          ? `${themeStyle.activeTab} scale-[1.02]`
                           : 'bg-white text-stone-700 border border-stone-200/80 hover:bg-stone-100/80'
                       }`}
                     >
@@ -364,9 +428,9 @@ export default function PublicMenu() {
 
                         {/* Price Badge */}
                         <div className="shrink-0 text-left">
-                          <div className="bg-amber-500/10 text-amber-950 border border-amber-500/20 px-3 py-1.5 rounded-xl font-black text-sm sm:text-base whitespace-nowrap shadow-sm">
+                          <div className={`${themeStyle.priceBadge} px-3 py-1.5 rounded-xl font-black text-sm sm:text-base whitespace-nowrap shadow-sm`}>
                             {Number(item.price).toFixed(2)}{' '}
-                            <span className="text-xs font-bold text-amber-800">ج.م</span>
+                            <span className="text-xs font-bold opacity-80">ج.م</span>
                           </div>
                         </div>
                       </div>
@@ -380,7 +444,6 @@ export default function PublicMenu() {
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
                             loading="lazy"
                             onError={(e) => {
-                              // Hide broken image smoothly
                               (e.target as HTMLElement).parentElement?.remove();
                             }}
                           />
@@ -422,7 +485,7 @@ export default function PublicMenu() {
       {/* Footer */}
       <footer className="text-center py-8 px-4 mt-12 border-t border-stone-200/60 relative z-10">
         <p className="text-xs font-bold text-stone-400">
-          قائمة الطعام والأسعار الإلكترونية © {new Date().getFullYear()} • نتمنى لكم تجربة مميزة
+          {footerText} • {new Date().getFullYear()}
         </p>
       </footer>
     </div>
