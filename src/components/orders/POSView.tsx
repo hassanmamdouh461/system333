@@ -1,9 +1,9 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useRef } from 'react';
 import { getTaxRate } from '../../utils/settingsConfig';
 import { MenuItem } from '../../types/menu';
 import { OrderItem, Order } from '../../types/order';
 import { useLanguage } from '../../context/LanguageContext';
-import { Coffee, Trash2, Plus, Minus, CreditCard, DollarSign, Check, XCircle, Printer, Search, AlertCircle } from 'lucide-react';
+import { Coffee, Trash2, Plus, Minus, CreditCard, DollarSign, Check, XCircle, Printer, Search } from 'lucide-react';
 import { clsx } from 'clsx';
 import { printCustomerReceipt } from '../../utils/printReceipts';
 import { playKeypadClick, playAddItemSound, playPaymentSuccessChime, playWarningSound } from '../../utils/soundEffects';
@@ -54,7 +54,32 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
   
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [toastText, setToastText] = useState<string>('');
+  const [isToastVisible, setIsToastVisible] = useState(false);
+  const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  const showToast = (msg: string) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToastText(msg);
+    setIsToastVisible(true);
+    toastTimeoutRef.current = setTimeout(() => {
+      setIsToastVisible(false);
+    }, 1300);
+  };
+
+  const dismissToast = () => {
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+      toastTimeoutRef.current = null;
+    }
+    setIsToastVisible(false);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('pos_invoiceItems', JSON.stringify(invoiceItems));
@@ -179,12 +204,6 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     return received - grandTotal;
   }, [receivedAmount, grandTotal]);
 
-  // Cash payment validation: strictly require cash received >= grandTotal
-  const numReceived = parseFloat(receivedAmount);
-  const isCash = paymentMethod === 'Cash';
-  const isCashCovered = !isCash || (!isNaN(numReceived) && numReceived >= grandTotal && grandTotal > 0);
-  const cashRemaining = Math.max(0, grandTotal - (isNaN(numReceived) ? 0 : numReceived));
-
   // Map of item quantities already added to invoice
   const cartItemCounts = useMemo(() => {
     const map: Record<string, number> = {};
@@ -215,6 +234,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
 
   // Add item to invoice
   const handleAddItem = (menuItem: MenuItem) => {
+    dismissToast();
     playAddItemSound();
     setInvoiceItems(prev => {
       const existing = prev.find(item => item.id === menuItem.id);
@@ -306,13 +326,6 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       return;
     }
 
-    // Cash validation: Never allow cash order to be saved as paid without full amount received
-    if (paymentMethod === 'Cash' && (orderMode === 'Takeaway' || paymentStatus === 'Paid') && !isCashCovered) {
-      playWarningSound();
-      alert(t('Cannot complete cash order without receiving full amount'));
-      return;
-    }
-
     try {
       const finalTableId = orderMode === 'Takeaway' ? 'Takeaway' : `${t('Table')} ${tableId}`;
       const paidAmt = paymentStatus === 'Paid' ? grandTotal : undefined;
@@ -320,8 +333,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
 
       handleReset();
       playPaymentSuccessChime();
-      setSuccessMessage(t('Successfully saved order'));
-      setTimeout(() => setSuccessMessage(null), 3000);
+      showToast(t('Successfully saved order'));
     } catch (err) {
       console.error(err);
       playWarningSound();
@@ -341,13 +353,6 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       return;
     }
 
-    // Cash validation: Never allow cash order to be printed & paid without full amount received
-    if (paymentMethod === 'Cash' && !isCashCovered) {
-      playWarningSound();
-      alert(t('Cannot complete cash order without receiving full amount'));
-      return;
-    }
-
     try {
       const finalTableId = orderMode === 'Takeaway' ? 'Takeaway' : `${t('Table')} ${tableId}`;
       const finalPaymentStatus = 'Paid';
@@ -362,8 +367,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
 
       handleReset();
       playPaymentSuccessChime();
-      setSuccessMessage(t('Successfully saved order'));
-      setTimeout(() => setSuccessMessage(null), 3050);
+      showToast(t('Successfully saved order'));
     } catch (err) {
       console.error(err);
       playWarningSound();
@@ -497,25 +501,12 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
 
           {/* Action Button Row */}
           <div className="space-y-1.5 mt-2 pt-1.5 border-t border-gray-100 shrink-0">
-            {/* Cash validation alert banner */}
-            {isCash && invoiceItems.length > 0 && !isCashCovered && (
-              <div className="bg-amber-500/10 border border-amber-500/30 rounded-xl p-2 text-amber-800 text-xs flex items-center gap-2 font-bold animate-pulse">
-                <AlertCircle size={16} className="shrink-0 text-amber-600" />
-                <div className="flex-1 flex justify-between items-center">
-                  <span>{t('Cannot complete cash order without receiving full amount')}</span>
-                  <span className="font-mono text-xs font-black bg-amber-100 px-1.5 py-0.5 rounded text-amber-900">
-                    {t('Remaining')}: {cashRemaining.toFixed(2)} {isRtl ? 'ج.م' : 'EGP'}
-                  </span>
-                </div>
-              </div>
-            )}
-
             <button
               onClick={handlePrintAndPay}
-              disabled={invoiceItems.length === 0 || (isCash && !isCashCovered)}
+              disabled={invoiceItems.length === 0}
               className={clsx(
                 "w-full font-black py-1.5 rounded-xl border transition-all text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm",
-                invoiceItems.length === 0 || (isCash && !isCashCovered)
+                invoiceItems.length === 0
                   ? "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed shadow-none"
                   : "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 active:scale-95 shadow-emerald-600/20"
               )}
@@ -533,10 +524,10 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
               </button>
               <button
                 onClick={handleSaveOrder}
-                disabled={invoiceItems.length === 0 || ((orderMode === 'Takeaway' || paymentStatus === 'Paid') && isCash && !isCashCovered)}
+                disabled={invoiceItems.length === 0}
                 className={clsx(
                   "font-black py-1.5 rounded-xl border transition-all text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm",
-                  invoiceItems.length === 0 || ((orderMode === 'Takeaway' || paymentStatus === 'Paid') && isCash && !isCashCovered)
+                  invoiceItems.length === 0
                     ? "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed shadow-none"
                     : "bg-mocha-600 hover:bg-mocha-700 text-white border-mocha-700 active:scale-95 shadow-mocha-600/20"
                 )}
@@ -594,11 +585,6 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
 
         {/* Products Grid */}
         <div className="flex-1 overflow-y-auto mt-2.5 pr-1 custom-scrollbar">
-          {successMessage && (
-            <div className="bg-green-50 text-green-700 border border-green-200 rounded-xl p-3 mb-4 font-bold text-center text-xs animate-bounce">
-              {successMessage}
-            </div>
-          )}
           {filteredMenuItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-gray-400 py-12">
               <Coffee size={50} className="stroke-1 mb-2" />
@@ -884,6 +870,22 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
         onClose={() => setIsTablesModalOpen(false)}
         onTablesChange={(newTables) => setTablesList(newTables)}
       />
+
+      {/* Floating Toast Notification (Non-intrusive) */}
+      <div
+        className={clsx(
+          "fixed bottom-6 start-6 z-50 flex items-center gap-2 px-3.5 py-2 rounded-xl shadow-lg border text-xs sm:text-sm font-bold transition-all duration-300 pointer-events-none select-none",
+          "bg-emerald-600/95 text-white border-emerald-500/40 shadow-emerald-950/20 backdrop-blur-sm",
+          isToastVisible
+            ? "opacity-100 translate-y-0 scale-100"
+            : "opacity-0 translate-y-2 scale-95"
+        )}
+        role="status"
+        aria-live="polite"
+      >
+        <Check size={16} className="shrink-0 stroke-[2.5]" />
+        <span className="font-sans">{toastText}</span>
+      </div>
     </div>
   );
 }
