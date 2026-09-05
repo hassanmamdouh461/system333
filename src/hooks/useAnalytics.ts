@@ -16,7 +16,7 @@ import { MenuItem } from '../types/menu';
 import { getStoreConfig } from '../utils/settingsConfig';
 
 // ─── Period type ──────────────────────────────────────────────────────────────
-export type AnalyticsPeriod = 'Today' | 'This Week' | 'This Month' | 'This Year';
+export type AnalyticsPeriod = 'Today' | 'This Week' | 'This Month' | 'This Year' | 'All Time';
 
 // ─── Chart buckets ────────────────────────────────────────────────────────────
 const CHART_CONFIG: Record<AnalyticsPeriod, {
@@ -39,6 +39,10 @@ const CHART_CONFIG: Record<AnalyticsPeriod, {
     labels: ['Jan',  'Feb',  'Mar',  'Apr',  'May',  'Jun',  'Jul',  'Aug',  'Sep',  'Oct',  'Nov',  'Dec'],
     getBucket: (d) => d.getMonth(),
   },
+  'All Time': {
+    labels: [],
+    getBucket: () => 0,
+  },
 };
 
 // ─── Period filter ────────────────────────────────────────────────────────────
@@ -50,6 +54,7 @@ function shiftDateByBusinessHour(date: Date, startHour: number): Date {
 }
 
 function inPeriod(dateStr: string, period: AnalyticsPeriod): boolean {
+  if (period === 'All Time') return true;
   const rawD = new Date(dateStr);
   const rawNow = new Date();
   const startHour = getStoreConfig().businessDayStartHour;
@@ -160,6 +165,44 @@ export function useAnalytics(period: AnalyticsPeriod): AnalyticsResult {
 
   // ── Chart: collected revenue per bucket ─────────────────────────────────────
   const chartData = useMemo<ChartPoint[]>(() => {
+    if (period === 'All Time') {
+      const currentYear = new Date().getFullYear();
+      let startYear = currentYear - 3;
+      completedPeriod.forEach(o => {
+        const rawDate = o.paidAt || o.createdAt;
+        if (rawDate) {
+          const d = new Date(rawDate);
+          if (!Number.isNaN(d.getTime()) && d.getFullYear() < startYear) {
+            startYear = d.getFullYear();
+          }
+        }
+      });
+      const labels: string[] = [];
+      for (let y = startYear; y <= currentYear; y++) {
+        labels.push(String(y));
+      }
+      const revenue = new Array(labels.length).fill(0);
+      const counts  = new Array(labels.length).fill(0);
+
+      completedPeriod.forEach(o => {
+        const rawDate = o.paidAt || o.createdAt;
+        if (!rawDate) return;
+        const d = new Date(rawDate);
+        if (Number.isNaN(d.getTime())) return;
+        const idx = d.getFullYear() - startYear;
+        if (idx >= 0 && idx < labels.length) {
+          revenue[idx] += orderRevenue(o);
+          counts[idx]  += 1;
+        }
+      });
+
+      return labels.map((label, i) => ({
+        label,
+        value:  roundMoney(revenue[i]),
+        orders: counts[i],
+      }));
+    }
+
     const cfg     = CHART_CONFIG[period];
     const revenue = new Array(cfg.labels.length).fill(0);
     const counts  = new Array(cfg.labels.length).fill(0);

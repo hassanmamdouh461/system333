@@ -23,9 +23,15 @@ import {
   summarizePaymentMethods,
 } from '../utils/reportMath';
 
+const VALID_PERIODS: AnalyticsPeriod[] = ['Today', 'This Week', 'This Month', 'This Year', 'All Time'];
+
 function periodLabel(p: AnalyticsPeriod, t: (k: string) => string) {
   const map: Record<AnalyticsPeriod, string> = {
-    'Today': 'today', 'This Week': 'this week', 'This Month': 'this month', 'This Year': 'this year',
+    'Today': 'today',
+    'This Week': 'this week',
+    'This Month': 'this month',
+    'This Year': 'this year',
+    'All Time': 'all time',
   };
   return t(map[p]);
 }
@@ -34,8 +40,8 @@ function periodLabel(p: AnalyticsPeriod, t: (k: string) => string) {
 export default function Reports() {
   const { t } = useLanguage();
   const [dateRange, setDateRange] = useState<AnalyticsPeriod>(() => {
-    const saved = localStorage.getItem('reports_date_range');
-    return (saved as AnalyticsPeriod) || 'This Week';
+    const saved = localStorage.getItem('reports_date_range') as AnalyticsPeriod;
+    return VALID_PERIODS.includes(saved) ? saved : 'This Week';
   });
 
   const handleDateRangeChange = (value: AnalyticsPeriod) => {
@@ -181,6 +187,7 @@ export default function Reports() {
               <option value="This Week">{t('This Week')}</option>
               <option value="This Month">{t('This Month')}</option>
               <option value="This Year">{t('This Year')}</option>
+              <option value="All Time">{t('All Time')}</option>
             </select>
           </div>
           <button
