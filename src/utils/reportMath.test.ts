@@ -1,4 +1,4 @@
-﻿import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import {
   computeRecipeCosts,
   computeCogs,
@@ -9,6 +9,7 @@ import {
 } from './reportMath';
 import { Order } from '../types/order';
 import { InventoryItem, RecipeIngredient } from '../global';
+import { translations } from '../i18n/translations';
 
 const store = new Map<string, string>();
 
@@ -144,6 +145,17 @@ describe('reportMath', () => {
       expect(stats.takeaway).toBe(1);
       expect(stats.dineIn).toBe(2);
       expect(stats.total).toBe(3);
+    });
+  });
+
+  describe('period translations', () => {
+    it('provides matching Arabic translations for all report period options', () => {
+      expect(translations['Today']).toBe('اليوم');
+      expect(translations['This Week']).toBe('هذا الأسبوع');
+      expect(translations['This Month']).toBe('هذا الشهر');
+      expect(translations['This Year']).toBe('هذه السنة');
+      expect(translations['All Time']).toBe('كل الفترات');
+      expect(translations['all time']).toBe('كل الفترات');
     });
   });
 });
