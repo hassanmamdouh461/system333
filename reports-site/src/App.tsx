@@ -176,6 +176,19 @@ export default function App() {
     [orders, inventory, customers]
   );
 
+  /**
+   * Branch ids to offer, including a selected one the snapshot no longer contains. A `select`
+   * whose value is missing from its options renders blank, which would read as "no branch"
+   * while the filter is in fact still applied.
+   */
+  const branchChoices = useMemo(() => {
+    const ids = new Set(branches);
+    for (const id of [branch, settings.defaultBranch]) {
+      if (id && id !== ALL_BRANCHES) ids.add(id);
+    }
+    return [...ids].sort();
+  }, [branches, branch, settings.defaultBranch]);
+
   const scopedOrders = useMemo(
     () => orders.filter((o) => inBranch(o.branch_id, branch) && inPeriod(o.createdAt, period)),
     [orders, branch, period]
@@ -250,7 +263,7 @@ export default function App() {
             }}
           >
             <option value={ALL_BRANCHES}>كل الفروع</option>
-            {branches.map((id) => (
+            {branchChoices.map((id) => (
               <option key={id} value={id}>
                 {id}
               </option>
@@ -367,7 +380,7 @@ export default function App() {
           settings={settings}
           onChange={updateSettings}
           onReset={resetSettings}
-          branches={branches}
+          branches={branchChoices}
           branch={branch}
           period={period}
           lastUpdated={lastUpdated}

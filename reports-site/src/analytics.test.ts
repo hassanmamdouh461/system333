@@ -4,6 +4,7 @@ import {
   branchOptions,
   costOfGoodsSold,
   dailyRevenue,
+  formatTime,
   inBranch,
   inPeriod,
   orderLines,
@@ -393,5 +394,13 @@ describe('branchOptions', () => {
 
   it('omits rows with no branch', () => {
     expect(branchOptions([order({ branch_id: null })], [], [])).toEqual([]);
+  });
+});
+
+describe('formatTime', () => {
+  it('prints Latin digits, so a time beside a Latin count cannot be misread as one number', () => {
+    // Arabic-Indic digits ran into the neighbouring order count: a time ending in ٠ next to
+    // "5 طلب" read as fifty orders.
+    expect(formatTime(new Date(2026, 8, 4, 21, 47, 5))).toBe('21:47:05');
   });
 });

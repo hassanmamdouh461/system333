@@ -60,7 +60,7 @@ export function AnalyticsTab({
           icon="orders"
           label="إجمالي الطلبات"
           badge={`${formatCount(sales.unpaidCount)} غير مدفوع`}
-          value={formatCount(sales.paidCount)}
+          value={formatCount(sales.paidCount + sales.unpaidCount)}
         />
         <StatCard
           tone="violet"

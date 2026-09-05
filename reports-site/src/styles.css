@@ -49,6 +49,8 @@
 
   --row-warn: #fffaf3;
   --row-warn-hover: #fff5e8;
+  /* Selected segment in a segmented control; it sits on top of `--surface-2`. */
+  --segment-active: var(--surface);
   --chart-from: #4f95f7;
   --chart-to: #1f6feb;
   --focus-ring: rgba(31, 111, 235, 0.25);
@@ -98,6 +100,8 @@
 
   --row-warn: rgba(240, 184, 84, 0.08);
   --row-warn-hover: rgba(240, 184, 84, 0.13);
+  /* Lighter than the track it sits on, since a dark card cannot show a raised chip by shadow. */
+  --segment-active: #333b4c;
   --chart-from: #7cb4ff;
   --chart-to: #3b7fe0;
   --focus-ring: rgba(99, 164, 255, 0.35);
@@ -929,7 +933,7 @@ tbody tr:hover td {
 }
 
 .segment.is-active {
-  background: var(--surface);
+  background: var(--segment-active);
   color: var(--text);
   box-shadow: var(--shadow);
 }

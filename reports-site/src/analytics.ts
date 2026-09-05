@@ -397,6 +397,13 @@ export function formatCount(value: number): string {
   return value.toLocaleString('en-US');
 }
 
+/**
+ * Clock time for the "last read" line.
+ *
+ * Latin digits, matching every other figure the portal prints. An `ar-EG` time would render
+ * Arabic-Indic digits, and next to a Latin count the two runs read as one number: the scope
+ * line showed the time ending in `٠` beside `5 طلب` and was read as fifty orders.
+ */
 export function formatTime(date: Date): string {
-  return date.toLocaleTimeString('ar-EG', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  return date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 }
