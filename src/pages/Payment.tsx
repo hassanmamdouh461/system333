@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Order } from '../types/order';
 import { PaymentModal } from '../components/payment/PaymentModal';
 import { CreditCard, DollarSign, Search, Calculator } from 'lucide-react';
@@ -16,6 +16,8 @@ import { reportFailure } from '../utils/reportFailure';
  */
 const STATUS_PRIORITY: Record<string, number> = { Ready: 1, Preparing: 2, New: 3, Completed: 4, Cancelled: 5 };
 
+const getTodayDateStr = () => new Date().toLocaleDateString('en-CA');
+
 export default function Payment() {
   const { t } = useLanguage();
   // Use local SQLite database - sync with Orders page
@@ -23,11 +25,24 @@ export default function Payment() {
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterDate, setFilterDate] = useState('');
+  const [filterDate, setFilterDate] = useState<string>(getTodayDateStr);
   const [filterStartTime, setFilterStartTime] = useState('');
   const [filterEndTime, setFilterEndTime] = useState('');
 
   const [activeTab, setActiveTab] = useState<'pending' | 'paid'>('pending');
+
+  // Automatically roll over the date filter when midnight strikes if viewing today
+  useEffect(() => {
+    let lastKnownToday = getTodayDateStr();
+    const interval = setInterval(() => {
+      const currentToday = getTodayDateStr();
+      if (currentToday !== lastKnownToday) {
+        setFilterDate(prev => (prev === lastKnownToday ? currentToday : prev));
+        lastKnownToday = currentToday;
+      }
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Show all orders pending payment — regardless of kitchen status.
   // An order leaves this screen ONLY when paymentStatus becomes 'Paid'.
@@ -39,6 +54,14 @@ export default function Payment() {
   const paidOrders = useMemo(() =>
     allOrders.filter(o => o.paymentStatus === 'Paid'),
   [allOrders]);
+
+  // Paid orders matching the selected date filter
+  const paidOrdersForDate = useMemo(() =>
+    paidOrders.filter(o => {
+      const orderDate = new Date(o.paidAt || o.createdAt).toLocaleDateString('en-CA');
+      return !filterDate || orderDate === filterDate;
+    }),
+  [paidOrders, filterDate]);
 
   const orders = activeTab === 'pending' ? pendingOrders : paidOrders;
 
@@ -168,7 +191,7 @@ export default function Payment() {
               : 'border-transparent text-gray-500 hover:text-gray-700'
           }`}
         >
-          {t('Paid Invoices')} ({paidOrders.length})
+          {t('Paid Invoices')} ({paidOrdersForDate.length})
           {activeTab === 'paid' && (
             <motion.div
               layoutId="activeTabUnderline"
@@ -226,6 +249,20 @@ export default function Payment() {
               className="bg-transparent border-none p-0 focus:outline-none text-gray-800 font-mono text-xs md:text-sm"
             />
           </div>
+
+          {/* Today Button shortcut when date filter is cleared or on another day */}
+          {filterDate !== getTodayDateStr() && (
+            <button
+              onClick={() => {
+                setFilterDate(getTodayDateStr());
+                setFilterStartTime('');
+                setFilterEndTime('');
+              }}
+              className="py-2.5 md:py-3 px-3 text-xs font-bold bg-mocha-50 text-mocha-700 hover:bg-mocha-100 rounded-xl border border-mocha-200 transition-colors shadow-sm active:scale-95"
+            >
+              {t('Today')}
+            </button>
+          )}
 
           {/* Clear Button */}
           {(filterDate || filterStartTime || filterEndTime) && (
