@@ -4,11 +4,26 @@ import {
   timingSafeEqual,
   issueViewerToken,
   verifyViewerToken,
+  parseBranch,
+  DEFAULT_BRANCH,
   __testing,
 } from '../d1-reports-worker.js';
 
-const { SYNC_TABLES, assertItems, MAX_BATCH, MOVEMENT_LIMIT, TOKEN_TTL_MS, LOGIN_MAX_ATTEMPTS, readSnapshot, readPublicMenu } =
-  __testing;
+const {
+  SYNC_TABLES,
+  assertItems,
+  MAX_BATCH,
+  MOVEMENT_LIMIT,
+  TOKEN_TTL_MS,
+  LOGIN_MAX_ATTEMPTS,
+  readSnapshot,
+  readPublicMenu,
+  savePublicMenuConfig,
+  MAX_MENU_CONFIG_CHARS,
+  readBranches,
+  saveBranch,
+  BRANCH_NAME_MAX,
+} = __testing;
 
 const SECRET = 'reports-token-secret-for-tests';
 
@@ -172,11 +187,12 @@ describe('readSnapshot', () => {
     };
   }
 
-  const EMPTY = [[], [], [], [], []];
+  const EMPTY = [[], [], [], [], [], []];
 
   it('returns every collection the portal reads, including the stock ledger', async () => {
     const snapshot = await readSnapshot(fakeDb(EMPTY));
     expect(Object.keys(snapshot).sort()).toEqual([
+      'branches',
       'customers',
       'inventory',
       'menuItems',
@@ -194,6 +210,7 @@ describe('readSnapshot', () => {
         [{ id: 'i1' }],
         [{ id: 'm1' }],
         [{ id: 'tx1' }],
+        [{ id: 'main' }],
       ])
     );
 
@@ -204,6 +221,7 @@ describe('readSnapshot', () => {
     expect(snapshot.inventory).toEqual([{ id: 'i1' }]);
     expect(snapshot.menuItems).toEqual([{ id: 'm1' }]);
     expect(snapshot.movements).toEqual([{ id: 'tx1' }]);
+    expect(snapshot.branches).toEqual([{ id: 'main' }]);
   });
 
   it('stamps the server time so the portal can show data age', async () => {
@@ -224,7 +242,7 @@ describe('readSnapshot', () => {
   it('reads only, and never reaches the SQLite catalogue', async () => {
     const db = fakeDb(EMPTY);
     await readSnapshot(db);
-    expect(db.seen).toHaveLength(5);
+    expect(db.seen).toHaveLength(6);
     for (const { sql } of db.seen) {
       expect(sql.trim().toUpperCase().startsWith('SELECT')).toBe(true);
       expect(sql.toUpperCase()).not.toContain('SQLITE_MASTER');
@@ -234,7 +252,7 @@ describe('readSnapshot', () => {
   it('hides soft-deleted rows from every table that has a tombstone', async () => {
     const db = fakeDb(EMPTY);
     await readSnapshot(db);
-    for (const table of ['orders', 'customers', 'inventory', 'menu_items']) {
+    for (const table of ['orders', 'customers', 'inventory', 'menu_items', 'branches']) {
       const statement = db.seen.find((s) => s.sql.includes(`FROM ${table}`));
       expect(statement.sql, `${table} tombstone filter`).toContain('deleted_at IS NULL');
     }
@@ -242,42 +260,243 @@ describe('readSnapshot', () => {
 });
 
 describe('readPublicMenu', () => {
-  it('returns menu items from the database', async () => {
-    const db = {
+  /**
+   * D1 stand-in for the two statements this path issues: the config row, then the items.
+   * `config` is what `SELECT data` returns, already serialised the way it is stored.
+   */
+  function menuDb({ config = null, items = [] }: { config?: unknown; items?: unknown[] }) {
+    const seen: string[] = [];
+    return {
+      seen,
       prepare(sql: string) {
-        return {
-          bind(...args: unknown[]) {
-            return {
-              async all() {
-                return { results: [{ id: 'm1', name: 'Espresso', price: 35, category: 'Hot Coffee|Bar' }] };
-              },
-            };
+        seen.push(sql);
+        const chain = {
+          bind: () => chain,
+          async all() {
+            return { results: items };
+          },
+          async first() {
+            return config === null ? null : { data: JSON.stringify(config) };
+          },
+          async run() {
+            return { success: true };
           },
         };
+        return chain;
       },
     };
-    const res = await readPublicMenu(db as any);
-    expect(res.menuItems).toEqual([{ id: 'm1', name: 'Espresso', price: 35, category: 'Hot Coffee|Bar' }]);
+  }
+
+  it('returns menu items from the database', async () => {
+    const rows = [{ id: 'm1', name: 'Espresso', price: 35, category: 'Hot Coffee|Bar' }];
+    const res = await readPublicMenu(menuDb({ items: rows }) as any);
+    expect(res.menuItems).toEqual(rows);
+    expect(res.config).toBeNull();
   });
 
   it('filters out soft-deleted and unavailable items', async () => {
-    let capturedSql = '';
+    const db = menuDb({ items: [] });
+    await readPublicMenu(db as any);
+    const itemsSql = db.seen.find((sql) => sql.includes('FROM menu_items')) as string;
+    expect(itemsSql).toContain('deleted_at IS NULL');
+    expect(itemsSql).toContain('available = 1 OR available IS NULL');
+  });
+
+  it('withholds a hidden item and a hidden category from the response itself', async () => {
+    // Filtering only in the page would still ship the hidden rows to anyone who opens the
+    // endpoint, which is not what the panel promises when it says "hidden from customers".
+    const res = await readPublicMenu(
+      menuDb({
+        config: {
+          hiddenItemIds: ['m2'],
+          categories: [{ id: 'Desserts', label: '', hidden: true }],
+        },
+        items: [
+          { id: 'm1', category: 'Hot Coffee|Bar' },
+          { id: 'm2', category: 'Hot Coffee|Bar' },
+          { id: 'm3', category: 'Desserts|Kitchen' },
+        ],
+      }) as any
+    );
+
+    expect(res.menuItems.map((row: { id: string }) => row.id)).toEqual(['m1']);
+  });
+
+  it('serves the menu with default wording when the stored config will not parse', async () => {
     const db = {
-      prepare(sql: string) {
-        capturedSql = sql;
-        return {
-          bind(...args: unknown[]) {
-            return {
-              async all() {
-                return { results: [] };
-              },
-            };
+      prepare() {
+        const chain = {
+          bind: () => chain,
+          async all() {
+            return { results: [{ id: 'm1', category: 'Hot Coffee' }] };
+          },
+          async first() {
+            return { data: '{not json' };
           },
         };
+        return chain;
       },
     };
-    await readPublicMenu(db as any);
-    expect(capturedSql).toContain('deleted_at IS NULL');
-    expect(capturedSql).toContain('available = 1 OR available IS NULL');
+
+    const res = await readPublicMenu(db as any);
+    expect(res.config).toBeNull();
+    expect(res.menuItems).toHaveLength(1);
+  });
+});
+
+describe('savePublicMenuConfig', () => {
+  function writeDb() {
+    const seen: Array<{ sql: string; bindings: unknown[] }> = [];
+    return {
+      seen,
+      prepare(sql: string) {
+        const statement = { sql, bindings: [] as unknown[] };
+        seen.push(statement);
+        const chain = {
+          bind(...args: unknown[]) {
+            statement.bindings = args;
+            return chain;
+          },
+          async run() {
+            return { success: true };
+          },
+        };
+        return chain;
+      },
+    };
+  }
+
+  it('stores the configuration under a single row, without issuing DDL', async () => {
+    // The table is created by /migrate. Creating it here meant every publish ran DDL on a
+    // request path, and masked a database that had never been migrated.
+    const db = writeDb();
+    await savePublicMenuConfig(db as any, { storeName: 'مطعم الأصالة' });
+
+    expect(db.seen).toHaveLength(1);
+    expect(db.seen[0].sql).toContain('INSERT OR REPLACE INTO public_menu_config');
+    expect(db.seen[0].sql.toUpperCase()).not.toContain('CREATE TABLE');
+    expect(db.seen[0].bindings[0]).toBe('current');
+    expect(JSON.parse(db.seen[0].bindings[1] as string)).toEqual({ storeName: 'مطعم الأصالة' });
+  });
+
+  it('rejects a non-object payload', async () => {
+    for (const bad of [null, undefined, 'config', 42]) {
+      await expect(savePublicMenuConfig(writeDb() as any, bad)).rejects.toThrow(/object/);
+    }
+  });
+
+  it('rejects a configuration too large to serve on every menu view', async () => {
+    const oversized = { bannerUrl: 'x'.repeat(MAX_MENU_CONFIG_CHARS + 100) };
+    await expect(savePublicMenuConfig(writeDb() as any, oversized)).rejects.toThrow(/at most/);
+  });
+});
+
+describe('parseBranch', () => {
+  it('accepts a slug id with an Arabic display name', () => {
+    const { branch, error } = parseBranch({ id: 'maadi_2', name: 'فرع المعادي' });
+    expect(error).toBeUndefined();
+    expect(branch).toEqual({
+      id: 'maadi_2',
+      name: 'فرع المعادي',
+      phone: '',
+      address: '',
+      active: 1,
+    });
+  });
+
+  it('lowercases the id, because branch_id comparisons are exact', () => {
+    expect(parseBranch({ id: 'Main-2', name: 'x' }).branch.id).toBe('main-2');
+  });
+
+  it('rejects an id that would produce rows no filter can match', () => {
+    // A space or a quote in branch_id is unreachable once it is stamped on a sale.
+    for (const id of ['', ' ', 'main branch', "main'", 'فرع', '_main', 'a'.repeat(41)]) {
+      expect(parseBranch({ id, name: 'x' }).error, id).toBeTruthy();
+    }
+  });
+
+  it('requires a name, since the manager reads it on every screen', () => {
+    expect(parseBranch({ id: 'main', name: '   ' }).error).toBeTruthy();
+    expect(parseBranch({ id: 'main' }).error).toBeTruthy();
+  });
+
+  it('caps the name rather than truncating it silently', () => {
+    expect(parseBranch({ id: 'main', name: 'x'.repeat(BRANCH_NAME_MAX) }).error).toBeUndefined();
+    expect(parseBranch({ id: 'main', name: 'x'.repeat(BRANCH_NAME_MAX + 1) }).error).toBeTruthy();
+  });
+
+  it('trims the name and keeps optional contact details bounded', () => {
+    const { branch } = parseBranch({
+      id: 'main',
+      name: '  الفرع الرئيسي  ',
+      phone: '0'.repeat(50),
+      address: 'a'.repeat(200),
+    });
+    expect(branch.name).toBe('الفرع الرئيسي');
+    expect(branch.phone).toHaveLength(30);
+    expect(branch.address).toHaveLength(120);
+  });
+
+  it('treats only an explicit false as closed, so a missing flag stays open', () => {
+    expect(parseBranch({ id: 'main', name: 'x' }).branch.active).toBe(1);
+    expect(parseBranch({ id: 'main', name: 'x', active: false }).branch.active).toBe(0);
+    expect(parseBranch({ id: 'main', name: 'x', active: true }).branch.active).toBe(1);
+  });
+
+  it('rejects a non-object payload instead of throwing', () => {
+    for (const input of [null, undefined, 'main', 42]) {
+      expect(parseBranch(input).error).toBeTruthy();
+    }
+  });
+});
+
+describe('branch registry statements', () => {
+  /** Records what was prepared and bound, so the SQL itself can be asserted. */
+  function recordingDb(rows = []) {
+    const seen = [];
+    return {
+      seen,
+      prepare(sql) {
+        const statement = { sql, bindings: [] };
+        seen.push(statement);
+        const chain = {
+          bind(...args) {
+            statement.bindings = args;
+            return chain;
+          },
+          async all() {
+            return { results: rows };
+          },
+          async run() {
+            return { success: true };
+          },
+        };
+        return chain;
+      },
+    };
+  }
+
+  it('reads only live branches, newest cap applied', async () => {
+    const db = recordingDb([{ id: 'main', name: 'الفرع الرئيسي' }]);
+    expect(await readBranches(db)).toEqual([{ id: 'main', name: 'الفرع الرئيسي' }]);
+    expect(db.seen[0].sql).toContain('deleted_at IS NULL');
+    expect(db.seen[0].sql.trim().toUpperCase().startsWith('SELECT')).toBe(true);
+  });
+
+  it('updates an existing branch in place rather than duplicating it', async () => {
+    const db = recordingDb();
+    await saveBranch(db, { id: 'main', name: 'اسم جديد', phone: '', address: '', active: 1 });
+
+    const { sql, bindings } = db.seen[0];
+    // Renaming a branch must not orphan the rows already stamped with its id.
+    expect(sql).toContain('ON CONFLICT(id) DO UPDATE');
+    expect(sql).not.toMatch(/\bDELETE\b/i);
+    expect(bindings.slice(0, 2)).toEqual(['main', 'اسم جديد']);
+  });
+});
+
+describe('DEFAULT_BRANCH', () => {
+  it('is a valid branch, so a fresh database is never branchless', () => {
+    expect(parseBranch(DEFAULT_BRANCH).error).toBeUndefined();
   });
 });

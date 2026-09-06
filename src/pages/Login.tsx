@@ -1,26 +1,17 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Coffee, ArrowRight, Lock, Eye, EyeOff, Building2, Delete, ExternalLink, Info, Mail } from 'lucide-react';
-import { useAuth, BRANCH_ACCOUNTS } from '../context/AuthContext';
+import { Coffee, ArrowRight, Lock, Eye, EyeOff, Building2, Delete, ExternalLink, Info } from 'lucide-react';
+import { useAuth, getBranchAccount } from '../context/AuthContext';
 import { playKeypadClick, playPaymentSuccessChime, playWarningSound } from '../utils/soundEffects';
-
-const LS_REMEMBERED_EMAIL = 'brewmaster_remembered_email';
 
 export default function Login() {
   const { login, needsPasswordSetup } = useAuth();
   const navigate = useNavigate();
 
-  const [selectedBranchEmail, setSelectedBranchEmail] = useState<string>(() => {
-    const saved = localStorage.getItem(LS_REMEMBERED_EMAIL);
-    if (saved && BRANCH_ACCOUNTS.some((b) => b.email === saved)) {
-      return saved;
-    }
-    return BRANCH_ACCOUNTS[0]?.email || 'branch1@system.com';
-  });
-
-  const [isCustomEmail, setIsCustomEmail] = useState(false);
-  const [customEmail, setCustomEmail] = useState('');
+  // This till is one branch, named in settings. The old picker shipped three addresses that
+  // every copy of the bundle recognised; branches are now managed in the reports portal.
+  const account = getBranchAccount();
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(true);
@@ -29,21 +20,7 @@ export default function Login() {
   const [shake, setShake] = useState(false);
   const [showNumpad, setShowNumpad] = useState(true);
 
-  const activeEmail = isCustomEmail ? customEmail.trim() : selectedBranchEmail;
-  const isFirstTimeSetup = activeEmail ? needsPasswordSetup(activeEmail) : false;
-
-  useEffect(() => {
-    const saved = localStorage.getItem(LS_REMEMBERED_EMAIL);
-    if (saved) {
-      if (BRANCH_ACCOUNTS.some((b) => b.email === saved)) {
-        setSelectedBranchEmail(saved);
-        setIsCustomEmail(false);
-      } else {
-        setCustomEmail(saved);
-        setIsCustomEmail(true);
-      }
-    }
-  }, []);
+  const isFirstTimeSetup = needsPasswordSetup(account.email);
 
   const triggerShake = () => {
     setShake(true);
@@ -66,11 +43,6 @@ export default function Login() {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!activeEmail) {
-      setError('يرجى اختيار الفرع أو إدخال البريد الإلكتروني');
-      triggerShake();
-      return;
-    }
     if (!password) {
       setError('يرجى إدخال كلمة المرور');
       triggerShake();
@@ -80,12 +52,7 @@ export default function Login() {
     setError('');
     setLoading(true);
     try {
-      await login(activeEmail, password, rememberMe);
-      if (rememberMe) {
-        localStorage.setItem(LS_REMEMBERED_EMAIL, activeEmail);
-      } else {
-        localStorage.removeItem(LS_REMEMBERED_EMAIL);
-      }
+      await login(account.email, password, rememberMe);
       playPaymentSuccessChime();
       navigate('/orders');
     } catch (err) {
@@ -120,65 +87,18 @@ export default function Login() {
           </p>
         </div>
 
-        {/* Branch Selection */}
-        <div className="mb-3">
-          <div className="flex items-center justify-between mb-1.5">
-            <label className="text-xs font-bold text-mocha-200 block">اختر الفرع</label>
-            <button
-              type="button"
-              onClick={() => {
-                setIsCustomEmail(!isCustomEmail);
-                setError('');
-              }}
-              className="text-[11px] text-caramel hover:underline font-bold"
-            >
-              {isCustomEmail ? 'اختيار من الفروع' : 'حساب مخصص'}
-            </button>
+        {/* The branch this till belongs to. Managed from settings, not picked here. */}
+        <div className="mb-3 flex items-center gap-2.5 bg-[#120C08] border border-white/10 rounded-xl p-2.5">
+          <div className="w-8 h-8 rounded-lg bg-caramel/15 border border-caramel/30 flex items-center justify-center shrink-0">
+            <Building2 className="w-4 h-4 text-caramel" />
           </div>
-
-          {isCustomEmail ? (
-            <div className="relative">
-              <Mail className="absolute right-3 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-mocha-400" />
-              <input
-                type="email"
-                value={customEmail}
-                onChange={(e) => setCustomEmail(e.target.value)}
-                placeholder="branch@system.com"
-                className="w-full bg-[#120C08] border border-white/10 text-white pr-9 pl-3 py-2 rounded-xl focus:outline-none focus:border-caramel focus:ring-1 focus:ring-caramel text-xs transition-all placeholder-gray-500"
-                dir="ltr"
-              />
-            </div>
-          ) : (
-            <div className="grid grid-cols-3 gap-1.5">
-              {BRANCH_ACCOUNTS.map((b) => {
-                const isSelected = selectedBranchEmail === b.email;
-                return (
-                  <button
-                    key={b.branchId}
-                    type="button"
-                    onClick={() => {
-                      playKeypadClick();
-                      setSelectedBranchEmail(b.email);
-                      setError('');
-                    }}
-                    className={`py-2 px-1 rounded-xl border text-center transition-all ${
-                      isSelected
-                        ? 'bg-caramel text-white border-caramel shadow-sm font-bold'
-                        : 'bg-white/5 hover:bg-white/10 text-gray-300 border-white/10'
-                    }`}
-                  >
-                    <Building2 className={`w-3.5 h-3.5 mx-auto mb-0.5 ${isSelected ? 'text-white' : 'text-caramel'}`} />
-                    <div className="text-xs font-bold truncate">
-                      {b.branchName.replace(/\s*\(.*?\)/g, '')}
-                    </div>
-                    <div className="text-[10px] opacity-75">
-                      {b.branchId === 'branch_1' ? 'فرع 1' : b.branchId === 'branch_2' ? 'فرع 2' : 'فرع 3'}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
+          <div className="min-w-0">
+            <div className="text-xs font-bold text-white truncate">{account.branchName}</div>
+            <div className="text-[10px] text-mocha-400 truncate" dir="ltr">{account.email}</div>
+          </div>
+          <span className="mr-auto text-[10px] font-bold text-emerald-300 bg-emerald-500/10 border border-emerald-500/25 rounded-full px-2 py-0.5 shrink-0">
+            {account.branchId}
+          </span>
         </div>
 
         {/* First Time Password Setup Notice */}

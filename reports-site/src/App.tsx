@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AuthError, clearSession, fetchSnapshot, readSession } from './api';
+import { AuthError, clearSession, fetchSnapshot, readSession, saveBranch } from './api';
 import { LoginScreen } from './LoginScreen';
 import { AnalyticsTab } from './AnalyticsTab';
 import { InventoryTab } from './InventoryTab';
@@ -7,6 +7,13 @@ import { CustomersTab } from './CustomersTab';
 import { MenuTab } from './MenuTab';
 import { SettingsTab } from './SettingsTab';
 import { Icon } from './ui';
+import {
+  branchLabel,
+  branchNames,
+  toBranchPayload,
+  type BranchInput,
+  type BranchRow,
+} from './branches';
 import {
   DEFAULT_SETTINGS,
   readSettings,
@@ -55,6 +62,7 @@ export default function App() {
   const [inventory, setInventory] = useState<InventoryRow[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItemRow[]>([]);
   const [movements, setMovements] = useState<StockMovementRow[]>([]);
+  const [branchRows, setBranchRows] = useState<BranchRow[]>([]);
 
   const [settings, setSettings] = useState<PortalSettings>(() => readSettings(localStorage));
   const [tab, setTab] = useState<Tab>('analytics');
@@ -119,6 +127,7 @@ export default function App() {
     setInventory([]);
     setMenuItems([]);
     setMovements([]);
+    setBranchRows([]);
     setLastUpdated(null);
   }, []);
 
@@ -134,6 +143,7 @@ export default function App() {
         setInventory(snapshot.inventory as unknown as InventoryRow[]);
         setMenuItems(snapshot.menuItems as unknown as MenuItemRow[]);
         setMovements(snapshot.movements as unknown as StockMovementRow[]);
+        setBranchRows(snapshot.branches as unknown as BranchRow[]);
         setLastUpdated(new Date(snapshot.serverTime));
         setError(null);
       } catch (e) {
@@ -180,14 +190,55 @@ export default function App() {
    * Branch ids to offer, including a selected one the snapshot no longer contains. A `select`
    * whose value is missing from its options renders blank, which would read as "no branch"
    * while the filter is in fact still applied.
+   *
+   * Registered branches are included too, so a newly added branch is selectable before its
+   * first sale gives it a row anywhere else.
    */
   const branchChoices = useMemo(() => {
     const ids = new Set(branches);
+    for (const row of branchRows) if (row.id) ids.add(row.id);
     for (const id of [branch, settings.defaultBranch]) {
       if (id && id !== ALL_BRANCHES) ids.add(id);
     }
     return [...ids].sort();
-  }, [branches, branch, settings.defaultBranch]);
+  }, [branches, branchRows, branch, settings.defaultBranch]);
+
+  const names = useMemo(() => branchNames(branchRows), [branchRows]);
+
+  /**
+   * Ids that mirrored rows carry but the registry has no record of: a till that synced before
+   * anyone named it. They stay visible in the branches card so the manager can name them
+   * instead of finding a bare slug in every filter.
+   */
+  const unregisteredBranchIds = useMemo(() => {
+    const registered = new Set(branchRows.map((row) => row.id));
+    return [...new Set(branches)].filter((id) => !registered.has(id));
+  }, [branches, branchRows]);
+
+  /** Order count per branch over the selected scope, shown next to each branch. */
+  const ordersByBranch = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const order of orders.filter((o) => inPeriod(o.createdAt, period))) {
+      const id = order.branch_id || '';
+      if (!id) continue;
+      totals.set(id, (totals.get(id) ?? 0) + 1);
+    }
+    return totals;
+  }, [orders, period]);
+
+  /**
+   * Saves a branch and adopts the registry the worker returns, rather than re-reading the
+   * whole snapshot: the reply is already authoritative, and the poll would take up to a
+   * minute to show a branch the manager just added.
+   */
+  const handleSaveBranch = useCallback(
+    async (input: BranchInput) => {
+      if (!token) throw new Error('انتهت الجلسة، يرجى تسجيل الدخول مرة أخرى');
+      const rows = await saveBranch(token, toBranchPayload(input));
+      setBranchRows(rows as unknown as BranchRow[]);
+    },
+    [token]
+  );
 
   const scopedOrders = useMemo(
     () => orders.filter((o) => inBranch(o.branch_id, branch) && inPeriod(o.createdAt, period)),
@@ -265,7 +316,7 @@ export default function App() {
             <option value={ALL_BRANCHES}>كل الفروع</option>
             {branchChoices.map((id) => (
               <option key={id} value={id}>
-                {id}
+                {branchLabel(id, names)}
               </option>
             ))}
           </select>
@@ -341,7 +392,8 @@ export default function App() {
 
       <p className="scope-line">
         <span>
-          {branch === ALL_BRANCHES ? 'كل الفروع' : branch} — {PERIOD_LABELS[period]}
+          {branch === ALL_BRANCHES ? 'كل الفروع' : branchLabel(branch, names)} —{' '}
+          {PERIOD_LABELS[period]}
         </span>
         <span className="muted">
           {lastUpdated
@@ -360,12 +412,15 @@ export default function App() {
           customerCount={scopedCustomers.length}
           newCustomerCount={newCustomerCount}
           periodLabel={PERIOD_LABELS[period]}
+          branchNames={names}
         />
       )}
 
       {tab === 'menu' && <MenuTab menuItems={scopedMenuItems} soldByName={soldByName} />}
 
-      {tab === 'inventory' && <InventoryTab inventory={scopedInventory} stock={stock} />}
+      {tab === 'inventory' && (
+        <InventoryTab inventory={scopedInventory} stock={stock} branchNames={names} />
+      )}
 
       {tab === 'customers' && (
         <CustomersTab
@@ -381,6 +436,10 @@ export default function App() {
           onChange={updateSettings}
           onReset={resetSettings}
           branches={branchChoices}
+          branchRows={branchRows}
+          unregisteredBranchIds={unregisteredBranchIds}
+          ordersByBranch={ordersByBranch}
+          onSaveBranch={handleSaveBranch}
           branch={branch}
           period={period}
           lastUpdated={lastUpdated}
@@ -392,6 +451,7 @@ export default function App() {
             inventory: scopedInventory,
             customers: scopedCustomers,
             soldByName,
+            branchNames: names,
           }}
         />
       )}

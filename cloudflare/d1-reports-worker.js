@@ -20,8 +20,13 @@
  *   POST /migrate                     → create tables (write key)
  *   POST /auth/login                  { password } → { token, expiresAt }
  *   POST /sync/<table>                { items: [...] } (write key)
- *   POST /read/snapshot               → orders, customers, inventory, menu, stock movements
- *                                       (token or write key)
+ *   POST /read/snapshot               → orders, customers, inventory, menu, stock movements,
+ *                                       branches (token or write key)
+ *   POST /branches/save               { branch } → upsert one branch (token or write key)
+ *
+ * The branch registry is the one thing a signed-in viewer may write. It holds no sales figure
+ * and no customer detail: only the identity of a till, which is what the manager has to be
+ * able to add without a developer. Every other write still needs REPORTS_API_KEY.
  *
  * Secrets: REPORTS_API_KEY (write), REPORTS_VIEWER_PASSWORD, REPORTS_TOKEN_SECRET.
  */
@@ -38,6 +43,11 @@ const READ_LIMIT = 1000;
  * than the row tables or the portal's cost of goods would silently omit older sales.
  */
 const MOVEMENT_LIMIT = 5000;
+/**
+ * Cap on the stored menu configuration, measured on its JSON form. It carries two inline
+ * images and is returned on every menu view, so its size is paid by every customer.
+ */
+const MAX_MENU_CONFIG_CHARS = 900_000;
 /** Viewer sessions are short: the portal re-authenticates rather than holding a long token. */
 const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
 
@@ -176,6 +186,70 @@ function assertItems(items) {
   return items;
 }
 
+// ─── Branch registry ─────────────────────────────────────────────────────────
+// The one table a signed-in viewer may write, so its input is checked here rather than
+// trusted. An id becomes the `branch_id` every mirrored row is filtered by, so it is
+// restricted to a slug: a stray space or quote would produce a branch whose rows no filter
+// can ever match again.
+
+const BRANCH_ID_PATTERN = /^[a-z0-9][a-z0-9_-]{0,39}$/;
+const BRANCH_NAME_MAX = 60;
+/** The branch every install starts with, so a fresh database is never branchless. */
+export const DEFAULT_BRANCH = { id: 'main', name: 'الفرع الرئيسي' };
+
+/**
+ * A branch record built from untrusted input, or an error explaining the rejection.
+ *
+ * The name is what a manager reads on every screen, so it is trimmed and length-capped but
+ * otherwise left alone: it is Arabic text, not an identifier.
+ */
+export function parseBranch(input) {
+  if (!input || typeof input !== 'object') return { error: 'Expected a branch object' };
+
+  const id = String(input.id ?? '').trim().toLowerCase();
+  if (!BRANCH_ID_PATTERN.test(id)) {
+    return { error: 'Branch id must be 1-40 characters of a-z, 0-9, dash or underscore' };
+  }
+
+  const name = String(input.name ?? '').trim();
+  if (!name) return { error: 'Branch name is required' };
+  if (name.length > BRANCH_NAME_MAX) {
+    return { error: `Branch name must be at most ${BRANCH_NAME_MAX} characters` };
+  }
+
+  return {
+    branch: {
+      id,
+      name,
+      phone: str(input.phone, '').slice(0, 30),
+      address: str(input.address, '').slice(0, 120),
+      // A closed branch keeps its rows readable; only new sign-ins are meant to stop.
+      active: input.active === false ? 0 : 1,
+    },
+  };
+}
+
+async function readBranches(db) {
+  const { results } = await db
+    .prepare(`SELECT * FROM branches WHERE deleted_at IS NULL ORDER BY name ASC LIMIT ?`)
+    .bind(READ_LIMIT)
+    .all();
+  return results || [];
+}
+
+async function saveBranch(db, branch) {
+  await db
+    .prepare(
+      `INSERT INTO branches (id, name, phone, address, active, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET
+         name = excluded.name, phone = excluded.phone, address = excluded.address,
+         active = excluded.active, updated_at = excluded.updated_at`
+    )
+    .bind(branch.id, branch.name, branch.phone, branch.address, branch.active, nowIso(), nowIso())
+    .run();
+}
+
 // ─── Mirror targets ──────────────────────────────────────────────────────────
 // This database is a read model, so every write is an idempotent replace keyed on id.
 // There is no last-writer-wins guard: the POS is the single source of truth and a re-sent
@@ -263,7 +337,7 @@ const SYNC_TABLES = {
 };
 
 async function readSnapshot(db) {
-  const [orders, customers, inventory, menuItems, movements] = await db.batch([
+  const [orders, customers, inventory, menuItems, movements, branches] = await db.batch([
     db.prepare(`SELECT * FROM orders WHERE deleted_at IS NULL ORDER BY createdAt DESC LIMIT ?`).bind(READ_LIMIT),
     db.prepare(`SELECT * FROM customers WHERE deleted_at IS NULL ORDER BY points DESC LIMIT ?`).bind(READ_LIMIT),
     db.prepare(`SELECT * FROM inventory WHERE deleted_at IS NULL ORDER BY name ASC LIMIT ?`).bind(READ_LIMIT),
@@ -271,6 +345,9 @@ async function readSnapshot(db) {
     // Cost of goods comes from this ledger rather than from recipes, so the portal reports
     // what each sale actually consumed even after its recipe is edited.
     db.prepare(`SELECT * FROM inventory_transactions ORDER BY createdAt DESC LIMIT ?`).bind(MOVEMENT_LIMIT),
+    // The registry, so the portal can show a branch by name rather than by the id stamped
+    // on its rows.
+    db.prepare(`SELECT * FROM branches WHERE deleted_at IS NULL ORDER BY name ASC LIMIT ?`).bind(READ_LIMIT),
   ]);
 
   return {
@@ -279,53 +356,106 @@ async function readSnapshot(db) {
     inventory: inventory.results || [],
     menuItems: menuItems.results || [],
     movements: movements.results || [],
+    branches: branches.results || [],
     // Lets the portal show the age of what it is displaying rather than the age of its poll.
     serverTime: nowIso(),
   };
 }
 
-async function readPublicMenu(db) {
-  let config = null;
+/**
+ * The stored menu configuration, or null when nothing has been published yet.
+ *
+ * A row that will not parse is treated as absent rather than thrown on: the menu is a
+ * customer-facing page, and serving it with default wording beats serving an error because
+ * one JSON blob is corrupt.
+ */
+async function readMenuConfig(db) {
   try {
-    const configStmt = db.prepare(`SELECT data FROM public_menu_config WHERE id = 'current' LIMIT 1`);
-    if (configStmt && typeof configStmt.first === 'function') {
-      const row = await configStmt.first();
-      if (row && row.data) {
-        config = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
-      }
-    }
-  } catch {
-    // Table not created yet or fallback
+    const statement = db.prepare(`SELECT data FROM public_menu_config WHERE id = 'current' LIMIT 1`);
+    if (!statement || typeof statement.first !== 'function') return null;
+    const row = await statement.first();
+    if (!row || !row.data) return null;
+    const parsed = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch (e) {
+    console.warn('[reports] Could not read the menu config:', String(e.message || e));
+    return null;
   }
-
-  const stmt = db.prepare(
-    `SELECT id, name, description, price, category, image, available 
-     FROM menu_items 
-     WHERE deleted_at IS NULL AND (available = 1 OR available IS NULL) 
-     ORDER BY category, name LIMIT ?`
-  ).bind(READ_LIMIT);
-  const { results } = await stmt.all();
-
-  return { menuItems: results || [], config };
 }
 
+function stringList(value) {
+  return Array.isArray(value) ? value.filter((entry) => typeof entry === 'string') : [];
+}
+
+/** The menu category stored on an item; the column packs `"<category>|<prep area>"`. */
+function menuItemCategory(row) {
+  const first = String(row.category || '').split('|')[0].trim();
+  return first && first !== 'All' ? first : 'أخرى';
+}
+
+/**
+ * The public menu: the items a customer may see, plus the configuration that describes them.
+ *
+ * Hiding is applied here and not only in the page, because a hidden item that still travels
+ * in the response is visible to anyone who opens the endpoint directly — which is not what
+ * the panel promises when it says an item is hidden from customers.
+ */
+async function readPublicMenu(db) {
+  const config = await readMenuConfig(db);
+
+  const statement = db.prepare(
+    `SELECT id, name, description, price, category, image, available
+     FROM menu_items
+     WHERE deleted_at IS NULL AND (available = 1 OR available IS NULL)
+     ORDER BY category, name LIMIT ?`
+  ).bind(READ_LIMIT);
+  const { results } = await statement.all();
+  const rows = results || [];
+
+  if (!config) return { menuItems: rows, config: null };
+
+  const hiddenItems = new Set(stringList(config.hiddenItemIds));
+  const hiddenCategories = new Set(
+    (Array.isArray(config.categories) ? config.categories : [])
+      .filter((rule) => rule && typeof rule === 'object' && rule.hidden === true)
+      .map((rule) => String(rule.id))
+  );
+
+  const menuItems = rows.filter(
+    (row) => !hiddenItems.has(String(row.id)) && !hiddenCategories.has(menuItemCategory(row))
+  );
+
+  return { menuItems, config };
+}
+
+/**
+ * Stores the menu configuration under a single row.
+ *
+ * Capped on the serialised form: the record carries two inline images and is returned on
+ * every menu view, so an oversized one is a cost paid by every customer, on every load. A
+ * rejection here is marked as the caller's fault so the endpoint can answer 400, and leave
+ * 500 to mean the database itself failed.
+ */
 async function savePublicMenuConfig(db, config) {
-  try {
-    await db.prepare(
-      `CREATE TABLE IF NOT EXISTS public_menu_config (
-        id TEXT PRIMARY KEY,
-        data TEXT,
-        updated_at TEXT
-      )`
-    ).run();
-  } catch {
-    // Table already exists or creation ignored
+  if (!config || typeof config !== 'object') {
+    throw rejected('config must be an object');
   }
 
-  const serialized = typeof config === 'string' ? config : JSON.stringify(config || {});
+  const serialized = JSON.stringify(config);
+  if (serialized.length > MAX_MENU_CONFIG_CHARS) {
+    throw rejected(`config must be at most ${MAX_MENU_CONFIG_CHARS} characters`);
+  }
+
   await db.prepare(
     `INSERT OR REPLACE INTO public_menu_config (id, data, updated_at) VALUES (?, ?, ?)`
   ).bind('current', serialized, nowIso()).run();
+}
+
+/** An error caused by what the caller sent, rather than by this worker or its database. */
+function rejected(message) {
+  const error = new Error(message);
+  error.isRejection = true;
+  return error;
 }
 
 async function runMigration(db) {
@@ -380,6 +510,27 @@ async function runMigration(db) {
     id TEXT PRIMARY KEY, customerId TEXT, orderId TEXT, type TEXT,
     points REAL, balance REAL, createdAt TEXT, branch_id TEXT
   )`));
+  results.push(await tryExec('branches', `CREATE TABLE IF NOT EXISTS branches (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT, address TEXT,
+    active INTEGER DEFAULT 1, created_at TEXT, updated_at TEXT, deleted_at TEXT
+  )`));
+  // The public menu's identity and display rules, as one row. Created here rather than on
+  // first write, so a publish either succeeds against a migrated database or fails loudly
+  // instead of issuing DDL on a request path.
+  results.push(await tryExec('public_menu_config', `CREATE TABLE IF NOT EXISTS public_menu_config (
+    id TEXT PRIMARY KEY, data TEXT, updated_at TEXT
+  )`));
+
+  // One branch, inserted only when the table is empty. `INSERT OR IGNORE` on a fixed id would
+  // resurrect the default after a manager renamed or removed it.
+  results.push(
+    await tryExec(
+      'branches.seed',
+      `INSERT INTO branches (id, name, active, created_at, updated_at)
+       SELECT '${DEFAULT_BRANCH.id}', '${DEFAULT_BRANCH.name}', 1, '${nowIso()}', '${nowIso()}'
+       WHERE NOT EXISTS (SELECT 1 FROM branches)`
+    )
+  );
 
   const failed = results.filter(r => !r.ok);
   return { results, failed };
@@ -455,14 +606,14 @@ export default {
     const writeKey = request.headers.get('X-API-Key');
     const hasWriteKey = Boolean(env.REPORTS_API_KEY) && timingSafeEqual(writeKey, env.REPORTS_API_KEY);
 
+    const bearer = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
+    const hasViewerToken = env.REPORTS_TOKEN_SECRET
+      ? await verifyViewerToken(env.REPORTS_TOKEN_SECRET, bearer)
+      : false;
+
     // ─── Read: a viewer token is enough, and is all the portal ever holds ───
     if (url.pathname === '/read/snapshot') {
-      const bearer = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
-      const hasToken = env.REPORTS_TOKEN_SECRET
-        ? await verifyViewerToken(env.REPORTS_TOKEN_SECRET, bearer)
-        : false;
-
-      if (!hasToken && !hasWriteKey) {
+      if (!hasViewerToken && !hasWriteKey) {
         return json({ success: false, error: 'Unauthorized' }, 401, origin);
       }
       try {
@@ -472,18 +623,38 @@ export default {
       }
     }
 
-    // ─── Everything below writes, so it needs the write key ───
+    // ─── Branch registry: the one write a signed-in viewer may perform ───
+    // It carries no sales figure and no customer detail, and the manager has to be able to
+    // open a branch without a developer. The write key still works, so the desktop POS can
+    // register its own till.
+    if (url.pathname === '/branches/save') {
+      if (!hasViewerToken && !hasWriteKey) {
+        return json({ success: false, error: 'Unauthorized' }, 401, origin);
+      }
+      const { branch, error } = parseBranch(payload.branch ?? payload);
+      if (error) return json({ success: false, error }, 400, origin);
+      try {
+        await saveBranch(env.DB, branch);
+        return json({ success: true, branch, branches: await readBranches(env.DB) }, 200, origin);
+      } catch (err) {
+        return json({ success: false, error: String(err.message || err) }, 500, origin);
+      }
+    }
+
+    // ─── Everything below writes real data, so it needs the write key ───
     if (!hasWriteKey) {
       return json({ success: false, error: 'Unauthorized' }, 401, origin);
     }
 
     if (url.pathname === '/public-menu-config' || url.pathname === '/save/public-menu-config') {
       try {
-        const configData = payload.config || payload;
-        await savePublicMenuConfig(env.DB, configData);
+        await savePublicMenuConfig(env.DB, payload.config || payload);
         return json({ success: true }, 200, origin);
       } catch (err) {
-        return json({ success: false, error: String(err.message || err) }, 500, origin);
+        // A rejected configuration is the caller's input; anything else is a server fault
+        // that must not be dressed up as a validation message.
+        const status = err && err.isRejection ? 400 : 500;
+        return json({ success: false, error: String(err.message || err) }, status, origin);
       }
     }
 
@@ -522,4 +693,18 @@ export default {
 };
 
 // Exported for the test suite; not part of the HTTP surface.
-export const __testing = { SYNC_TABLES, assertItems, MAX_BATCH, MOVEMENT_LIMIT, TOKEN_TTL_MS, LOGIN_MAX_ATTEMPTS, readSnapshot, readPublicMenu };
+export const __testing = {
+  SYNC_TABLES,
+  assertItems,
+  MAX_BATCH,
+  MOVEMENT_LIMIT,
+  TOKEN_TTL_MS,
+  LOGIN_MAX_ATTEMPTS,
+  readSnapshot,
+  readPublicMenu,
+  savePublicMenuConfig,
+  MAX_MENU_CONFIG_CHARS,
+  readBranches,
+  saveBranch,
+  BRANCH_NAME_MAX,
+};

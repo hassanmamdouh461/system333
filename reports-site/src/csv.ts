@@ -53,6 +53,14 @@ export interface ExportScope {
   customers: CustomerRow[];
   /** Quantity sold per product name, over the same scope. */
   soldByName: Map<string, number>;
+  /** Display name per branch id, so a column reads as a branch rather than as a slug. */
+  branchNames: Map<string, string>;
+}
+
+/** Branch as the manager knows it; an unregistered id exports as itself, not as blank. */
+function branchCell(id: string | null, names: Map<string, string>): string {
+  if (!id) return '';
+  return names.get(id) ?? id;
 }
 
 /** A local timestamp, since a viewer reads these against their own working day. */
@@ -62,13 +70,13 @@ function localDateTime(value: string | null): string {
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('en-GB', { hour12: false });
 }
 
-function ordersCsv(orders: OrderRow[]): string {
+function ordersCsv(orders: OrderRow[], names: Map<string, string>): string {
   return toCsv(
     ['رقم الطلب', 'التاريخ', 'الفرع', 'حالة الدفع', 'طريقة الدفع', 'الأصناف', 'الضريبة', 'المستحق', 'المحصل'],
     orders.map((order) => [
       order.orderNumber || order.id,
       localDateTime(order.createdAt),
-      order.branch_id || '',
+      branchCell(order.branch_id, names),
       order.paymentStatus === 'Paid' ? 'مدفوع' : 'غير مدفوع',
       order.paymentMethod || '',
       orderLines(order)
@@ -81,7 +89,11 @@ function ordersCsv(orders: OrderRow[]): string {
   );
 }
 
-function menuCsv(menuItems: MenuItemRow[], soldByName: Map<string, number>): string {
+function menuCsv(
+  menuItems: MenuItemRow[],
+  soldByName: Map<string, number>,
+  names: Map<string, string>
+): string {
   return toCsv(
     ['الصنف', 'القسم', 'السعر', 'الكمية المباعة', 'إيراد الفترة', 'الحالة', 'الفرع'],
     menuItems.map((item) => {
@@ -93,13 +105,13 @@ function menuCsv(menuItems: MenuItemRow[], soldByName: Map<string, number>): str
         sold,
         formatMoney(sold * toNum(item.price)),
         toNum(item.available) === 1 ? 'متوفر' : 'غير متوفر',
-        item.branch_id || '',
+        branchCell(item.branch_id, names),
       ];
     })
   );
 }
 
-function inventoryCsv(inventory: InventoryRow[]): string {
+function inventoryCsv(inventory: InventoryRow[], names: Map<string, string>): string {
   return toCsv(
     ['اسم الصنف', 'الوحدة', 'المخزون الحالي', 'حد التنبيه', 'سعر الوحدة', 'قيمة المخزون', 'الحالة', 'الفرع'],
     inventory.map((item) => [
@@ -110,12 +122,16 @@ function inventoryCsv(inventory: InventoryRow[]): string {
       formatMoney(toNum(item.costPerUnit)),
       formatMoney(toNum(item.stock) * toNum(item.costPerUnit)),
       toNum(item.stock) <= toNum(item.minStock) ? 'منخفض' : 'كافٍ',
-      item.branch_id || '',
+      branchCell(item.branch_id, names),
     ])
   );
 }
 
-function customersCsv(customers: CustomerRow[], orders: OrderRow[]): string {
+function customersCsv(
+  customers: CustomerRow[],
+  orders: OrderRow[],
+  names: Map<string, string>
+): string {
   const byPhone = new Map<string, { spend: number; orders: number }>();
   for (const order of orders) {
     const phone = order.customerPhone || '';
@@ -137,7 +153,7 @@ function customersCsv(customers: CustomerRow[], orders: OrderRow[]): string {
         localDateTime(customer.createdAt),
         totals.orders,
         formatMoney(totals.spend),
-        customer.branch_id || '',
+        branchCell(customer.branch_id, names),
       ];
     })
   );
@@ -149,10 +165,11 @@ function formatCountCell(value: unknown): number {
 }
 
 export function buildCsv(kind: ExportKind, scope: ExportScope): string {
-  if (kind === 'orders') return ordersCsv(scope.orders);
-  if (kind === 'menu') return menuCsv(scope.menuItems, scope.soldByName);
-  if (kind === 'inventory') return inventoryCsv(scope.inventory);
-  return customersCsv(scope.customers, scope.orders);
+  const names = scope.branchNames;
+  if (kind === 'orders') return ordersCsv(scope.orders, names);
+  if (kind === 'menu') return menuCsv(scope.menuItems, scope.soldByName, names);
+  if (kind === 'inventory') return inventoryCsv(scope.inventory, names);
+  return customersCsv(scope.customers, scope.orders, names);
 }
 
 /** File name carrying the scope, so several exports do not overwrite each other. */

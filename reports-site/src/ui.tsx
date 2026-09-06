@@ -68,6 +68,13 @@ const ICONS: Record<string, ReactNode> = {
     </>
   ),
   refresh: <path d="M21 12a9 9 0 1 1-3-6.7M21 4v5h-5" />,
+  plus: <path d="M12 5v14M5 12h14" />,
+  branch: (
+    <>
+      <path d="M3 21V8l6-4 6 4v13" />
+      <path d="M15 12h6v9M1 21h22M8 21v-5h3v5" />
+    </>
+  ),
   download: <path d="M12 3v12m0 0 4.5-4.5M12 15l-4.5-4.5M4 20h16" />,
   shield: (
     <>

@@ -18,6 +18,8 @@ import {
   type ExportScope,
 } from './csv';
 import { ALL_BRANCHES, PERIOD_LABELS, PERIOD_ORDER, formatCount, formatTime } from './analytics';
+import { BranchesCard } from './BranchesCard';
+import { branchLabel, branchNames, type BranchInput, type BranchRow } from './branches';
 import { Card, Icon } from './ui';
 
 interface SettingsTabProps {
@@ -26,6 +28,13 @@ interface SettingsTabProps {
   onReset: () => void;
   /** Branch ids present in the loaded snapshot, for the default-branch picker. */
   branches: string[];
+  /** The registry itself, which is what the branches card manages. */
+  branchRows: BranchRow[];
+  /** Ids seen on mirrored rows but absent from the registry. */
+  unregisteredBranchIds: string[];
+  /** Order count per branch id over the selected scope. */
+  ordersByBranch: Map<string, number>;
+  onSaveBranch: (input: BranchInput) => Promise<void>;
   /** Rows currently in scope, which is exactly what an export writes. */
   scope: ExportScope;
   branch: string;
@@ -110,6 +119,10 @@ export function SettingsTab({
   onChange,
   onReset,
   branches,
+  branchRows,
+  unregisteredBranchIds,
+  ordersByBranch,
+  onSaveBranch,
   scope,
   branch,
   period,
@@ -121,8 +134,17 @@ export function SettingsTab({
     downloadCsv(exportFileName(kind, branch, period), buildCsv(kind, scope));
   };
 
+  const names = branchNames(branchRows);
+
   return (
     <div className="settings-grid">
+      <BranchesCard
+        branches={branchRows}
+        unregisteredIds={unregisteredBranchIds}
+        ordersByBranch={ordersByBranch}
+        onSave={onSaveBranch}
+      />
+
       <Card title="العرض" hint="يُحفظ على هذا الجهاز فقط">
         <div className="setting-list">
           <Row
@@ -218,7 +240,7 @@ export function SettingsTab({
               <option value={ALL_BRANCHES}>كل الفروع</option>
               {branches.map((id) => (
                 <option key={id} value={id}>
-                  {id}
+                  {branchLabel(id, names)}
                 </option>
               ))}
             </select>

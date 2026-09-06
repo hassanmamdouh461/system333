@@ -10,6 +10,7 @@ import {
   type StockTotals,
 } from './analytics';
 import { Card, Empty, StatCard } from './ui';
+import { branchLabel } from './branches';
 
 interface AnalyticsTabProps {
   orders: OrderRow[];
@@ -20,6 +21,8 @@ interface AnalyticsTabProps {
   customerCount: number;
   newCustomerCount: number;
   periodLabel: string;
+  /** Display name per branch id, so the per-branch list reads as branches, not slugs. */
+  branchNames: Map<string, string>;
 }
 
 export function AnalyticsTab({
@@ -31,6 +34,7 @@ export function AnalyticsTab({
   customerCount,
   newCustomerCount,
   periodLabel,
+  branchNames,
 }: AnalyticsTabProps) {
   const chart = useMemo(() => dailyRevenue(orders), [orders]);
   const ranked = useMemo(() => bestSellers(orders), [orders]);
@@ -182,7 +186,7 @@ export function AnalyticsTab({
               {branches.map((branch, index) => (
                 <li key={branch.branch}>
                   <span className="rank">{index + 1}</span>
-                  <span className="rank-name">{branch.branch}</span>
+                  <span className="rank-name">{branchLabel(branch.branch, branchNames)}</span>
                   <span className="rank-value">{formatMoney(branch.revenue)} ج.م</span>
                   <span className="rank-sub">{formatCount(branch.orders)} طلب</span>
                 </li>

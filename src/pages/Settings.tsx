@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Store, LogOut, QrCode, Globe, Send, Armchair, Palette } from 'lucide-react';
+import { Store, LogOut, QrCode, Globe, Send, Armchair, Palette, Building2 } from 'lucide-react';
 
 // Web reports portal URL. The desktop POS pushes its data to the isolated reports D1
 // database (api-reports.engaz.tech) and this link opens that data as a live dashboard
@@ -15,8 +15,9 @@ import { StoreConfigModal } from '../components/settings/StoreConfigModal';
 import { TelegramConfigModal } from '../components/settings/TelegramConfigModal';
 import { TablesConfigModal } from '../components/settings/TablesConfigModal';
 import { MenuBrandingModal } from '../components/settings/MenuBrandingModal';
+import { BranchIdentityModal } from '../components/settings/BranchIdentityModal';
 
-type ModalName = 'qr' | 'store' | 'telegram' | 'tables' | 'branding';
+type ModalName = 'qr' | 'store' | 'telegram' | 'tables' | 'branding' | 'branch';
 
 export default function Settings() {
   const [openModal, setOpenModal] = useState<ModalName | null>(null);
@@ -40,6 +41,12 @@ export default function Settings() {
           label: t('Table Management'),
           desc: t('Add or remove dining tables'),
           onClick: () => setOpenModal('tables')
+        },
+        {
+          icon: Building2,
+          label: t('Branch identity'),
+          desc: t('Branch name and sign-in address'),
+          onClick: () => setOpenModal('branch')
         },
       ]
     },
@@ -157,6 +164,7 @@ export default function Settings() {
       <TelegramConfigModal isOpen={openModal === 'telegram'} onClose={closeModal} />
       <TablesConfigModal isOpen={openModal === 'tables'} onClose={closeModal} />
       <MenuBrandingModal isOpen={openModal === 'branding'} onClose={closeModal} />
+      <BranchIdentityModal isOpen={openModal === 'branch'} onClose={closeModal} />
     </div>
   );
 }

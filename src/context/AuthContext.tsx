@@ -35,40 +35,39 @@ interface StoredSession {
 }
 
 /**
- * The accounts this build recognises.
+ * The account this till signs in with.
  *
- * Identity only — no credential. The password for a branch is set on first sign-in and
- * stored as a PBKDF2 digest on that device. Shipping a default password put the same
- * working credential in every copy of the bundle, and the demo buttons on the login screen
- * typed it in for anyone who opened the page.
+ * This install is one branch. The identity lives in the branch configuration — which the
+ * settings page edits — and the password is set on first sign-in and stored as a PBKDF2
+ * digest on that device. The old three-branch list shipped three addresses that every copy of
+ * the bundle recognised, and a branch registry is now managed from the reports portal anyway:
+ * the till only needs to know which one it is.
  */
-export const BRANCH_ACCOUNTS = [
-  {
-    branchId: 'branch_1',
-    branchName: 'فرع المعادي (فرع 1)',
-    email: 'branch1@system.com',
+export function getBranchAccount(): BranchAccount {
+  const config = getBranchConfig();
+  return {
+    branchId: config.branchId,
+    branchName: config.branchName,
+    email: config.email,
     role: 'admin' as const,
-  },
-  {
-    branchId: 'branch_2',
-    branchName: 'فرع مصر الجديدة (فرع 2)',
-    email: 'branch2@system.com',
-    role: 'admin' as const,
-  },
-  {
-    branchId: 'branch_3',
-    branchName: 'فرع الزمالك (فرع 3)',
-    email: 'branch3@system.com',
-    role: 'admin' as const,
-  },
-];
+  };
+}
+
+export interface BranchAccount {
+  branchId: string;
+  branchName: string;
+  email: string;
+  role: 'admin' | 'staff';
+}
 
 /** Minimum length accepted when a device sets its password for the first time. */
 const MIN_PASSWORD_LENGTH = 6;
 
 function findAccount(email: string) {
-  const target = email.trim().toLowerCase();
-  return BRANCH_ACCOUNTS.find(acc => acc.email.toLowerCase() === target);
+  const account = getBranchAccount();
+  // The configured address is the only one this till accepts: same rejection for an unknown
+  // address and a wrong password, so an attacker cannot enumerate anything.
+  return account.email.trim().toLowerCase() === email.trim().toLowerCase() ? account : null;
 }
 
 // ─── Context ──────────────────────────────────────────────────────────────────
@@ -106,7 +105,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     const config = getBranchConfig();
     return !(config.branchId === account.branchId && config.password);
   }, []);
-
   const login = async (email: string, password: string, rememberMe?: boolean) => {
     const account = findAccount(email);
     // Same rejection for an unknown address and a wrong password: telling them apart lets

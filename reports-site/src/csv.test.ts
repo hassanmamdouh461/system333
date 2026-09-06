@@ -73,6 +73,7 @@ function scope(overrides: Partial<ExportScope> = {}): ExportScope {
     inventory: [],
     customers: [],
     soldByName: new Map(),
+    branchNames: new Map([['branch-1', 'الفرع الرئيسي']]),
     ...overrides,
   };
 }
@@ -169,6 +170,18 @@ describe('buildCsv', () => {
 
   it('labels an unsold item with a zero rather than an empty cell', () => {
     expect(buildCsv('menu', scope({ menuItems: [menuItem()] }))).toContain(',0,');
+  });
+
+  it('writes the branch name rather than the id it is stored under', () => {
+    const csv = buildCsv('orders', scope({ orders: [order()] }));
+    expect(lines(csv)[1]).toContain('الفرع الرئيسي');
+    expect(lines(csv)[1]).not.toContain('branch-1');
+  });
+
+  it('falls back to the id for a branch that is not in the registry', () => {
+    // A till can sync a sale before anyone registers it; hiding the branch would hide the sale.
+    const csv = buildCsv('orders', scope({ orders: [order({ branch_id: 'branch-9' })] }));
+    expect(lines(csv)[1]).toContain('branch-9');
   });
 
   it('exports stock with its value and a low-stock label', () => {

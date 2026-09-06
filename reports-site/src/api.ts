@@ -79,6 +79,8 @@ export interface Snapshot {
   menuItems: SnapshotRow[];
   /** Stock ledger, which is where cost of goods sold is derived from. */
   movements: SnapshotRow[];
+  /** Branch registry, so a branch can be shown by name instead of by its id. */
+  branches: SnapshotRow[];
   /** When the worker read these rows, so the portal can show the age of what it displays. */
   serverTime: string;
 }
@@ -92,6 +94,22 @@ export async function fetchSnapshot(token: string): Promise<Snapshot> {
     inventory: data.inventory || [],
     menuItems: data.menuItems || [],
     movements: data.movements || [],
+    branches: data.branches || [],
     serverTime: data.serverTime || new Date().toISOString(),
   };
+}
+
+/**
+ * Registers or renames one branch.
+ *
+ * The only write the portal performs. It carries no sales figure and no customer detail, and
+ * the worker re-validates the record: this client cannot be trusted about what a valid branch
+ * id is, whatever the form checked first.
+ */
+export async function saveBranch(
+  token: string,
+  branch: { id: string; name: string; phone: string; address: string; active: boolean }
+): Promise<SnapshotRow[]> {
+  const data = await post<{ branches?: SnapshotRow[] }>('/branches/save', { branch }, token);
+  return data.branches || [];
 }

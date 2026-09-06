@@ -7,13 +7,16 @@ import {
   type StockTotals,
 } from './analytics';
 import { Card, Empty, StatCard } from './ui';
+import { branchLabel } from './branches';
 
 interface InventoryTabProps {
   inventory: InventoryRow[];
   stock: StockTotals;
+  /** Display name per branch id, so the branch column is not a raw slug. */
+  branchNames: Map<string, string>;
 }
 
-export function InventoryTab({ inventory, stock }: InventoryTabProps) {
+export function InventoryTab({ inventory, stock, branchNames }: InventoryTabProps) {
   const [query, setQuery] = useState('');
 
   const rows = useMemo(() => {
@@ -116,7 +119,7 @@ export function InventoryTab({ inventory, stock }: InventoryTabProps) {
                       <td className="cell-strong">
                         {formatMoney(toNum(item.stock) * toNum(item.costPerUnit))}
                       </td>
-                      <td>{item.branch_id || '—'}</td>
+                      <td>{branchLabel(item.branch_id, branchNames)}</td>
                     </tr>
                   );
                 })}
