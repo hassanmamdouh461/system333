@@ -9,6 +9,12 @@
     $env:CLOUDFLARE_API_TOKEN = '...'   # token with Workers, D1, Pages perms on engaz.tech
     # OR run: npx wrangler login
 
+  Authentication note (learned the hard way): the account's two credentials cover different
+  steps. The token stored in `.env` has Workers/Pages scope but NOT D1, so step 1 (database)
+  and the worker deploy need a token that also holds `d1:write` — the `npx wrangler login`
+  OAuth token in %APPDATA% has it. Set CLOUDFLARE_API_TOKEN to whichever token the current
+  step needs; this script reads it once at the top.
+
   Usage:
     powershell -ExecutionPolicy Bypass -File deploy-reports.ps1 [-ReportsKey 'your-key']
 
@@ -35,11 +41,22 @@ function Step([string]$msg) { Write-Host "`n=== $msg ===" -ForegroundColor Cyan 
 # $ErrorActionPreference does not apply to native commands: wrangler, npm and curl signal
 # failure through $LASTEXITCODE only, so piping their output to Write-Host let a failed
 # build carry on and deploy the previous dist/ under a "Deploy complete" banner.
+#
+# There is a second trap: in Windows PowerShell 5.1 a native command writing to stderr
+# raises a terminating ErrorRecord when $ErrorActionPreference is 'Stop', even with a
+# 0 exit code. Wrangler writes its coloured progress to stderr, so both the "database
+# already exists" re-run path and a successful upload die on their own output. Dropping
+# the preference to 'Continue' around the call makes only $LASTEXITCODE decide; it is
+# restored on the way out so the rest of the script keeps its fail-fast behaviour.
 function Invoke-Native([string]$what, [scriptblock]$cmd) {
-  & $cmd 2>&1 | Write-Host
-  if ($LASTEXITCODE -ne 0) {
-    Write-Host "$what failed with exit code $LASTEXITCODE. Aborting." -ForegroundColor Red
-    exit $LASTEXITCODE
+  $prev = $ErrorActionPreference
+  $ErrorActionPreference = 'Continue'
+  & $cmd 2>&1 | ForEach-Object { Write-Host $_ }
+  $code = $LASTEXITCODE
+  $ErrorActionPreference = $prev
+  if ($code -ne 0) {
+    Write-Host "$what failed with exit code $code. Aborting." -ForegroundColor Red
+    exit $code
   }
 }
 
@@ -60,16 +77,25 @@ Write-Host 'Authenticated to Cloudflare.'
 
 # ── 1. Create the isolated reports database (idempotent) ──────────────────
 Step '1/5 Creating isolated D1 database: engaz-reports-db'
-$createOut = npx wrangler d1 create engaz-reports-db 2>&1
+# Routed through cmd /c: wrangler writes its "already exists" notice to stderr, and under
+# $ErrorActionPreference='Stop' a native command's stderr becomes a terminating ErrorRecord
+# in PowerShell 5.1, killing the script at exactly the idempotent re-run path.
+$createOut = & cmd /c "npx wrangler d1 create engaz-reports-db 2>&1" | Out-String
 $dbId = ''
 if ($createOut -match 'database_id.*?([0-9a-f-]{20,})') {
   $dbId = $Matches[1]
   Write-Host "Created database with id: $dbId"
 } elseif ($createOut -match 'already exists') {
-  # Fetch existing id
-  $listOut = npx wrangler d1 list --json 2>&1 | Out-String
-  $db = $listOut | ConvertFrom-Json | Where-Object { $_.name -eq 'engaz-reports-db' } | Select-Object -First 1
-  if ($db) { $dbId = $db.uuid; Write-Host "Found existing database id: $dbId" }
+  # Fetch the existing database's id. The JSON output may be prefixed by a banner line, so
+  # start the parse at the first '['. Selecting by name matters: a plain regex over the raw
+  # output grabbed every database in the account and joined them into one id.
+  $listOut = & cmd /c "npx wrangler d1 list --json 2>&1" | Out-String
+  $jsonStart = $listOut.IndexOf('[')
+  if ($jsonStart -ge 0) {
+    $dbs = $listOut.Substring($jsonStart) | ConvertFrom-Json
+    $db = $dbs | Where-Object { $_.name -eq 'engaz-reports-db' } | Select-Object -First 1
+    if ($db) { $dbId = $db.uuid; Write-Host "Found existing database id: $dbId" }
+  }
 } else {
   Write-Host $createOut
   Write-Host 'Could not determine database id. Fill it manually in wrangler-reports.toml.' -ForegroundColor Yellow
