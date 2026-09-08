@@ -213,6 +213,38 @@ async function syncRecords(target, records) {
   return { success: true, written };
 }
 
+/**
+ * Publishes the public menu's configuration to the reports database, which is what the
+ * customer page reads.
+ *
+ * This runs here rather than in the renderer because it needs the reports write key. The
+ * renderer used to hold that key through `import.meta.env`, which inlined it into every
+ * bundle built from the same source — including the public menu bundle handed to customers.
+ */
+async function publishMenuConfig(config) {
+  loadConfig();
+  if (!REPORTS_WORKER_KEY) {
+    return { success: false, error: 'مفتاح قاعدة التقارير غير مضبوط على هذا الجهاز' };
+  }
+
+  try {
+    const res = await postJson({
+      baseUrl: REPORTS_WORKER_URL,
+      endpoint: '/public-menu-config',
+      body: { config },
+      apiKey: REPORTS_WORKER_KEY,
+      timeout: REQUEST_TIMEOUT_MS,
+    });
+    if (res && res.success === false) {
+      return { success: false, error: res.error || 'رفض العامل نشر الإعدادات' };
+    }
+    return { success: true };
+  } catch (e) {
+    console.warn('[D1 Sync API] Menu config publish failed:', e.message);
+    return { success: false, error: e.message };
+  }
+}
+
 // ─── Push methods ────────────────────────────────────────────────────────────
 // Each one hands its records to the matching endpoint. Field mapping, upsert conflict
 // rules and soft-delete handling all live in the worker now, so these are thin.
@@ -360,5 +392,6 @@ module.exports = {
   pushPointsTransactions,
   pullOrders,
   deleteMenuItem,
+  publishMenuConfig,
   checkWorkerHealth,
 };

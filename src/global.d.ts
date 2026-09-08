@@ -8,6 +8,7 @@
 import type { MenuItem } from './types/menu';
 import type { Order, OrderItem, OrderStatus, PaymentStatus } from './types/order';
 import type { Customer } from './types/customer';
+import type { PublicMenuConfig } from './types/menuBranding';
 
 export type { MenuItem, Order, OrderItem, OrderStatus, PaymentStatus, Customer };
 
@@ -85,6 +86,12 @@ declare global {
       getMenuItemRecipe: (menuItemId: string) => Promise<RecipeIngredient[]>;
       saveMenuRecipe: (menuItemId: string, ingredients: RecipeIngredient[]) => Promise<RecipeIngredient[]>;
       getRecipeCost: (menuItemId: string) => Promise<number>;
+
+      /**
+       * Publishes the public menu configuration through the main process, which holds the
+       * reports write key. Absent in the web build, where there is no key to hold.
+       */
+      publishMenuConfig: (config: PublicMenuConfig) => Promise<{ success: boolean; error?: string }>;
 
       getSyncStatus: () => Promise<{
         state: 'idle' | 'syncing' | 'synced' | 'offline' | 'error';

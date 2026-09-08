@@ -367,6 +367,137 @@ function validateSettingValue(value, field = 'value') {
   return value;
 }
 
+// ─── Public menu configuration ───────────────────────────────────────────────
+
+/** Themes, layouts and sort orders the public page has styles and code for. */
+const MENU_THEMES = ['dark', 'amber', 'emerald', 'burgundy', 'navy'];
+const MENU_LAYOUTS = ['grid', 'list'];
+const MENU_SORT_ORDERS = ['category', 'price-asc', 'price-desc', 'name'];
+/**
+ * The whole record is published on every save and returned on every menu view, so it is
+ * capped as one object. The images dominate: two compressed data URLs at roughly 300 KB.
+ */
+const MAX_MENU_CONFIG_BYTES = 900_000;
+const MAX_MENU_CATEGORIES = 60;
+const MAX_MENU_ITEM_IDS = 500;
+
+function menuText(value, field, max) {
+  const text = optionalString(value, field, { max }) ?? '';
+  return text;
+}
+
+function menuFlag(value, field) {
+  if (value === undefined || value === null) return true;
+  if (typeof value !== 'boolean') fail(`${field} must be a boolean`);
+  return value;
+}
+
+/**
+ * An image reference the public page can place in `src` and in a CSS `url()`.
+ *
+ * The renderer already filters these, but the renderer is exactly what this boundary does
+ * not trust: a quote or a closing paren here ends the CSS value and starts a new
+ * declaration on every customer's screen.
+ */
+function validateMenuImage(value, field) {
+  if (value === undefined || value === null || value === '') return '';
+  if (typeof value !== 'string') fail(`${field} must be a string`);
+  const raw = value.trim();
+  if (raw === '') return '';
+  if (raw.length > MAX_MENU_CONFIG_BYTES) fail(`${field} is too large`);
+  if (/["'()\\\s]/.test(raw)) fail(`${field} contains characters that are not allowed in a URL`);
+  if (/^https?:\/\/\S+$/i.test(raw)) return raw;
+  if (/^data:image\/(png|jpe?g|gif|webp|avif);base64,[A-Za-z0-9+/=]+$/i.test(raw)) return raw;
+  fail(`${field} must be an http(s) URL or an inline image`);
+}
+
+function validateMenuCategories(value) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) fail('categories must be an array');
+  if (value.length > MAX_MENU_CATEGORIES) {
+    fail(`categories must contain at most ${MAX_MENU_CATEGORIES} entries`);
+  }
+
+  const seen = new Set();
+  const rules = [];
+  value.forEach((entry, index) => {
+    if (!entry || typeof entry !== 'object') fail(`categories[${index}] must be an object`);
+    const id = requireString(entry.id, `categories[${index}].id`, { max: 80 });
+    if (seen.has(id)) return;
+    seen.add(id);
+    rules.push({
+      id,
+      label: menuText(entry.label, `categories[${index}].label`, 60),
+      hidden: entry.hidden === undefined || entry.hidden === null
+        ? false
+        : (typeof entry.hidden === 'boolean' ? entry.hidden : fail(`categories[${index}].hidden must be a boolean`)),
+    });
+  });
+  return rules;
+}
+
+function validateMenuItemIds(value, field) {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) fail(`${field} must be an array`);
+  if (value.length > MAX_MENU_ITEM_IDS) {
+    fail(`${field} must contain at most ${MAX_MENU_ITEM_IDS} entries`);
+  }
+  const seen = new Set();
+  value.forEach((id, index) => seen.add(requireId(id, `${field}[${index}]`)));
+  return Array.from(seen);
+}
+
+/**
+ * The public menu configuration as submitted for publishing.
+ *
+ * Everything here is shown to customers on a page that carries no credential, so this is the
+ * last place anything can be checked. Returns a normalised copy: unknown keys are dropped
+ * rather than forwarded, so a field the worker never asked for cannot ride along.
+ */
+function validateMenuConfig(config) {
+  if (!config || typeof config !== 'object') fail('config must be an object');
+
+  const contact = config.contact && typeof config.contact === 'object' ? config.contact : {};
+  const validated = {
+    storeName: menuText(config.storeName, 'storeName', 60),
+    subtitle: menuText(config.subtitle, 'subtitle', 140),
+    logoUrl: validateMenuImage(config.logoUrl, 'logoUrl'),
+    bannerUrl: validateMenuImage(config.bannerUrl, 'bannerUrl'),
+    theme: config.theme == null ? 'dark' : requireEnum(config.theme, 'theme', MENU_THEMES),
+    footerText: menuText(config.footerText, 'footerText', 160),
+    currency: menuText(config.currency, 'currency', 8),
+    layout: config.layout == null ? 'grid' : requireEnum(config.layout, 'layout', MENU_LAYOUTS),
+    sortOrder: config.sortOrder == null
+      ? 'category'
+      : requireEnum(config.sortOrder, 'sortOrder', MENU_SORT_ORDERS),
+    showPrices: menuFlag(config.showPrices, 'showPrices'),
+    showImages: menuFlag(config.showImages, 'showImages'),
+    showDescriptions: menuFlag(config.showDescriptions, 'showDescriptions'),
+    showItemCount: menuFlag(config.showItemCount, 'showItemCount'),
+    showSearch: menuFlag(config.showSearch, 'showSearch'),
+    announcement: menuText(config.announcement, 'announcement', 160),
+    categories: validateMenuCategories(config.categories),
+    hiddenItemIds: validateMenuItemIds(config.hiddenItemIds, 'hiddenItemIds'),
+    featuredItemIds: validateMenuItemIds(config.featuredItemIds, 'featuredItemIds'),
+    contact: {
+      phone: menuText(contact.phone, 'contact.phone', 90),
+      whatsapp: menuText(contact.whatsapp, 'contact.whatsapp', 90),
+      address: menuText(contact.address, 'contact.address', 90),
+      instagram: menuText(contact.instagram, 'contact.instagram', 90),
+    },
+    updatedAt: menuText(config.updatedAt, 'updatedAt', 40) || new Date().toISOString(),
+  };
+
+  // Checked on the serialised form, because that is what is stored and re-sent: the two
+  // images are each bounded, but nothing above bounds their sum.
+  const size = Buffer.byteLength(JSON.stringify(validated), 'utf8');
+  if (size > MAX_MENU_CONFIG_BYTES) {
+    fail(`config must be at most ${MAX_MENU_CONFIG_BYTES} bytes; got ${size}. Use smaller images.`);
+  }
+
+  return validated;
+}
+
 module.exports = {
   ValidationError,
   MAX_TEXT_LENGTH,
@@ -400,4 +531,11 @@ module.exports = {
   validateCustomer,
   validateRecipe,
   validateSettingValue,
+  validateMenuConfig,
+  MAX_MENU_CONFIG_BYTES,
+  MAX_MENU_CATEGORIES,
+  MAX_MENU_ITEM_IDS,
+  MENU_THEMES,
+  MENU_LAYOUTS,
+  MENU_SORT_ORDERS,
 };

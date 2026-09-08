@@ -25,6 +25,7 @@ const customerRepository = require('./CustomerRepository.cjs');
 const inventoryRepository = require('./InventoryRepository.cjs');
 const telegramService = require('./telegramService.cjs');
 const validate = require('./validate.cjs');
+const syncApi = require('./mockApiService.cjs');
 
 let mainWindow;
 let syncEngine;
@@ -178,6 +179,7 @@ function registerIpcHandlers() {
     /^engaz_d1_worker_api_key$/,
     /^branch_id$/,
   ];
+
   const isAllowedSettingKey = (key) => typeof key === 'string' && SETTINGS_WHITELIST.some(re => re.test(key));
 
   handle('db:get-settings', () => {
@@ -256,6 +258,14 @@ function registerIpcHandlers() {
   // The manual trigger deliberately bypasses the 'enabled' toggle: the user pressed the
   // button, which is a stronger signal than the stored preference.
   handle('telegram:send-daily-report', () => telegramService.sendDailyReport({ ignoreEnabledFlag: true }));
+
+  // ─── Public menu ───────────────────────────────────────────────────────────
+  // Publishing needs the reports write key, which lives in this process. The renderer sends
+  // the configuration and gets back whether it reached the customer-facing database. The
+  // renderer keeps its own copy for the panel, so nothing is cached here.
+  handle('menu:publish-config', (config) => syncApi.publishMenuConfig(
+    validate.validateMenuConfig(config)
+  ));
 }
 
 app.whenReady().then(() => {

@@ -12,6 +12,10 @@ const {
   validateCustomer,
   validateRecipe,
   validateSettingValue,
+  validateMenuConfig,
+  MAX_MENU_CONFIG_BYTES,
+  MAX_MENU_CATEGORIES,
+  MAX_MENU_ITEM_IDS,
   requirePhone,
   requireId,
   requireMoney,
@@ -264,5 +268,84 @@ describe('primitives', () => {
     expect(validateSettingValue('{"enabled":true}')).toBe('{"enabled":true}');
     expect(() => validateSettingValue('x'.repeat(20_000))).toThrow(/at most/);
     expect(() => validateSettingValue(42)).toThrow(/string/);
+  });
+});
+
+describe('public menu config', () => {
+  it('returns a complete record from an empty one', () => {
+    const result = validateMenuConfig({});
+    expect(result.theme).toBe('dark');
+    expect(result.layout).toBe('grid');
+    expect(result.sortOrder).toBe('category');
+    expect(result.showPrices).toBe(true);
+    expect(result.categories).toEqual([]);
+    expect(result.hiddenItemIds).toEqual([]);
+    expect(result.contact).toEqual({ phone: '', whatsapp: '', address: '', instagram: '' });
+    expect(Number.isNaN(new Date(result.updatedAt).getTime())).toBe(false);
+  });
+
+  it('rejects a theme, layout or sort order the page has no code for', () => {
+    expect(() => validateMenuConfig({ theme: 'neon' })).toThrow(/theme/);
+    expect(() => validateMenuConfig({ layout: 'carousel' })).toThrow(/layout/);
+    expect(() => validateMenuConfig({ sortOrder: 'random' })).toThrow(/sortOrder/);
+  });
+
+  it('drops a key the worker never asked for', () => {
+    // The record is echoed to every customer, so an unknown field must not ride along.
+    const result = validateMenuConfig({ storeName: 'x', injected: '<script>' });
+    expect(result).not.toHaveProperty('injected');
+  });
+
+  it('accepts an http URL and an inline image', () => {
+    const result = validateMenuConfig({
+      logoUrl: 'https://cdn.example.com/logo.png',
+      bannerUrl: 'data:image/jpeg;base64,AAAA',
+    });
+    expect(result.logoUrl).toBe('https://cdn.example.com/logo.png');
+    expect(result.bannerUrl).toBe('data:image/jpeg;base64,AAAA');
+  });
+
+  it('rejects an image value that would break out of a CSS url()', () => {
+    // The banner is interpolated into `background-image: url(<value>)` on the customer page,
+    // where a quote or a closing paren ends the value and starts a new declaration.
+    for (const bad of [
+      'https://a.example/x.png") ; background: url("javascript:alert(1)',
+      'https://a.example/x(1).png',
+      'javascript:alert(1)',
+      'data:text/html;base64,PHNjcmlwdD4=',
+      'file:///C:/secret.png',
+    ]) {
+      expect(() => validateMenuConfig({ bannerUrl: bad }), bad).toThrow();
+    }
+  });
+
+  it('requires a category id, and de-duplicates the rest', () => {
+    expect(() => validateMenuConfig({ categories: [{ label: 'بلا معرّف' }] })).toThrow(/id/);
+    const result = validateMenuConfig({
+      categories: [
+        { id: 'Hot Coffee', label: 'قهوة ساخنة' },
+        { id: 'Hot Coffee', label: 'مكرر' },
+      ],
+    });
+    expect(result.categories).toEqual([{ id: 'Hot Coffee', label: 'قهوة ساخنة', hidden: false }]);
+  });
+
+  it('caps the category and item id lists', () => {
+    const categories = Array.from({ length: MAX_MENU_CATEGORIES + 1 }, (_, i) => ({ id: `c${i}` }));
+    const ids = Array.from({ length: MAX_MENU_ITEM_IDS + 1 }, (_, i) => `i${i}`);
+    expect(() => validateMenuConfig({ categories })).toThrow(/at most/);
+    expect(() => validateMenuConfig({ hiddenItemIds: ids })).toThrow(/at most/);
+  });
+
+  it('rejects a record too large to serve on every menu view', () => {
+    // Each image is bounded on its own; nothing else bounds their sum.
+    const image = `data:image/jpeg;base64,${'A'.repeat(Math.floor(MAX_MENU_CONFIG_BYTES * 0.6))}`;
+    expect(() => validateMenuConfig({ logoUrl: image, bannerUrl: image })).toThrow(/bytes/);
+  });
+
+  it('rejects a non-object payload rather than publishing a default menu', () => {
+    for (const bad of [null, undefined, 'config', 42]) {
+      expect(() => validateMenuConfig(bad)).toThrow(/object/);
+    }
   });
 });

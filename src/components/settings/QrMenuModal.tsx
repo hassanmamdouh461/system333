@@ -3,10 +3,25 @@ import { X, Copy, Check, Printer, Download, QrCode } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useLanguage } from '../../context/LanguageContext';
 import { useDialog } from '../../hooks/useDialog';
+import { menuBrandingService } from '../../services/menuBrandingService';
 
 interface QrMenuModalProps {
   isOpen: boolean;
   onClose: () => void;
+}
+
+/**
+ * Escapes owner-typed text before it is written into the print document. `document.write`
+ * builds real markup, so an apostrophe or an angle bracket in a restaurant name would break
+ * the page it is printed on.
+ */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
 /**
@@ -25,7 +40,17 @@ function QrMenuModalBody({ onClose }: { onClose: () => void }) {
   const { t } = useLanguage();
   const { panelRef, titleId, dialogProps } = useDialog<HTMLDivElement>({ onClose });
   const [copied, setCopied] = useState(false);
-  
+
+  // The printed stand carries the owner's own identity from the menu panel. It used to print
+  // "Engaz" and an English coffee tagline on every customer's table, whatever the business was.
+  const [{ storeName, subtitle }] = useState(() => {
+    const config = menuBrandingService.getLocalConfig();
+    return {
+      storeName: config.storeName || 'قائمة الطعام والأسعار',
+      subtitle: config.subtitle,
+    };
+  });
+
   const [domainInput, setDomainInput] = useState<string>(() => {
     return localStorage.getItem('engaz_menu_domain') || (import.meta.env.VITE_PUBLIC_MENU_URL as string) || 'https://menu.engaz.tech';
   });
@@ -77,7 +102,7 @@ function QrMenuModalBody({ onClose }: { onClose: () => void }) {
     printWindow.document.write(`
       <html>
         <head>
-          <title>طباعة رمز المنيو - Engaz</title>
+          <title>${escapeHtml(storeName)}</title>
           <style>
             body {
               font-family: system-ui, -apple-system, sans-serif;
@@ -102,19 +127,18 @@ function QrMenuModalBody({ onClose }: { onClose: () => void }) {
               box-shadow: 0 10px 15px -3px rgba(0,0,0,0.05);
             }
             .logo {
-              font-size: 36px;
+              direction: rtl;
+              font-size: 32px;
               font-weight: 800;
               margin-bottom: 4px;
               color: #6B4E31;
-              letter-spacing: -0.5px;
             }
             .tagline {
-              font-size: 16px;
+              direction: rtl;
+              font-size: 15px;
               color: #8B6843;
               margin-bottom: 30px;
               font-weight: 600;
-              text-transform: uppercase;
-              letter-spacing: 1px;
             }
             .qr-wrapper {
               background: white;
@@ -150,8 +174,8 @@ function QrMenuModalBody({ onClose }: { onClose: () => void }) {
         </head>
         <body>
           <div class="container">
-            <div class="logo">Engaz</div>
-            <div class="tagline">✦ Premium Coffee &amp; Treats ✦</div>
+            <div class="logo">${escapeHtml(storeName)}</div>
+            ${subtitle ? `<div class="tagline">${escapeHtml(subtitle)}</div>` : ''}
             <div class="qr-wrapper">
               <img class="qr-img" src="${qrCodeImageUrl}" alt="QR Code" />
             </div>
@@ -214,9 +238,10 @@ function QrMenuModalBody({ onClose }: { onClose: () => void }) {
 
         {/* QR Card Poster Preview */}
         <div className="bg-mocha-50 border border-mocha-100 p-5 rounded-2xl flex flex-col items-center shadow-inner w-full max-w-[280px] mb-6 text-gray-900">
-          <span className="font-extrabold text-mocha-800 text-lg tracking-wide mb-1">Engaz</span>
-          <span className="text-[9px] text-mocha-400 font-semibold tracking-widest uppercase mb-4">✦ Menu Stand ✦</span>
-          
+          <span className="font-extrabold text-mocha-800 text-lg mb-1 text-center">{storeName}</span>
+          {subtitle && (
+            <span className="text-[10px] text-mocha-400 font-semibold mb-4 text-center">{subtitle}</span>
+          )}
           {/* QR Image Frame */}
           <div className="bg-white p-3 rounded-xl shadow-md border border-mocha-100/50">
             <img

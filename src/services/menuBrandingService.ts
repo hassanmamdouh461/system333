@@ -1,80 +1,122 @@
-import { PublicMenuConfig, DEFAULT_MENU_CONFIG } from '../types/menuBranding';
+/**
+ * Reading and publishing the public menu's configuration.
+ *
+ * Three copies exist and they are not equal in authority: the reports database holds what
+ * customers actually see, `localStorage` is a cache so the panel and the page paint before
+ * the network answers, and the panel's form state is a draft until it is published.
+ *
+ * Publishing needs the reports write key, so it runs in the Electron main process. It used
+ * to run here with the key read from `import.meta.env`, which inlined that key into every
+ * bundle built from this source — including the public menu bundle served to customers.
+ */
+
+import { PublicMenuConfig } from '../types/menuBranding';
+import { normalizeMenuConfig } from '../utils/menuConfig';
+import { failureReason } from '../utils/reportFailure';
 
 const LS_KEY = 'engaz_public_menu_config';
 
+const REPORTS_URL = (import.meta.env.VITE_REPORTS_WORKER_URL as string) || 'https://api-reports.engaz.tech';
+
+export interface PublishResult {
+  /** True only when the configuration reached the reports database. */
+  published: boolean;
+  /** True when the draft was at least kept on this device. */
+  savedLocally: boolean;
+  error?: string;
+}
+
+function reportsEndpoint(path: string): string {
+  return `${REPORTS_URL.replace(/\/+$/, '')}${path}`;
+}
+
 export const menuBrandingService = {
+  /** The cached configuration, complete and bounded even if the stored value is not. */
   getLocalConfig(): PublicMenuConfig {
     try {
       const saved = localStorage.getItem(LS_KEY);
-      if (saved) {
-        const parsed = JSON.parse(saved);
-        return {
-          ...DEFAULT_MENU_CONFIG,
-          ...parsed,
-        };
-      }
+      if (saved) return normalizeMenuConfig(JSON.parse(saved));
     } catch (e) {
-      console.warn('[menuBrandingService] Failed to parse local config:', e);
+      console.warn('[menuBrandingService] Ignoring unreadable local config:', e);
     }
-    return DEFAULT_MENU_CONFIG;
+    return normalizeMenuConfig(null);
   },
 
-  async saveLocalConfig(config: PublicMenuConfig): Promise<void> {
+  saveLocalConfig(config: PublicMenuConfig): void {
     try {
       localStorage.setItem(LS_KEY, JSON.stringify(config));
-      if (window.electronAPI?.saveSetting) {
-        await window.electronAPI.saveSetting('public_menu_config', JSON.stringify(config));
-      }
     } catch (e) {
-      console.error('[menuBrandingService] Error saving local config:', e);
-    }
-  },
-
-  async publishConfig(config: PublicMenuConfig): Promise<{ success: boolean; error?: string }> {
-    // 1. Save locally
-    await this.saveLocalConfig(config);
-
-    // 2. Publish to Cloudflare Reports Worker (which serves public menu)
-    try {
-      const reportsUrl = (import.meta.env.VITE_REPORTS_WORKER_URL as string) || 'https://api-reports.engaz.tech';
-      const apiKey = (import.meta.env.VITE_REPORTS_API_KEY as string) || '';
-
-      const headers: Record<string, string> = {
-        'Content-Type': 'application/json',
-      };
-      if (apiKey) {
-        headers['X-API-Key'] = apiKey;
-      }
-
-      const res = await fetch(`${reportsUrl.replace(/\/+$/, '')}/public-menu-config`, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({ config }),
-      });
-
-      if (!res.ok) {
-        const data = await res.json().catch(() => ({}));
-        throw new Error(data.error || `Server responded with status ${res.status}`);
-      }
-
-      return { success: true };
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      console.warn('[menuBrandingService] Cloud publish warning:', msg);
-      // Even if cloud publish failed (e.g. offline), local config was preserved
-      return { success: false, error: msg };
+      // A data-URL logo can exceed the quota. The publish still went out, so this is a
+      // cache miss on the next open, not a lost setting.
+      console.warn('[menuBrandingService] Could not cache config locally:', e);
     }
   },
 
   /**
-   * Compresses an image file (e.g. phone camera photo) into an optimized, lightweight Data URL
-   * using HTML5 Canvas to prevent storing giant megabyte strings.
+   * What is live right now, read from the public endpoint that needs no credential. The
+   * panel opens on this rather than on the local cache, so it never shows a stale draft as
+   * though it were published.
+   */
+  async fetchPublishedConfig(): Promise<PublicMenuConfig | null> {
+    try {
+      const res = await fetch(reportsEndpoint('/read/public-menu'), {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (!res.ok) return null;
+      const data = await res.json();
+      if (!data?.success || !data.config) return null;
+      return normalizeMenuConfig(data.config);
+    } catch (e) {
+      console.warn('[menuBrandingService] Could not read the published config:', e);
+      return null;
+    }
+  },
+
+  /**
+   * Publishes through the desktop bridge, which holds the write key.
+   *
+   * The web build has no bridge and must not carry that key, so there it keeps the draft on
+   * the device and says plainly that it did not publish.
+   */
+  async publishConfig(config: PublicMenuConfig): Promise<PublishResult> {
+    const stamped: PublicMenuConfig = { ...config, updatedAt: new Date().toISOString() };
+    this.saveLocalConfig(stamped);
+
+    if (!window.electronAPI?.publishMenuConfig) {
+      return {
+        published: false,
+        savedLocally: true,
+        error: 'النشر للمنيو العام يتم من تطبيق سطح المكتب',
+      };
+    }
+
+    try {
+      const result = await window.electronAPI.publishMenuConfig(stamped);
+      if (!result?.success) {
+        return { published: false, savedLocally: true, error: result?.error || 'تعذر النشر' };
+      }
+      return { published: true, savedLocally: true };
+    } catch (err: unknown) {
+      // The IPC layer wraps a rejection; `failureReason` strips that wrapper so the panel
+      // shows why the publish was refused rather than naming the transport.
+      const message = failureReason(err) || 'تعذر النشر';
+      console.warn('[menuBrandingService] Publish failed:', message);
+      return { published: false, savedLocally: true, error: message };
+    }
+  },
+
+  /**
+   * Compresses a chosen image into a bounded data URL.
+   *
+   * The configuration travels with every menu view, so an untouched phone photo would cost
+   * each customer several megabytes.
    */
   async compressImage(
     file: File,
-    maxWidth: number = 600,
-    maxHeight: number = 600,
-    quality: number = 0.8
+    maxWidth = 600,
+    maxHeight = 600,
+    quality = 0.8
   ): Promise<string> {
     return new Promise((resolve, reject) => {
       const reader = new FileReader();
@@ -89,11 +131,9 @@ export const menuBrandingService = {
               height = Math.round((height * maxWidth) / width);
               width = maxWidth;
             }
-          } else {
-            if (height > maxHeight) {
-              width = Math.round((width * maxHeight) / height);
-              height = maxHeight;
-            }
+          } else if (height > maxHeight) {
+            width = Math.round((width * maxHeight) / height);
+            height = maxHeight;
           }
 
           const canvas = document.createElement('canvas');
@@ -102,13 +142,12 @@ export const menuBrandingService = {
 
           const ctx = canvas.getContext('2d');
           if (!ctx) {
-            resolve(reader.result as string);
+            reject(new Error('تعذر تجهيز الصورة على هذا الجهاز'));
             return;
           }
 
           ctx.drawImage(img, 0, 0, width, height);
-          const dataUrl = canvas.toDataURL('image/jpeg', quality);
-          resolve(dataUrl);
+          resolve(canvas.toDataURL('image/jpeg', quality));
         };
         img.onerror = () => reject(new Error('فشل قراءة الصورة المحددة'));
         img.src = e.target?.result as string;
