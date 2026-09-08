@@ -208,6 +208,7 @@ function validateNewOrder(order) {
     pointsEarned: optionalNumber(order.pointsEarned, 'pointsEarned', { min: 0, max: MAX_MONEY }) ?? 0,
     pointsRedeemed: optionalNumber(order.pointsRedeemed, 'pointsRedeemed', { min: 0, max: MAX_MONEY }) ?? 0,
     branchId: optionalString(order.branchId ?? order.branch_id, 'branchId', { max: 60 }),
+    cashierName: optionalString(order.cashierName, 'cashierName', { max: 60 }),
   };
 
   // A paid order must record how it was paid, otherwise the payment-method breakdown
@@ -247,6 +248,7 @@ function validateOrderUpdate(data) {
   if ('pointsEarned' in data) out.pointsEarned = optionalNumber(data.pointsEarned, 'pointsEarned', { min: 0, max: MAX_MONEY });
   if ('pointsRedeemed' in data) out.pointsRedeemed = optionalNumber(data.pointsRedeemed, 'pointsRedeemed', { min: 0, max: MAX_MONEY });
   if ('branchId' in data) out.branchId = optionalString(data.branchId, 'branchId', { max: 60 });
+  if ('cashierName' in data) out.cashierName = optionalString(data.cashierName, 'cashierName', { max: 60 });
 
   if (Object.keys(out).length === 0) fail('update payload contains no known fields');
   return out;

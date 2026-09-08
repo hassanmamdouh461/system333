@@ -37,6 +37,48 @@ class InventoryRepository {
     }));
   }
 
+  /**
+   * Applies rows pulled from the cloud, including their deleted_at so a deletion made on
+   * another branch disappears here too. Only overwrites a local row that is synced or older.
+   */
+  upsertPulledInventory(rows) {
+    if (!rows || rows.length === 0) return;
+    const sqlite = this.getDb();
+    const insert = sqlite.prepare(`
+      INSERT INTO inventory (id, name, unit, stock, minStock, costPerUnit, branch_id, is_synced, created_at, updated_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        unit = excluded.unit,
+        stock = excluded.stock,
+        minStock = excluded.minStock,
+        costPerUnit = excluded.costPerUnit,
+        branch_id = excluded.branch_id,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at,
+        is_synced = 1
+      WHERE inventory.is_synced = 1
+        AND (inventory.updated_at IS NULL OR excluded.updated_at IS NULL OR excluded.updated_at >= inventory.updated_at)
+    `);
+    const runTx = sqlite.transaction((items) => {
+      for (const row of items) {
+        insert.run(
+          row.id,
+          row.name || '',
+          row.unit || '',
+          Number(row.stock) || 0,
+          Number(row.minStock) || 0,
+          Number(row.costPerUnit) || 0,
+          row.branch_id || null,
+          row.created_at || row.updated_at,
+          row.updated_at || null,
+          row.deleted_at || null
+        );
+      }
+    });
+    runTx(rows);
+  }
+
   createInventoryItem(item) {
     const sqlite = this.getDb();
     const id = item.id || `inv-${randomUUID()}`;

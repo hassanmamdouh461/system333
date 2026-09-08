@@ -12,6 +12,14 @@ import type { PublicMenuConfig } from './types/menuBranding';
 
 export type { MenuItem, Order, OrderItem, OrderStatus, PaymentStatus, Customer };
 
+export interface Cashier {
+  id: string;
+  name: string;
+  branchId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
 export interface InventoryItem {
   id: string;
   name: string;
@@ -70,6 +78,11 @@ declare global {
       getCustomerByPhone: (phone: string) => Promise<Customer | null>;
       saveCustomer: (customer: Partial<Customer> & { phone: string }) => Promise<Customer>;
       deleteCustomer: (id: string) => Promise<void>;
+
+      getCashiers: (branchId?: string) => Promise<Cashier[]>;
+      createCashier: (name: string) => Promise<Cashier>;
+      deleteCashier: (id: string) => Promise<void>;
+      renameCashier: (id: string, name: string) => Promise<Cashier>;
 
       getSettings: () => Promise<Record<string, string>>;
       saveSetting: (key: string, value: string) => Promise<void>;

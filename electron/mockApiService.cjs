@@ -168,11 +168,48 @@ async function callWorker(endpoint, body) {
   }
 
   // Only writes are mirrored: the reports database is a read model built from them.
+  // A failed mirror is queued (bounded) and retried on the next calls, so a transient
+  // reports-worker outage no longer leaves the portal permanently behind the POS data.
   if (endpoint.startsWith('/sync/')) {
-    mirrorToReports(endpoint, body).catch(() => {});
+    mirrorToReports(endpoint, body)
+      .catch(() => queueMirrorRetry(endpoint, body))
+      .finally(flushMirrorRetryQueue);
   }
 
   return response;
+}
+
+/**
+ * Retry queue for failed report mirrors. Bounded so an unreachable reports worker cannot
+ * grow memory unboundedly; oldest entries are dropped first, matching the read model's
+ * replace-by-id semantics (a newer version of the same row supersedes an older retry).
+ */
+const MIRROR_RETRY_QUEUE = [];
+const MIRROR_RETRY_MAX = 50;
+
+function queueMirrorRetry(endpoint, body) {
+  while (MIRROR_RETRY_QUEUE.length >= MIRROR_RETRY_MAX) MIRROR_RETRY_QUEUE.shift();
+  MIRROR_RETRY_QUEUE.push({ endpoint, body });
+}
+
+let mirrorFlushInProgress = false;
+async function flushMirrorRetryQueue() {
+  if (mirrorFlushInProgress || MIRROR_RETRY_QUEUE.length === 0) return;
+  mirrorFlushInProgress = true;
+  try {
+    while (MIRROR_RETRY_QUEUE.length > 0) {
+      const { endpoint, body } = MIRROR_RETRY_QUEUE[0];
+      try {
+        await mirrorToReports(endpoint, body);
+        MIRROR_RETRY_QUEUE.shift();
+      } catch {
+        // Still unreachable; leave the entry for the next cycle rather than spinning.
+        break;
+      }
+    }
+  } finally {
+    mirrorFlushInProgress = false;
+  }
 }
 
 /**
@@ -301,6 +338,17 @@ function toNumberOrNull(value) {
   return Number.isFinite(n) ? n : null;
 }
 
+/**
+ * Incremental pull for a shared table (menu items, customers, inventory).
+ *
+ * Tombstones are included: the caller upserts rows with their deleted_at so a deletion
+ * made on another branch disappears locally too, instead of only leaving the cloud.
+ */
+async function pullShared(target, since = null) {
+  const res = await callWorker(`/pull/${target}`, { since: since || null });
+  return (res && res.rows) || [];
+}
+
 function mapOrderRow(row) {
   return {
     $id: row.id,
@@ -321,6 +369,7 @@ function mapOrderRow(row) {
     payment_method: row.paymentMethod || null,
     paidAt: row.paidAt || null,
     customerPhone: row.customerPhone || null,
+    cashierName: row.cashierName || null,
     pointsEarned: toNumberOrNull(row.pointsEarned),
     pointsRedeemed: toNumberOrNull(row.pointsRedeemed),
     items: row.items, // JSON string
@@ -391,6 +440,7 @@ module.exports = {
   pushInventoryTransactions,
   pushPointsTransactions,
   pullOrders,
+  pullShared,
   deleteMenuItem,
   publishMenuConfig,
   checkWorkerHealth,

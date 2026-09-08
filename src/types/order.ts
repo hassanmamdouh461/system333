@@ -33,6 +33,8 @@ export interface Order {
    * loyalty points covered part of the bill, so revenue reporting must read this.
    */
   paidAmount?: number;
+  /** Cashier who took the order at the POS; stamped on the customer receipt. */
+  cashierName?: string;
   createdAt: string; // ISO string
   updatedAt?: string; // ISO string — last modification timestamp for sync conflict resolution
   paidAt?: string; // ISO string when payment was completed

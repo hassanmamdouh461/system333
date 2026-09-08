@@ -32,6 +32,51 @@ class MenuRepository {
     return rows.map(row => this.mapRow(row));
   }
 
+  /**
+   * Applies rows pulled from the cloud. A pulled row carries its deleted_at, so a deletion
+   * made on another branch disappears here too. Only overwrites a local row that is already
+   * synced or older, so an un-pushed local edit is never clobbered by a stale cloud copy.
+   */
+  upsertPulledMenuItems(rows) {
+    if (!rows || rows.length === 0) return;
+    const sqlite = this.getDb();
+    const insert = sqlite.prepare(`
+      INSERT INTO menu_items (id, name, description, price, category, image, available, branch_id, is_synced, created_at, updated_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        description = excluded.description,
+        price = excluded.price,
+        category = excluded.category,
+        image = excluded.image,
+        available = excluded.available,
+        branch_id = excluded.branch_id,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at,
+        is_synced = 1
+      WHERE menu_items.is_synced = 1
+        AND (menu_items.updated_at IS NULL OR excluded.updated_at IS NULL OR excluded.updated_at >= menu_items.updated_at)
+    `);
+    const runTx = sqlite.transaction((items) => {
+      for (const row of items) {
+        insert.run(
+          row.id,
+          row.name || '',
+          row.description || '',
+          Number(row.price) || 0,
+          row.category || '',
+          row.image || '',
+          row.available ? 1 : 0,
+          row.branch_id || null,
+          row.created_at || row.updated_at,
+          row.updated_at || null,
+          row.deleted_at || null
+        );
+      }
+    });
+    runTx(rows);
+  }
+
   createMenuItem(item) {
     const sqlite = this.getDb();
     const id = item.id || `menu-${randomUUID()}`;

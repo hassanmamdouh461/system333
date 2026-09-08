@@ -23,6 +23,7 @@ const orderRepository = require('./OrderRepository.cjs');
 const menuRepository = require('./MenuRepository.cjs');
 const customerRepository = require('./CustomerRepository.cjs');
 const inventoryRepository = require('./InventoryRepository.cjs');
+const cashierRepository = require('./CashierRepository.cjs');
 const telegramService = require('./telegramService.cjs');
 const validate = require('./validate.cjs');
 const syncApi = require('./mockApiService.cjs');
@@ -164,6 +165,19 @@ function registerIpcHandlers() {
   ));
   handle('db:save-customer', (customer) => customerRepository.saveCustomer(validate.validateCustomer(customer)));
   handle('db:delete-customer', (id) => customerRepository.deleteCustomer(validate.requireId(id, 'id')));
+
+  // ─── Cashiers ──────────────────────────────────────────────────────────────
+  handle('db:get-cashiers', (branchId) => cashierRepository.getCashiers(
+    validate.optionalString(branchId, 'branchId', { max: 60 }) ?? undefined
+  ));
+  handle('db:create-cashier', (name) => cashierRepository.createCashier(
+    validate.requireString(name, 'name')
+  ));
+  handle('db:delete-cashier', (id) => cashierRepository.deleteCashier(validate.requireId(id, 'id')));
+  handle('db:rename-cashier', (id, name) => cashierRepository.renameCashier(
+    validate.requireId(id, 'id'),
+    validate.requireString(name, 'name')
+  ));
 
   // ─── Settings ──────────────────────────────────────────────────────────────
   // Explicit whitelist (Issue 30): only durable settings reach SQLite. Transient UI state

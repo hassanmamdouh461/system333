@@ -178,6 +178,35 @@ class SyncEngine {
         console.error('[syncEngine] Failed to pull remote orders:', pullError.message);
       }
 
+      // 2b. Pull shared tables (menu, customers, inventory) so edits and — crucially —
+      // deletions made on other branches propagate here. Each table keeps its own
+      // high-water mark so a failure in one does not reset the others.
+      const sharedPulls = [
+        { target: 'menu-items', setting: 'last_pulled_menu_items_at', repo: 'MenuRepository.cjs', apply: 'upsertPulledMenuItems', rowTime: (r) => r.updated_at },
+        { target: 'customers', setting: 'last_pulled_customers_at', repo: 'CustomerRepository.cjs', apply: 'upsertPulledCustomers', rowTime: (r) => r.updated_at },
+        { target: 'inventory', setting: 'last_pulled_inventory_at', repo: 'InventoryRepository.cjs', apply: 'upsertPulledInventory', rowTime: (r) => r.updated_at },
+      ];
+      for (const { target, setting, repo, apply, rowTime } of sharedPulls) {
+        try {
+          const dbModule = require('./database.cjs');
+          const since = dbModule.getSettings()[setting] || null;
+          const rows = await mockApi.pullShared(target, since);
+          if (rows && rows.length > 0) {
+            require(`./${repo}`)[apply](rows);
+            console.log(`[syncEngine] Pulled ${rows.length} ${target} rows from D1.`);
+            const maxUpdatedAt = rows.reduce((max, r) => {
+              const t = rowTime(r);
+              return t && t > max ? t : max;
+            }, since || '');
+            if (maxUpdatedAt) {
+              dbModule.saveSetting(setting, maxUpdatedAt);
+            }
+          }
+        } catch (pullError) {
+          console.error(`[syncEngine] Failed to pull ${target}:`, pullError.message);
+        }
+      }
+
       // 3. Update the lastSyncAt timestamp since we successfully reached the server and pulled
       this.status.lastSyncAt = new Date().toISOString();
 

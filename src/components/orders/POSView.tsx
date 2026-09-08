@@ -9,6 +9,8 @@ import { printCustomerReceipt } from '../../utils/printReceipts';
 import { playKeypadClick, playAddItemSound, playPaymentSuccessChime, playWarningSound } from '../../utils/soundEffects';
 import { getTables, removeTable } from '../../utils/tablesConfig';
 import { TablesConfigModal } from '../settings/TablesConfigModal';
+import { Cashier } from '../../global';
+import { UserRound, UserRoundPlus, UserRoundCheck, X } from 'lucide-react';
 
 interface POSViewProps {
   menuItems: MenuItem[];
@@ -17,7 +19,8 @@ interface POSViewProps {
     items: OrderItem[],
     paymentStatus: 'Paid' | 'Unpaid',
     paymentMethod?: 'Cash' | 'Card',
-    paidAmount?: number
+    paidAmount?: number,
+    cashierName?: string
   ) => Promise<Order | null>;
   estimatedOrderNumber: string;
 }
@@ -51,6 +54,75 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
   const [tables, setTablesList] = useState<string[]>(() => getTables());
   const [isEditTablesMode, setIsEditTablesMode] = useState(false);
   const [isTablesModalOpen, setIsTablesModalOpen] = useState(false);
+
+  // ─── Cashier selection ─────────────────────────────────────────────────────
+  const [cashiers, setCashiers] = useState<Cashier[]>([]);
+  const [activeCashier, setActiveCashier] = useState<Cashier | null>(() => {
+    try {
+      const saved = localStorage.getItem('pos_activeCashier');
+      return saved ? JSON.parse(saved) : null;
+    } catch {
+      return null;
+    }
+  });
+  const [isCashierModalOpen, setIsCashierModalOpen] = useState(false);
+  const [newCashierName, setNewCashierName] = useState('');
+
+  const refreshCashiers = async () => {
+    if (!window.electronAPI?.getCashiers) return;
+    try {
+      setCashiers(await window.electronAPI.getCashiers());
+    } catch (err) {
+      console.error('Failed to load cashiers:', err);
+    }
+  };
+
+  useEffect(() => {
+    refreshCashiers();
+  }, []);
+
+  useEffect(() => {
+    if (activeCashier) {
+      localStorage.setItem('pos_activeCashier', JSON.stringify(activeCashier));
+    } else {
+      localStorage.removeItem('pos_activeCashier');
+    }
+  }, [activeCashier]);
+
+  // Drop the selection if the cashier was deleted on another screen
+  useEffect(() => {
+    if (activeCashier && cashiers.length > 0 && !cashiers.some(c => c.id === activeCashier.id)) {
+      setActiveCashier(null);
+    }
+  }, [cashiers]);
+
+  const handleAddCashier = async () => {
+    const name = newCashierName.trim();
+    if (!name) return;
+    if (!window.electronAPI?.createCashier) return;
+    try {
+      const created = await window.electronAPI.createCashier(name);
+      setCashiers(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+      setActiveCashier(created);
+      setNewCashierName('');
+      setIsCashierModalOpen(false);
+      playKeypadClick();
+    } catch (err) {
+      console.error(err);
+      playWarningSound();
+      alert('Failed to add cashier');
+    }
+  };
+
+  const handleDeleteCashier = async (id: string) => {
+    if (!window.electronAPI?.deleteCashier) return;
+    try {
+      await window.electronAPI.deleteCashier(id);
+      setCashiers(prev => prev.filter(c => c.id !== id));
+    } catch (err) {
+      console.error(err);
+    }
+  };
   
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
@@ -329,7 +401,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     try {
       const finalTableId = orderMode === 'Takeaway' ? 'Takeaway' : `${t('Table')} ${tableId}`;
       const paidAmt = paymentStatus === 'Paid' ? grandTotal : undefined;
-      await onCreateOrder(finalTableId, invoiceItems, paymentStatus, paymentMethod, paidAmt);
+      await onCreateOrder(finalTableId, invoiceItems, paymentStatus, paymentMethod, paidAmt, activeCashier?.name);
 
       handleReset();
       playPaymentSuccessChime();
@@ -359,7 +431,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       const paidAmt = grandTotal;
 
       // Create order
-      const newOrder = await onCreateOrder(finalTableId, invoiceItems, finalPaymentStatus, paymentMethod, paidAmt);
+      const newOrder = await onCreateOrder(finalTableId, invoiceItems, finalPaymentStatus, paymentMethod, paidAmt, activeCashier?.name);
 
       if (newOrder) {
         printCustomerReceipt(newOrder);
@@ -662,6 +734,30 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
             </button>
           </div>
 
+          {/* Cashier Selector */}
+          <button
+            type="button"
+            onClick={() => { playKeypadClick(); refreshCashiers(); setIsCashierModalOpen(true); }}
+            className={clsx(
+              "mt-3 w-full px-3 py-2.5 rounded-xl border-2 flex items-center justify-between gap-2 transition-all shrink-0",
+              activeCashier
+                ? "bg-emerald-50 border-emerald-300 text-emerald-800 hover:bg-emerald-100"
+                : "bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100"
+            )}
+            title={t('Select Cashier')}
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              {activeCashier ? <UserRoundCheck size={18} className="shrink-0" /> : <UserRound size={18} className="shrink-0" />}
+              <span className="flex flex-col items-start leading-tight min-w-0">
+                <span className="text-[10px] font-bold uppercase opacity-70">{t('Cashier')}</span>
+                <span className="font-black text-sm truncate">
+                  {activeCashier ? activeCashier.name : t('Select Cashier')}
+                </span>
+              </span>
+            </span>
+            <UserRoundPlus size={16} className="shrink-0 opacity-60" />
+          </button>
+
           {/* Table ID Selector (Only visible for Dine-in) */}
           {orderMode === 'Dine-in' && (
             <div className="mt-3 shrink-0 space-y-2 border-b border-gray-100 pb-3">
@@ -870,6 +966,103 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
         onClose={() => setIsTablesModalOpen(false)}
         onTablesChange={(newTables) => setTablesList(newTables)}
       />
+
+      {/* Cashier Selection Modal: pick who is on the till, or add a new name */}
+      {isCashierModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+          onClick={() => setIsCashierModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+              <h3 className="font-black text-mocha-800 text-base flex items-center gap-2">
+                <UserRound size={18} />
+                {t('Select Cashier')}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsCashierModalOpen(false)}
+                className="text-gray-400 hover:text-gray-700 transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3 max-h-[50vh] overflow-y-auto">
+              {activeCashier && (
+                <button
+                  type="button"
+                  onClick={() => { setActiveCashier(null); setIsCashierModalOpen(false); }}
+                  className="w-full px-3 py-2 rounded-xl border-2 border-amber-300 bg-amber-50 text-amber-800 font-bold text-sm hover:bg-amber-100 transition-all"
+                >
+                  {t('Clear selection')}
+                </button>
+              )}
+
+              {cashiers.length === 0 && !activeCashier && (
+                <p className="text-center text-gray-400 text-sm font-bold py-2">
+                  {t('No cashiers yet — add the first one below')}
+                </p>
+              )}
+
+              <div className="space-y-1.5">
+                {cashiers.map(c => (
+                  <div key={c.id} className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => { setActiveCashier(c); setIsCashierModalOpen(false); playKeypadClick(); }}
+                      className={clsx(
+                        "flex-1 px-3 py-2.5 rounded-xl border-2 font-black text-sm text-start transition-all flex items-center gap-2",
+                        activeCashier?.id === c.id
+                          ? "bg-emerald-50 border-emerald-400 text-emerald-800"
+                          : "bg-gray-50 border-gray-200 text-gray-700 hover:bg-mocha-50 hover:border-mocha-300"
+                      )}
+                    >
+                      {activeCashier?.id === c.id && <UserRoundCheck size={16} className="shrink-0" />}
+                      <span className="truncate">{c.name}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteCashier(c.id)}
+                      className="px-2 py-2.5 rounded-xl text-gray-300 hover:text-red-600 hover:bg-red-50 transition-all shrink-0"
+                      title={t('Delete')}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+
+              <div className="border-t border-gray-100 pt-3 space-y-2">
+                <label className="text-xs text-gray-500 font-extrabold uppercase">{t('Add New Cashier')}</label>
+                <div className="flex gap-1.5">
+                  <input
+                    type="text"
+                    value={newCashierName}
+                    onChange={(e) => setNewCashierName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleAddCashier(); }}
+                    placeholder={t('Cashier name')}
+                    autoFocus
+                    maxLength={60}
+                    className="flex-1 px-3 py-2 bg-gray-50 border border-gray-300 rounded-xl font-bold text-sm focus:outline-none focus:border-mocha-600 focus:ring-2 focus:ring-mocha-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddCashier}
+                    disabled={!newCashierName.trim()}
+                    className="px-3 py-2 rounded-xl bg-mocha-600 text-white font-black text-sm hover:bg-mocha-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center gap-1 shrink-0"
+                  >
+                    <Plus size={16} />
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Floating Toast Notification (Non-intrusive) */}
       <div

@@ -21,6 +21,9 @@
  *   POST /sync/inventory-transactions { items: [...] }
  *   POST /sync/points-transactions    { items: [...] }
  *   POST /pull/orders                 { since?, branchId? }
+ *   POST /pull/menu-items             { since? } → rows (tombstones included)
+ *   POST /pull/customers              { since? } → rows (tombstones included)
+ *   POST /pull/inventory              { since? } → rows (tombstones included)
  *   POST /read/menu-items             → live menu
  *   POST /read/manager-snapshot       → orders + customers + inventory
  *
@@ -184,8 +187,8 @@ const SYNC_TABLES = {
 
   orders: {
     table: 'orders',
-    upsert: `INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, paidAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    upsert: `INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, paidAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, cashierName, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                orderNumber = excluded.orderNumber,
                tableId = excluded.tableId,
@@ -204,6 +207,7 @@ const SYNC_TABLES = {
                pointsEarned = excluded.pointsEarned,
                pointsRedeemed = excluded.pointsRedeemed,
                branch_id = excluded.branch_id,
+               cashierName = excluded.cashierName,
                updated_at = excluded.updated_at
              WHERE excluded.updated_at > orders.updated_at OR orders.updated_at IS NULL`,
     upsertParams: (o) => [
@@ -226,6 +230,7 @@ const SYNC_TABLES = {
       num(o.pointsEarned, 0),
       num(o.pointsRedeemed, 0),
       str(o.branchId ?? o.branch_id),
+      str(o.cashierName),
       str(o.updatedAt ?? o.updated_at, nowIso()),
     ],
   },
@@ -398,6 +403,24 @@ async function pullOrders(db, { since, branchId }) {
   return { orders: results || [] };
 }
 
+/**
+ * Incremental pull for the shared tables (menu items, customers, inventory).
+ *
+ * Tombstones are included deliberately: without them a deletion pushed from one branch
+ * never reached the others, and a deleted item kept reappearing on every other till.
+ * The row is either re-inserted with its deleted_at or the local copy is deleted via the
+ * WHERE-guarded upsert on the client side.
+ */
+async function pullSharedTable(db, table, since) {
+  const sinceValue = str(since);
+  const stmt = sinceValue
+    ? db.prepare(`SELECT * FROM ${table} WHERE updated_at > ? ORDER BY updated_at ASC LIMIT ?`)
+        .bind(sinceValue, READ_LIMIT)
+    : db.prepare(`SELECT * FROM ${table} ORDER BY updated_at ASC LIMIT ?`).bind(READ_LIMIT);
+  const { results } = await stmt.all();
+  return results || [];
+}
+
 // ─── Migration ───────────────────────────────────────────────────────────────
 
 async function runMigration(db) {
@@ -426,6 +449,7 @@ async function runMigration(db) {
   await tryExec('orders.pointsEarned', 'ALTER TABLE orders ADD COLUMN pointsEarned REAL DEFAULT 0');
   await tryExec('orders.pointsRedeemed', 'ALTER TABLE orders ADD COLUMN pointsRedeemed REAL DEFAULT 0');
   await tryExec('orders.deleted_at', 'ALTER TABLE orders ADD COLUMN deleted_at TEXT');
+  await tryExec('orders.cashierName', 'ALTER TABLE orders ADD COLUMN cashierName TEXT');
   await tryExec('orders.updated_at_backfill', 'UPDATE orders SET updated_at = createdAt WHERE updated_at IS NULL');
 
   // customers / menu_items / inventory: updated_at + soft delete
@@ -538,6 +562,15 @@ export default {
 
       if (url.pathname === '/pull/orders') {
         return json({ success: true, ...(await pullOrders(env.DB, payload)) }, 200, origin, env);
+      }
+
+      // Pull for shared tables: menu items, customers, inventory. Tombstones included so
+      // deletions made on one branch propagate to every other branch.
+      const pullSharedMatch = /^\/pull\/(menu-items|customers|inventory)$/.exec(url.pathname);
+      if (pullSharedMatch) {
+        const table = SYNC_TABLES[pullSharedMatch[1]].table;
+        const rows = await pullSharedTable(env.DB, table, payload.since);
+        return json({ success: true, rows }, 200, origin, env);
       }
 
       if (url.pathname === '/read/menu-items') {

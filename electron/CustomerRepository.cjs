@@ -29,6 +29,44 @@ class CustomerRepository {
     return rows.map(row => this.mapRow(row));
   }
 
+  /**
+   * Applies rows pulled from the cloud, including their deleted_at so a deletion made on
+   * another branch disappears here too. Only overwrites a local row that is synced or older.
+   */
+  upsertPulledCustomers(rows) {
+    if (!rows || rows.length === 0) return;
+    const sqlite = this.getDb();
+    const insert = sqlite.prepare(`
+      INSERT INTO customers (id, name, phone, points, createdAt, branch_id, is_synced, updated_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        phone = excluded.phone,
+        points = excluded.points,
+        branch_id = excluded.branch_id,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at,
+        is_synced = 1
+      WHERE customers.is_synced = 1
+        AND (customers.updated_at IS NULL OR excluded.updated_at IS NULL OR excluded.updated_at >= customers.updated_at)
+    `);
+    const runTx = sqlite.transaction((items) => {
+      for (const row of items) {
+        insert.run(
+          row.id,
+          row.name || 'Customer',
+          row.phone || '',
+          Number(row.points) || 0,
+          row.createdAt || row.updated_at,
+          row.branch_id || null,
+          row.updated_at || null,
+          row.deleted_at || null
+        );
+      }
+    });
+    runTx(rows);
+  }
+
   getCustomerByPhone(phone) {
     const sqlite = this.getDb();
     const row = sqlite.prepare('SELECT * FROM customers WHERE phone = ? AND deleted_at IS NULL').get(phone);

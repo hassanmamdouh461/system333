@@ -64,6 +64,7 @@ export function printCustomerReceipt(order: Order) {
   const paymentMethodLabel = 'طريقة الدفع';
   const thankYou = 'شكراً لزيارتكم! بالهناء والشفاء ☕';
   const cashierStamp = isPaid ? '✓ مدفوع' : 'غير مدفوع';
+  const cashierLabel = 'الكاشير';
   const methodLabel = order.paymentMethod === 'Cash'
     ? 'نقداً'
     : order.paymentMethod === 'Card'
@@ -179,6 +180,12 @@ export function printCustomerReceipt(order: Order) {
           <strong>${dateLabel}:</strong>
           <span>${formatDate(order.createdAt)}</span>
         </div>
+        ${order.cashierName ? `
+        <div class="info-row">
+          <strong>${cashierLabel}:</strong>
+          <span>${order.cashierName}</span>
+        </div>
+        ` : ''}
       </div>
 
       <div class="items">
@@ -270,6 +277,7 @@ function printSectionTicket(order: Order, section: 'kitchen' | 'drinks') {
   const orderLabel = 'طلب رقم';
   const itemsCountLabel = 'عدد الأصناف';
   const dateLabel = 'التاريخ';
+  const cashierTicketLabel = 'الكاشير';
   const totalQuantity = items.reduce((sum, i) => sum + i.quantity, 0);
 
   const html = `
@@ -366,6 +374,11 @@ function printSectionTicket(order: Order, section: 'kitchen' | 'drinks') {
           <span>${dateLabel}: ${formatDate(order.createdAt)}</span>
           <span>${itemsCountLabel}: ${totalQuantity}</span>
         </div>
+        ${order.cashierName ? `
+        <div class="details-row" style="font-size: 11px; margin-top: 4px;">
+          <span>${cashierTicketLabel}: ${order.cashierName}</span>
+        </div>
+        ` : ''}
       </div>
 
       <div class="items-list">

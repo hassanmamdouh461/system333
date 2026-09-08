@@ -19,7 +19,8 @@ export default function Orders() {
     items: OrderItem[],
     paymentStatus: 'Paid' | 'Unpaid',
     paymentMethod?: 'Cash' | 'Card',
-    paidAmount?: number
+    paidAmount?: number,
+    cashierName?: string
   ) => {
     // Snapshot the financial fields at creation time (Issue 25) so every screen
     // and report reads stored values instead of re-computing tax retroactively.
@@ -40,6 +41,7 @@ export default function Orders() {
       taxAmount,
       grandTotal,
       ...(collected != null ? { paidAmount: collected } : {}),
+      ...(cashierName ? { cashierName } : {}),
       createdAt: new Date().toISOString(),
       paidAt: paymentStatus === 'Paid' ? new Date().toISOString() : undefined,
     } as Omit<Order, 'id'>);

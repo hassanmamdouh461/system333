@@ -1,6 +1,5 @@
 import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { MenuItem } from '../types/menu';
-import { INITIAL_MENU_ITEMS } from '../data/menuSeed';
 import { Order, OrderStatus } from '../types/order';
 import { menuRepository, orderRepository } from '../repositories';
 import { useAuth } from './AuthContext';
@@ -16,7 +15,6 @@ interface MenuState {
   deleteItem: (id: string) => Promise<void>;
   toggleAvailability: (id: string) => Promise<void>;
   refetch: () => Promise<void>;
-  resetMenu: () => Promise<void>;
 }
 
 interface OrdersState {
@@ -176,20 +174,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
     }
   }, []);
 
-  const resetMenu = useCallback(async () => {
-    try {
-      setMenuLoading(true);
-      setMenuError(null);
-      const seeded = await menuRepository.resetToDefaults(INITIAL_MENU_ITEMS, branch?.branchId);
-      setMenuItems(seeded);
-    } catch (err) {
-      console.error('[DataContext] Failed to reset menu to defaults:', err);
-      setMenuError(toError(err));
-    } finally {
-      setMenuLoading(false);
-    }
-  }, [branch?.branchId]);
-
   // ── Orders mutations ──────────────────────────────────────────────────────────
 
   const addOrder = useCallback(async (order: Omit<Order, 'id'>): Promise<Order | null> => {
@@ -267,7 +251,6 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       deleteItem,
       toggleAvailability,
       refetch: fetchMenu,
-      resetMenu,
     },
     orders: {
       orders: ordersList,
@@ -281,8 +264,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       refetch: fetchOrders,
     },
   }), [
-    menuItems, menuLoading, menuError,
-    addItem, updateItem, deleteItem, toggleAvailability, fetchMenu, resetMenu,
+    menuItems, menuLoading, menuError, addItem, updateItem, deleteItem, toggleAvailability, fetchMenu,
     ordersList, ordersLoading, ordersError,
     addOrder, updateOrderStatus, completeWithPayment, updateOrder, deleteOrder, fetchOrders,
   ]);

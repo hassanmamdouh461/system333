@@ -41,6 +41,7 @@ class OrderRepository {
       pointsEarned: row.pointsEarned || 0,
       pointsRedeemed: row.pointsRedeemed || 0,
       branchId: row.branch_id || undefined,
+      cashierName: row.cashierName || undefined,
       isSynced: Boolean(row.is_synced)
     };
   }
@@ -93,8 +94,8 @@ class OrderRepository {
       }
 
       sqlite.prepare(`
-        INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, paidAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, is_synced, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+        INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, paidAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, cashierName, is_synced, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
       `).run(
         id,
         orderNumber,
@@ -115,6 +116,7 @@ class OrderRepository {
         order.pointsEarned || 0,
         order.pointsRedeemed || 0,
         branchId,
+        order.cashierName || null,
         now
       );
 
@@ -160,6 +162,7 @@ class OrderRepository {
       pointsEarned: order.pointsEarned || 0,
       pointsRedeemed: order.pointsRedeemed || 0,
       branchId,
+      cashierName: order.cashierName || undefined,
       isSynced: false
     };
   }
@@ -187,6 +190,7 @@ class OrderRepository {
     if (data.pointsEarned !== undefined) { fields.push('pointsEarned = ?'); values.push(data.pointsEarned); }
     if (data.pointsRedeemed !== undefined) { fields.push('pointsRedeemed = ?'); values.push(data.pointsRedeemed); }
     if (data.branchId !== undefined) { fields.push('branch_id = ?'); values.push(data.branchId); }
+    if (data.cashierName !== undefined) { fields.push('cashierName = ?'); values.push(data.cashierName); }
 
     // Always mark as unsynced and update timestamp on mutation
     const now = new Date().toISOString();
@@ -385,8 +389,8 @@ class OrderRepository {
     // Issue 17: ON CONFLICT only updates when the local row is synced AND the
     // incoming row is at least as new (last-write-wins by updated_at).
     const insert = sqlite.prepare(`
-      INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, paidAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, is_synced, updated_at, deleted_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+      INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, paidAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, cashierName, is_synced, updated_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         orderNumber = excluded.orderNumber,
         tableId = excluded.tableId,
@@ -405,6 +409,7 @@ class OrderRepository {
         pointsEarned = excluded.pointsEarned,
         pointsRedeemed = excluded.pointsRedeemed,
         branch_id = excluded.branch_id,
+        cashierName = excluded.cashierName,
         updated_at = excluded.updated_at,
         deleted_at = excluded.deleted_at,
         is_synced = 1
@@ -446,6 +451,7 @@ class OrderRepository {
           Number(order.pointsEarned) || 0,
           Number(order.pointsRedeemed) || 0,
           orderBranchId,
+          order.cashierName || null,
           updatedAt,
           order.deleted_at || null
         );

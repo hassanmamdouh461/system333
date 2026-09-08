@@ -112,3 +112,7 @@ Thumbs.db
 reports-site/node_modules/
 reports-site/dist/
 reports-site/.env
+
+# Host deploy scratch directories (login state, project links — never commit)
+.netlify/
+.vercel/
