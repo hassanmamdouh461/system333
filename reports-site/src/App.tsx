@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { AuthError, clearSession, fetchSnapshot, readSession, saveBranch } from './api';
+import { AuthError, clearSession, deleteBranch, fetchSnapshot, readSession, saveBranch } from './api';
 import { LoginScreen } from './LoginScreen';
 import { AnalyticsTab } from './AnalyticsTab';
 import { InventoryTab } from './InventoryTab';
@@ -240,6 +240,24 @@ export default function App() {
     [token]
   );
 
+  /**
+   * Soft-deletes a branch and adopts the registry the worker returns. If the manager was
+   * scoping the dashboard to this branch, the filter is widened back to "all branches" so
+   * the screen does not render a selection with no options behind it.
+   */
+  const handleDeleteBranch = useCallback(
+    async (id: string) => {
+      if (!token) throw new Error('انتهت الجلسة، يرجى تسجيل الدخول مرة أخرى');
+      const rows = await deleteBranch(token, id);
+      setBranchRows(rows as unknown as BranchRow[]);
+      if (branch === id) {
+        setBranch(ALL_BRANCHES);
+        rememberScope({ defaultBranch: ALL_BRANCHES });
+      }
+    },
+    [token, branch, rememberScope]
+  );
+
   const scopedOrders = useMemo(
     () => orders.filter((o) => inBranch(o.branch_id, branch) && inPeriod(o.createdAt, period)),
     [orders, branch, period]
@@ -440,6 +458,7 @@ export default function App() {
           unregisteredBranchIds={unregisteredBranchIds}
           ordersByBranch={ordersByBranch}
           onSaveBranch={handleSaveBranch}
+          onDeleteBranch={handleDeleteBranch}
           branch={branch}
           period={period}
           lastUpdated={lastUpdated}

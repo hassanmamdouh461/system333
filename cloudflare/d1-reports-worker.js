@@ -23,6 +23,7 @@
  *   POST /read/snapshot               → orders, customers, inventory, menu, stock movements,
  *                                       branches (token or write key)
  *   POST /branches/save               { branch } → upsert one branch (token or write key)
+ *   POST /branches/delete             { id } → soft-delete one branch (token or write key)
  *
  * The branch registry is the one thing a signed-in viewer may write. It holds no sales figure
  * and no customer detail: only the identity of a till, which is what the manager has to be
@@ -229,6 +230,18 @@ export function parseBranch(input) {
   };
 }
 
+/** A branch id parsed from a delete request, or an error explaining the rejection. */
+export function parseBranchId(input) {
+  // Accept either `{ id }` (the documented shape) or a bare string for clients that post
+  // the id directly, the way `parseBranch` accepts either `branch` or a flat object.
+  const raw = typeof input === 'string' ? input : input?.id;
+  const id = String(raw ?? '').trim().toLowerCase();
+  if (!BRANCH_ID_PATTERN.test(id)) {
+    return { error: 'Branch id must be 1-40 characters of a-z, 0-9, dash or underscore' };
+  }
+  return { id };
+}
+
 async function readBranches(db) {
   const { results } = await db
     .prepare(`SELECT * FROM branches WHERE deleted_at IS NULL ORDER BY name ASC LIMIT ?`)
@@ -247,6 +260,17 @@ async function saveBranch(db, branch) {
          active = excluded.active, updated_at = excluded.updated_at`
     )
     .bind(branch.id, branch.name, branch.phone, branch.address, branch.active, nowIso(), nowIso())
+    .run();
+}
+
+/**
+ * Soft-deletes one branch by stamping `deleted_at`. Rows already tagged with this id stay
+ * readable in the historical snapshot; only future mirror writes stop creating new ones.
+ */
+async function deleteBranch(db, id) {
+  await db
+    .prepare(`UPDATE branches SET deleted_at = ?, updated_at = ? WHERE id = ?`)
+    .bind(nowIso(), nowIso(), id)
     .run();
 }
 
@@ -721,6 +745,22 @@ export default {
       }
     }
 
+    // Soft-delete a branch: the registry stops listing it, rows already stamped with the id
+    // are preserved by the mirror's tombstone column.
+    if (url.pathname === '/branches/delete') {
+      if (!hasViewerToken && !hasWriteKey) {
+        return json({ success: false, error: 'Unauthorized' }, 401, origin);
+      }
+      const { id, error } = parseBranchId(payload);
+      if (error) return json({ success: false, error }, 400, origin);
+      try {
+        await deleteBranch(env.DB, id);
+        return json({ success: true, id, branches: await readBranches(env.DB) }, 200, origin);
+      } catch (err) {
+        return json({ success: false, error: String(err.message || err) }, 500, origin);
+      }
+    }
+
     // ─── Everything below writes real data, so it needs the write key ───
     if (!hasWriteKey) {
       return json({ success: false, error: 'Unauthorized' }, 401, origin);
@@ -786,5 +826,6 @@ export const __testing = {
   MAX_MENU_CONFIG_CHARS,
   readBranches,
   saveBranch,
+  deleteBranch,
   BRANCH_NAME_MAX,
 };

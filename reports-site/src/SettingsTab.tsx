@@ -35,6 +35,7 @@ interface SettingsTabProps {
   /** Order count per branch id over the selected scope. */
   ordersByBranch: Map<string, number>;
   onSaveBranch: (input: BranchInput) => Promise<void>;
+  onDeleteBranch: (id: string) => Promise<void>;
   /** Rows currently in scope, which is exactly what an export writes. */
   scope: ExportScope;
   branch: string;
@@ -123,6 +124,7 @@ export function SettingsTab({
   unregisteredBranchIds,
   ordersByBranch,
   onSaveBranch,
+  onDeleteBranch,
   scope,
   branch,
   period,
@@ -143,6 +145,7 @@ export function SettingsTab({
         unregisteredIds={unregisteredBranchIds}
         ordersByBranch={ordersByBranch}
         onSave={onSaveBranch}
+        onDelete={onDeleteBranch}
       />
 
       <Card title="العرض" hint="يُحفظ على هذا الجهاز فقط">

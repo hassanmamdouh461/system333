@@ -116,3 +116,12 @@ export async function saveBranch(
   const data = await post<{ branches?: SnapshotRow[] }>('/branches/save', { branch }, token);
   return data.branches || [];
 }
+
+/**
+ * Soft-deletes one branch. The id is tombstoned on the server rather than dropped, so rows
+ * stamped with that id keep their history readable.
+ */
+export async function deleteBranch(token: string, id: string): Promise<SnapshotRow[]> {
+  const data = await post<{ branches?: SnapshotRow[] }>('/branches/delete', { id }, token);
+  return data.branches || [];
+}

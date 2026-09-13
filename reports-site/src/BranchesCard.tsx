@@ -26,6 +26,8 @@ interface BranchesCardProps {
   /** Order count per branch id, so a branch is never judged by its name alone. */
   ordersByBranch: Map<string, number>;
   onSave: (input: BranchInput) => Promise<void>;
+  /** Soft-deletes one branch by id; rows stamped with it stay readable in history. */
+  onDelete: (id: string) => Promise<void>;
 }
 
 type Editing = { input: BranchInput; selfId: string | null } | null;
@@ -35,16 +37,24 @@ export function BranchesCard({
   unregisteredIds,
   ordersByBranch,
   onSave,
+  onDelete,
 }: BranchesCardProps) {
   const [editing, setEditing] = useState<Editing>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /**
+   * The id of the branch the manager has asked to remove, shown alongside its row so a
+   * confirmation is local to the action that triggered it. The buttons that go with the
+   * confirm replace the edit/delete pair, so the same row never asks two questions at once.
+   */
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
 
   const existingIds = branches.map((branch) => branch.id);
   const names = branchNames(branches);
 
   const startAdd = () => {
     setError(null);
+    setConfirmDeleteId(null);
     setEditing({
       input: { ...emptyBranchInput(), id: suggestBranchId('', existingIds) },
       selfId: null,
@@ -53,13 +63,20 @@ export function BranchesCard({
 
   const startEdit = (branch: BranchRow) => {
     setError(null);
+    setConfirmDeleteId(null);
     setEditing({ input: toBranchInput(branch), selfId: branch.id });
   };
 
   /** Names an id that rows already carry: an upsert on the same id, so nothing is orphaned. */
   const startNaming = (id: string) => {
     setError(null);
+    setConfirmDeleteId(null);
     setEditing({ input: { ...emptyBranchInput(), id }, selfId: id });
+  };
+
+  const cancelEditing = () => {
+    setEditing(null);
+    setError(null);
   };
 
   const patch = (fields: Partial<BranchInput>) => {
@@ -81,6 +98,34 @@ export function BranchesCard({
       setEditing(null);
     } catch (e) {
       setError((e as Error).message || 'تعذر حفظ الفرع');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  /**
+   * Two-step removal: the row first reveals a small confirm strip, only a second click on
+   * "تأكيد الحذف" commits. An accidental click on the trash icon must not erase a registry
+   * entry a till is still using.
+   */
+  const confirmDelete = (id: string) => {
+    setError(null);
+    setEditing(null);
+    setConfirmDeleteId(id);
+  };
+
+  const cancelDelete = () => setConfirmDeleteId(null);
+
+  const performDelete = async () => {
+    if (!confirmDeleteId) return;
+    const id = confirmDeleteId;
+    setBusy(true);
+    setError(null);
+    try {
+      await onDelete(id);
+      setConfirmDeleteId(null);
+    } catch (e) {
+      setError((e as Error).message || 'تعذر حذف الفرع');
     } finally {
       setBusy(false);
     }
@@ -172,15 +217,7 @@ export function BranchesCard({
             <button type="button" className="control primary" onClick={submit} disabled={busy}>
               {busy ? 'جارٍ الحفظ…' : editing.selfId === null ? 'إضافة الفرع' : 'حفظ التعديل'}
             </button>
-            <button
-              type="button"
-              className="control"
-              onClick={() => {
-                setEditing(null);
-                setError(null);
-              }}
-              disabled={busy}
-            >
+            <button type="button" className="control" onClick={cancelEditing} disabled={busy}>
               إلغاء
             </button>
           </div>
@@ -190,6 +227,7 @@ export function BranchesCard({
           <div className="setting-list">
             {branches.map((branch) => {
               const orders = ordersByBranch.get(branch.id) ?? 0;
+              const isConfirming = confirmDeleteId === branch.id;
               return (
                 <div className="setting-row" key={branch.id}>
                   <div className="setting-text">
@@ -207,9 +245,45 @@ export function BranchesCard({
                     </span>
                   </div>
                   <div className="setting-control">
-                    <button type="button" className="control" onClick={() => startEdit(branch)}>
-                      تعديل
-                    </button>
+                    {isConfirming ? (
+                      <>
+                        <button
+                          type="button"
+                          className="control danger"
+                          onClick={performDelete}
+                          disabled={busy}
+                          aria-label={`تأكيد حذف ${branchLabel(branch.id, names)}`}
+                        >
+                          {busy ? 'جارٍ الحذف…' : 'تأكيد الحذف'}
+                        </button>
+                        <button
+                          type="button"
+                          className="control"
+                          onClick={cancelDelete}
+                          disabled={busy}
+                        >
+                          تراجع
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                        <button type="button" className="control" onClick={() => startEdit(branch)}>
+                          تعديل
+                        </button>
+                        <button
+                          type="button"
+                          className="control danger"
+                          onClick={() => confirmDelete(branch.id)}
+                          title={`حذف ${branchLabel(branch.id, names)}`}
+                          aria-label={`حذف ${branchLabel(branch.id, names)}`}
+                        >
+                          <span className="control-icon" aria-hidden="true">
+                            <Icon name="trash" />
+                          </span>
+                          حذف
+                        </button>
+                      </>
+                    )}
                   </div>
                 </div>
               );

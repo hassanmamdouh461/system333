@@ -5,6 +5,7 @@ import {
   issueViewerToken,
   verifyViewerToken,
   parseBranch,
+  parseBranchId,
   DEFAULT_BRANCH,
   __testing,
 } from '../d1-reports-worker.js';
@@ -22,6 +23,7 @@ const {
   MAX_MENU_CONFIG_CHARS,
   readBranches,
   saveBranch,
+  deleteBranch,
   BRANCH_NAME_MAX,
 } = __testing;
 
@@ -493,6 +495,62 @@ describe('branch registry statements', () => {
     expect(sql).toContain('ON CONFLICT(id) DO UPDATE');
     expect(sql).not.toMatch(/\bDELETE\b/i);
     expect(bindings.slice(0, 2)).toEqual(['main', 'اسم جديد']);
+  });
+});
+
+describe('deleteBranch', () => {
+  function recordingDb() {
+    const seen: { sql: string; bindings: unknown[] }[] = [];
+    return {
+      seen,
+      prepare(sql: string) {
+        const statement: { sql: string; bindings: unknown[] } = { sql, bindings: [] };
+        seen.push(statement);
+        const chain = {
+          bind(...args: unknown[]) {
+            statement.bindings = args;
+            return chain;
+          },
+          async run() {
+            return { success: true };
+          },
+          async all() {
+            return { results: [] };
+          },
+        };
+        return chain;
+      },
+    };
+  }
+
+  it('tombstones the row rather than dropping it, so history keeps its ids', async () => {
+    const db = recordingDb();
+    await deleteBranch(db, 'main');
+
+    const { sql, bindings } = db.seen[0];
+    // The branches table is read by id everywhere; the registry must keep a tombstoned row
+    // so already-mirrored sales stay matched to it.
+    expect(sql.trim().toUpperCase()).toMatch(/^UPDATE\s+BRANCHES\b/);
+    expect(sql).toContain('deleted_at');
+    expect(sql).not.toMatch(/^DELETE\b/i);
+    // The id is the third binding: timestamp, updated_at, id.
+    expect(bindings[2]).toBe('main');
+  });
+});
+
+describe('parseBranchId', () => {
+  it('normalizes the id, the same way saveBranch does', () => {
+    expect(parseBranchId({ id: '  Maadi_2 ' })).toEqual({ id: 'maadi_2' });
+  });
+
+  it('rejects an id that could never appear on a branch_id column', () => {
+    for (const id of ['', '  ', "main'", 'فرع', '-main', 'a'.repeat(41)]) {
+      expect(parseBranchId({ id }).error, id).toBeTruthy();
+    }
+  });
+
+  it('accepts a bare string for callers that send only the id', () => {
+    expect(parseBranchId('main')).toEqual({ id: 'main' });
   });
 });
 
