@@ -5,31 +5,32 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
           cache: npm
-
-      # better-sqlite3 is a native module the Electron layer needs, so a plain `npm ci`
-      # has to build it. Failing here is a real signal, not CI noise.
       - name: Install dependencies
         run: npm ci
-
-      - name: Lint
+      - name: Audit locked dependencies
+        run: npm audit
+      - name: Lint (zero warnings)
         run: npm run lint
-
       - name: Typecheck
         run: npm run typecheck
-
-      - name: Test
+      - name: Frontend and worker tests
         run: npm test
-
+      - name: Isolated Electron unit tests (Node SQLite, no app)
+        run: npm run test:electron-unit
+      - name: Tooling regression tests
+        run: npm run test:tooling
       - name: Build
         run: npm run build
 
@@ -40,19 +41,49 @@ jobs:
         working-directory: reports-site
     steps:
       - uses: actions/checkout@v4
-
       - uses: actions/setup-node@v4
         with:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: reports-site/package-lock.json
-
+      # Deliberately do not install root dependencies: the portal must stand alone.
       - name: Install dependencies
         run: npm ci
-
-      # The portal has its own stricter tsconfig, and `vite build` does not typecheck.
+      - name: Audit locked dependencies
+        run: npm audit
       - name: Typecheck
-        run: npx tsc --noEmit -p tsconfig.json
-
-      - name: Build
+        run: npm run typecheck
+      - name: Portal tests
+        run: npm test
+      - name: Build and sentinel secret scan
         run: npm run build
+
+  windows-package:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Electron unit tests on supported Node
+        run: npm run test:electron-unit
+      - name: Rebuild SQLite for locked Electron ABI
+        run: npm run native:rebuild
+      - name: Isolated native migration smoke (no POS startup/network)
+        run: npm run test:native
+      - name: Package Windows x64 directory
+        run: npm run electron:package
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Verify SQLite from packaged asar (fresh and legacy temp databases)
+        run: npm run test:packaged
+      - name: Upload packaging diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-package-diagnostics
+          path: dist-electron/builder-*.yml
+          if-no-files-found: ignore

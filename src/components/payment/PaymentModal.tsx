@@ -13,75 +13,86 @@ interface PaymentModalProps {
   order: Order | null;
   isOpen: boolean;
   onClose: () => void;
-  onPaymentComplete: (orderId: string, method: 'Cash' | 'Card') => void;
+  onPaymentComplete: (orderId: string, method: 'Cash' | 'Card') => Promise<Order>;
 }
 
 export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: PaymentModalProps) {
-  const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Card'>('Cash');
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [showReceipt, setShowReceipt] = useState(false);
-  const { t, language } = useLanguage();
-  // Track whether onPaymentComplete has already been called for this session.
-  // Prevents double-firing if the user clicks Done twice or if any stale timer fires.
-  const paymentFiredRef = useRef(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Reset all state when the modal opens on a fresh order
-  useEffect(() => {
-    if (isOpen && order) {
-      if (order.paymentStatus === 'Paid') {
-        setPaymentMethod(order.paymentMethod || 'Cash');
-        setIsProcessing(false);
-        setShowReceipt(true);
-      } else {
-        setPaymentMethod('Cash');
-        setIsProcessing(false);
-        setShowReceipt(false);
-      }
-      paymentFiredRef.current = false;
+  // Retain pending writes across close/reopen and order switches, without allowing a
+  // second database write for the same invoice while the first is still unresolved.
+  const pending = useRef(new Map<string, Promise<Order>>());
+  const completePayment = async (id: string, method: 'Cash' | 'Card') => {
+    const existing = pending.current.get(id);
+    if (existing) return existing;
+    const request = Promise.resolve().then(() => onPaymentComplete(id, method));
+    pending.current.set(id, request);
+    try {
+      return await request;
+    } finally {
+      pending.current.delete(id);
     }
-    // Cleanup: cancel any pending timer if the modal is closed externally (e.g. backdrop)
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, [isOpen, order?.id]); // re-run only when a different order opens
+  };
 
-  if (!isOpen || !order) return null;
+  return isOpen && order ? (
+    <PaymentSession key={order.id} order={order} onClose={onClose} onPaymentComplete={completePayment} />
+  ) : null;
+}
 
+function PaymentSession({ order, onClose, onPaymentComplete }: Omit<PaymentModalProps, 'order' | 'isOpen'> & { order: Order }) {
+  const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Card'>(order.paymentMethod || 'Cash');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [receiptOrder, setReceiptOrder] = useState<Order | null>(order.paymentStatus === 'Paid' ? order : null);
+  const [error, setError] = useState('');
+  const { t, language } = useLanguage();
+  const activeRef = useRef(true);
+  const submittingRef = useRef(false);
+
+  useEffect(() => {
+    activeRef.current = true;
+    return () => { activeRef.current = false; };
+  }, []);
+
+  const showReceipt = receiptOrder !== null;
+  const displayOrder = receiptOrder || order;
   const storeConfig = getStoreConfig();
-  const { subtotal, taxRate, taxAmount: tax, grandTotal: total } = orderTotals(order);
+  const { subtotal, taxRate, taxAmount: tax, grandTotal: total } = orderTotals(displayOrder);
 
-  const handleProcessPayment = () => {
+  const handleProcessPayment = async () => {
+    if (submittingRef.current || showReceipt || !activeRef.current) return;
+    submittingRef.current = true;
     setIsProcessing(true);
-    timerRef.current = setTimeout(() => {
-      // Fire the DB write immediately when payment "succeeds" — not on modal dismiss.
-      // Capture orderId/method in closure so stale state can never target the wrong order.
-      const orderId = order.id;
-      const method  = paymentMethod;
-      if (!paymentFiredRef.current) {
-        paymentFiredRef.current = true;
-        onPaymentComplete(orderId, method);
+    setError('');
+    try {
+      const updatedOrder = await onPaymentComplete(order.id, paymentMethod);
+      if (!activeRef.current) return;
+      if (!updatedOrder || updatedOrder.id !== order.id || updatedOrder.paymentStatus !== 'Paid') {
+        throw new Error(t('Payment was not confirmed. Please try again.'));
       }
+      setReceiptOrder(updatedOrder);
       playPaymentSuccessChime();
-      setIsProcessing(false);
-      setShowReceipt(true);
-    }, 100);
+    } catch (err) {
+      if (!activeRef.current) return;
+      console.error('[PaymentModal] Payment failed:', err);
+      setError(t('Payment failed. Please try again.'));
+    } finally {
+      submittingRef.current = false;
+      if (activeRef.current) setIsProcessing(false);
+    }
   };
 
   const handleClose = () => {
-    // Cancel any in-flight timer to prevent the stale-receipt bug
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    setIsProcessing(false);
-    setShowReceipt(false);
+    // A committed write cannot be cancelled, but its old session must not show UI or play sounds.
+    activeRef.current = false;
     onClose();
   };
 
-  const handlePrintReceipt = () => {
-    if (order) {
-      printCustomerReceipt(order);
+  const handlePrintReceipt = async () => {
+    if (!receiptOrder) return;
+    setError('');
+    try {
+      await printCustomerReceipt(receiptOrder);
+    } catch (err) {
+      console.error('[PaymentModal] Print failed:', err);
+      if (activeRef.current) setError(t('Receipt printing failed. Please try again.'));
     }
   };
 
@@ -108,12 +119,13 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
               <CreditCard className="text-mocha-700" />
               {showReceipt ? t('Payment Successful') : t('Process Payment')}
             </h2>
-            <button onClick={handleClose} className="p-2 hover:bg-gray-200 rounded-full transition-colors text-gray-500">
+            <button aria-label={t('Close')} onClick={handleClose} className="p-2 hover:bg-gray-200 rounded-full transition-colors text-gray-500">
               <X size={20} />
             </button>
           </div>
 
           <div className="p-6 overflow-y-auto flex-1">
+            {error && <p role="alert" className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
             {!showReceipt ? (
               <div className="space-y-6">
                  {/* Order Summary */}
@@ -168,6 +180,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                     <label className="block text-sm font-medium text-gray-700 mb-3">{t('Select Payment Method')}</label>
                     <div className="grid grid-cols-2 gap-4">
                        <button
+                          disabled={isProcessing}
                           onClick={() => setPaymentMethod('Cash')}
                           className={clsx(
                              "flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all",
@@ -178,6 +191,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                           <span className="font-medium">{t('Cash')}</span>
                        </button>
                        <button
+                          disabled={isProcessing}
                           onClick={() => setPaymentMethod('Card')}
                           className={clsx(
                              "flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all",
@@ -218,11 +232,11 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                        <div className="text-center border-b border-dashed border-gray-300 pb-3 mb-3">
                           <p className="font-black text-xl tracking-tight text-mocha-900">☕ {storeConfig.storeName || 'Engaz POS'}</p>
                           <p className="text-[11px] text-gray-500 font-sans">{t('نظام الكاشير الذكي للكافيهات والمطاعم')}</p>
-                          <p className="text-[10px] text-gray-400 mt-1 font-mono">INV #{order.orderNumber} • {t(order.tableId)}</p>
+                          <p className="text-[10px] text-gray-400 mt-1 font-mono">INV #{displayOrder.orderNumber} • {t(displayOrder.tableId)}</p>
                        </div>
 
                        <div className="space-y-1.5 mb-3 border-b border-dashed border-gray-300 pb-3">
-                          {order.items.map((item: any, i: number) => (
+                          {displayOrder.items.map((item, i) => (
                              <div key={i} className="flex justify-between text-xs">
                                 <span>{item.quantity}× {t(item.name)}</span>
                                 <span className="tabular-nums font-bold">{(item.price * item.quantity).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
@@ -252,7 +266,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                               <div key={i} className="bg-gray-800 h-full" style={{ width: `${w * 1.5}px` }} />
                             ))}
                           </div>
-                          <p className="text-[9px] text-gray-400 font-mono tracking-widest">{order.id.slice(0, 16).toUpperCase()}</p>
+                          <p className="text-[9px] text-gray-400 font-mono tracking-widest">{displayOrder.id.slice(0, 16).toUpperCase()}</p>
                           <p className="text-[10px] text-gray-400 mt-1 font-sans">{t('Thank you for choosing Engaz POS! ☕')}</p>
                        </div>
                     </motion.div>
@@ -265,7 +279,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                     >
                        <Printer size={18} /> {t('Print Receipt')}
                     </button>
-                    <button onClick={handleClose} className="flex-1 py-3 bg-mocha-700 text-white rounded-xl font-medium hover:bg-mocha-800 shadow-lg shadow-mocha-500/20">
+                    <button aria-label={t('Close')} onClick={handleClose} className="flex-1 py-3 bg-mocha-700 text-white rounded-xl font-medium hover:bg-mocha-800 shadow-lg shadow-mocha-500/20">
                        {t('Done')}
                     </button>
                  </div>

@@ -1,6 +1,12 @@
 const Database = require('better-sqlite3');
 const path = require('path');
-const { app } = require('electron');
+
+let electronApp;
+try {
+  electronApp = require('electron').app;
+} catch {
+  electronApp = null;
+}
 
 let db;
 
@@ -15,11 +21,23 @@ function getBranchId() {
   }
 }
 
-function initDatabase() {
-  const dbPath = path.join(app.getPath('userData'), 'engaz.db');
-  console.log('[database] Initializing SQLite database at:', dbPath);
-  
-  db = new Database(dbPath);
+function initDatabase(customPathOrDb = null) {
+  if (customPathOrDb) {
+    if (db && db.open) db.close();
+    if (typeof customPathOrDb === 'string') {
+      db = new Database(customPathOrDb);
+    } else {
+      db = customPathOrDb;
+    }
+  } else {
+    if (db && db.open) return db;
+    const userDataPath = (electronApp && typeof electronApp.getPath === 'function')
+      ? electronApp.getPath('userData')
+      : path.join(process.cwd(), '.tmp-user-data');
+    const dbPath = path.join(userDataPath, 'engaz.db');
+    console.log('[database] Initializing SQLite database at:', dbPath);
+    db = new Database(dbPath);
+  }
   
   // Enable WAL mode for better concurrency/performance
   db.pragma('journal_mode = WAL');
@@ -34,6 +52,17 @@ function initDatabase() {
     CREATE TABLE IF NOT EXISTS settings (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL
+    )
+  `).run();
+
+  db.prepare(`
+    CREATE TABLE IF NOT EXISTS reports_outbox (
+      target TEXT NOT NULL,
+      record_id TEXT NOT NULL,
+      payload TEXT NOT NULL,
+      version TEXT NOT NULL,
+      queued_at TEXT NOT NULL,
+      PRIMARY KEY (target, record_id)
     )
   `).run();
 
@@ -156,7 +185,9 @@ function initDatabase() {
       is_synced INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
-      deleted_at TEXT
+      deleted_at TEXT,
+      sync_attempts INTEGER NOT NULL DEFAULT 0,
+      last_error TEXT
     )
   `).run();
   addColumnIfMissing(db, "ALTER TABLE cashiers ADD COLUMN branch_id TEXT DEFAULT NULL");
@@ -166,6 +197,8 @@ function initDatabase() {
   addColumnIfMissing(db, "ALTER TABLE cashiers ADD COLUMN deleted_at TEXT");
   // Cashier photo stored as a small base64 data URL (resized in the renderer before upload)
   addColumnIfMissing(db, "ALTER TABLE cashiers ADD COLUMN avatar TEXT");
+  addColumnIfMissing(db, "ALTER TABLE cashiers ADD COLUMN sync_attempts INTEGER NOT NULL DEFAULT 0");
+  addColumnIfMissing(db, "ALTER TABLE cashiers ADD COLUMN last_error TEXT");
 
   // Migration: Add paidAt column if table already existed without it
   addColumnIfMissing(db, 'ALTER TABLE orders ADD COLUMN paidAt TEXT');
@@ -175,8 +208,9 @@ function initDatabase() {
   addColumnIfMissing(db, 'ALTER TABLE orders ADD COLUMN pointsEarned REAL DEFAULT 0');
   addColumnIfMissing(db, 'ALTER TABLE orders ADD COLUMN pointsRedeemed REAL DEFAULT 0');
 
-  // Cashier who took the order; printed on the customer receipt
+  // Cashier snapshot attached to each order; printed on later reprints too
   addColumnIfMissing(db, 'ALTER TABLE orders ADD COLUMN cashierName TEXT');
+  addColumnIfMissing(db, 'ALTER TABLE orders ADD COLUMN cashierAvatar TEXT');
 
   // ═══════════════════════════════════════════════════════════════════════════
   // Phase 1 Migration: Add branch_id, is_synced, created_at, updated_at
@@ -502,6 +536,7 @@ function saveSetting(key, value) {
     sqlite.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').run(key, value);
   } catch (e) {
     console.error('[database] Failed to save setting:', e);
+    throw e;
   }
 }
 
@@ -525,16 +560,22 @@ function getSyncStats() {
     const customersCount = sqlite.prepare('SELECT COUNT(*) as count FROM customers WHERE is_synced = 0').get().count;
     const inventoryCount = sqlite.prepare('SELECT COUNT(*) as count FROM inventory WHERE is_synced = 0').get().count;
     const invTxCount = sqlite.prepare('SELECT COUNT(*) as count FROM inventory_transactions WHERE is_synced = 0').get().count;
+    const cashiersCount = sqlite.prepare('SELECT COUNT(*) as count FROM cashiers WHERE is_synced = 0').get().count;
+    const pointsCount = sqlite.prepare('SELECT COUNT(*) as count FROM points_transactions WHERE is_synced = 0').get().count;
+    const reportsCount = sqlite.prepare('SELECT COUNT(*) as count FROM reports_outbox').get().count;
     return {
       pendingMenu: menuCount,
       pendingOrders: ordersCount,
       pendingCustomers: customersCount,
       pendingInventory: inventoryCount + invTxCount,
-      totalPending: menuCount + ordersCount + customersCount + inventoryCount + invTxCount
+      pendingCashiers: cashiersCount,
+      pendingPoints: pointsCount,
+      pendingReports: reportsCount,
+      totalPending: menuCount + ordersCount + customersCount + inventoryCount + invTxCount + cashiersCount + pointsCount + reportsCount
     };
   } catch (e) {
     console.error('[database] Failed to get sync stats:', e);
-    return { pendingMenu: 0, pendingOrders: 0, pendingCustomers: 0, pendingInventory: 0, totalPending: 0 };
+    throw e;
   }
 }
 
@@ -563,20 +604,30 @@ function peekDailyOrderNumber(localDateStr) {
 }
 
 // ─── Sync metadata helpers (Issue 19) ────────────────────────────────────────
-const SYNCABLE_TABLES = new Set(['orders', 'customers', 'menu_items', 'inventory', 'inventory_transactions', 'points_transactions']);
+const SYNCABLE_TABLES = new Set(['orders', 'customers', 'menu_items', 'inventory', 'inventory_transactions', 'points_transactions', 'cashiers']);
 
 // After this many consecutive failures a row is parked instead of retried forever.
 // sync_attempts was previously incremented and never read, so one malformed row
 // blocked its whole table's batch on every cycle indefinitely.
 const MAX_SYNC_ATTEMPTS = 5;
 
-function markSyncFailure(table, ids, errorMessage) {
+function markSyncFailure(table, ids, errorMessage, snapshots) {
   if (!SYNCABLE_TABLES.has(table) || !ids || ids.length === 0) return;
   const sqlite = getDb();
   try {
-    const stmt = sqlite.prepare(`UPDATE ${table} SET sync_attempts = sync_attempts + 1, last_error = ? WHERE id = ?`);
+    const versions = snapshots ? new Map((snapshots || []).map(row => [row.id, row.updatedAt ?? row.updated_at ?? null])) : null;
+    const stmt = versions
+      ? sqlite.prepare(`UPDATE ${table} SET sync_attempts = sync_attempts + 1, last_error = ? WHERE id = ? AND (updated_at IS ? OR updated_at IS NULL)`)
+      : sqlite.prepare(`UPDATE ${table} SET sync_attempts = sync_attempts + 1, last_error = ? WHERE id = ?`);
     const runTx = sqlite.transaction((idList) => {
-      for (const id of idList) stmt.run(String(errorMessage || 'sync failed').slice(0, 500), id);
+      for (const id of idList) {
+        if (versions) {
+          if (!versions.has(id)) continue;
+          stmt.run(String(errorMessage || 'sync failed').slice(0, 500), id, versions.get(id));
+        } else {
+          stmt.run(String(errorMessage || 'sync failed').slice(0, 500), id);
+        }
+      }
     });
     runTx(ids);
 
@@ -629,8 +680,73 @@ function resetSyncAttempts(table, ids = null) {
   }
 }
 
+/** Enqueues or updates an item in the persistent SQLite outbox for reports mirror. */
+function enqueueReportOutbox(target, recordId, payload, version = null) {
+  const sqlite = getDb();
+  const now = new Date().toISOString();
+  const v = version || now;
+  const rawPayload = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  try {
+    sqlite.prepare(`
+      INSERT INTO reports_outbox (target, record_id, payload, version, queued_at)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(target, record_id) DO UPDATE SET
+        payload = excluded.payload,
+        version = excluded.version,
+        queued_at = excluded.queued_at
+      WHERE excluded.version >= reports_outbox.version OR reports_outbox.version IS NULL
+    `).run(target, recordId, rawPayload, v, now);
+  } catch (e) {
+    console.error(`[database] Failed to enqueue reports_outbox for ${target}/${recordId}:`, e);
+  }
+}
+
+/** Fetches pending outbox records ordered chronologically. */
+function getPendingReportOutbox(limit = 100) {
+  const sqlite = getDb();
+  try {
+    return sqlite.prepare(`
+      SELECT target, record_id, payload, version, queued_at
+      FROM reports_outbox
+      ORDER BY queued_at ASC
+      LIMIT ?
+    `).all(limit);
+  } catch (e) {
+    console.error('[database] Failed to read reports_outbox:', e);
+    return [];
+  }
+}
+
+/** Deletes a record from the outbox if its version hasn't been updated. */
+function deleteReportOutbox(target, recordId, version = null) {
+  const sqlite = getDb();
+  try {
+    if (version) {
+      sqlite.prepare(`
+        DELETE FROM reports_outbox
+        WHERE target = ? AND record_id = ? AND version <= ?
+      `).run(target, recordId, version);
+    } else {
+      sqlite.prepare(`
+        DELETE FROM reports_outbox
+        WHERE target = ? AND record_id = ?
+      `).run(target, recordId);
+    }
+  } catch (e) {
+    console.error('[database] Failed to delete from reports_outbox:', e);
+  }
+}
+
+function closeDatabase() {
+  if (db && db.open) {
+    db.close();
+    db = null;
+  }
+}
+
 module.exports = {
   initDatabase,
+  closeDatabase,
   getDb,
   getBranchId,
   getSettings,
@@ -642,5 +758,8 @@ module.exports = {
   markSyncFailure,
   getParkedSyncRows,
   resetSyncAttempts,
+  enqueueReportOutbox,
+  getPendingReportOutbox,
+  deleteReportOutbox,
   MAX_SYNC_ATTEMPTS
 };

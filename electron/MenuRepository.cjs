@@ -1,6 +1,12 @@
 const database = require('./database.cjs');
 const { randomUUID } = require('crypto');
 
+// Monotonic per-row version: a second edit in the same millisecond still gets a newer
+// updated_at, which the sync version guards compare on.
+function nextUpdatedAt(previous) {
+  return new Date(Math.max(Date.now(), (Date.parse(previous) || 0) + 1)).toISOString();
+}
+
 class MenuRepository {
   getDb() {
     return database.getDb();
@@ -28,7 +34,14 @@ class MenuRepository {
 
   getMenu() {
     const sqlite = this.getDb();
-    const rows = sqlite.prepare('SELECT * FROM menu_items WHERE deleted_at IS NULL').all();
+    const branchId = this.getBranchId();
+    // Same scoping as orders: this till sees its own items plus explicitly shared ones
+    // (NULL branch). A menu pull from the cloud can carry another branch's item, so
+    // filtering here — not only in the pull filter — is what keeps it off this till.
+    const rows = sqlite.prepare(`
+      SELECT * FROM menu_items
+      WHERE deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
+    `).all(branchId);
     return rows.map(row => this.mapRow(row));
   }
 
@@ -103,6 +116,8 @@ class MenuRepository {
 
   updateMenuItem(id, data) {
     const sqlite = this.getDb();
+    const current = this.getMenuItem(id);
+    if (!current) return null;
     const fields = [];
     const values = [];
 
@@ -112,14 +127,16 @@ class MenuRepository {
     if (data.category !== undefined) { fields.push('category = ?'); values.push(data.category); }
     if (data.image !== undefined) { fields.push('image = ?'); values.push(data.image); }
     if (data.available !== undefined) { fields.push('available = ?'); values.push(data.available ? 1 : 0); }
-    if (data.branchId !== undefined) { fields.push('branch_id = ?'); values.push(data.branchId); }
+    // branch_id is not editable here: an update carrying a foreign branch id used to
+    // silently re-scope the row to another branch.
 
-    // Always mark as unsynced and update timestamp on mutation
-    const now = new Date().toISOString();
+    // Always mark as unsynced and update timestamp on mutation. A local edit also
+    // re-enables retry of a previously parked row.
+    const now = nextUpdatedAt(current.updatedAt);
     fields.push('updated_at = ?'); values.push(now);
     fields.push('is_synced = 0');
-
-    if (fields.length === 0) return this.getMenuItem(id);
+    fields.push('sync_attempts = 0');
+    fields.push('last_error = NULL');
 
     values.push(id);
     sqlite.prepare(`
@@ -192,20 +209,35 @@ class MenuRepository {
 
   getUnsyncedMenu() {
     const sqlite = this.getDb();
-    const rows = sqlite.prepare('SELECT * FROM menu_items WHERE is_synced = 0 AND sync_attempts < 5').all();
+    const branchId = this.getBranchId();
+    // Scoped like orders: this till pushes only its own rows and shared ones. Without the
+    // filter, a row pulled from another branch would be re-pushed by this till with its own
+    // sync state, adopting another branch's data.
+    const rows = sqlite.prepare(`
+      SELECT * FROM menu_items
+      WHERE is_synced = 0 AND sync_attempts < 5 AND (branch_id = ? OR branch_id IS NULL)
+    `).all(branchId);
     return rows.map(row => ({
       ...this.mapRow(row),
       deletedAt: row.deleted_at || undefined
     }));
   }
 
-  markMenuSynced(ids) {
+  markMenuSynced(ids, snapshots) {
     if (!ids || ids.length === 0) return;
     const sqlite = this.getDb();
-    const stmt = sqlite.prepare('UPDATE menu_items SET is_synced = 1, sync_attempts = 0, last_error = NULL WHERE id = ?');
+    const branchId = this.getBranchId();
+    // Version-guarded like orders: an edit made while the push was in flight keeps the row
+    // unsynced so the edit itself is pushed next cycle.
+    const versions = snapshots === undefined ? null : new Map((snapshots || []).map(row => [row.id, row.updatedAt ?? row.updated_at ?? null]));
+    const stmt = sqlite.prepare(`
+      UPDATE menu_items SET is_synced = 1, sync_attempts = 0, last_error = NULL
+      WHERE id = ? AND (branch_id = ? OR branch_id IS NULL)${versions ? ' AND (updated_at IS ? OR updated_at IS NULL)' : ''}
+    `);
     const runTx = sqlite.transaction((idList) => {
       for (const id of idList) {
-        stmt.run(id);
+        if (versions && !versions.has(id)) continue;
+        stmt.run(id, branchId, ...(versions ? [versions.get(id)] : []));
       }
     });
     runTx(ids);

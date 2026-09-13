@@ -251,16 +251,29 @@ async function saveBranch(db, branch) {
 }
 
 // ─── Mirror targets ──────────────────────────────────────────────────────────
-// This database is a read model, so every write is an idempotent replace keyed on id.
-// There is no last-writer-wins guard: the POS is the single source of truth and a re-sent
-// record is simply the newer version of the same row.
+// Mirror writes from the POS. Mutable tables use Last-Write-Wins (LWW) conflict
+// resolution based on updated_at so delayed or out-of-order writes never overwrite
+// newer data, and tombstones (deleted_at) are preserved. Append-only ledger tables
+// use INSERT OR IGNORE.
 
 const SYNC_TABLES = {
   'menu-items': {
     table: 'menu_items',
-    upsert: `INSERT OR REPLACE INTO menu_items
+    upsert: `INSERT INTO menu_items
              (id, name, description, price, category, image, available, branch_id, created_at, updated_at, deleted_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name,
+               description = excluded.description,
+               price = excluded.price,
+               category = excluded.category,
+               image = excluded.image,
+               available = excluded.available,
+               branch_id = excluded.branch_id,
+               updated_at = excluded.updated_at,
+               deleted_at = COALESCE(menu_items.deleted_at, excluded.deleted_at)
+             WHERE excluded.updated_at > menu_items.updated_at OR menu_items.updated_at IS NULL
+                OR (excluded.updated_at = menu_items.updated_at AND excluded.deleted_at IS NOT NULL AND menu_items.deleted_at IS NULL)`,
     params: (i) => [
       str(i.id), str(i.name, ''), str(i.description, ''), num(i.price, 0), str(i.category, ''),
       str(i.image, ''), i.available ? 1 : 0, str(i.branchId ?? i.branch_id),
@@ -271,18 +284,42 @@ const SYNC_TABLES = {
 
   orders: {
     table: 'orders',
-    upsert: `INSERT OR REPLACE INTO orders
+    upsert: `INSERT INTO orders
              (id, orderNumber, tableId, status, paymentStatus, paymentMethod, totalAmount,
               grandTotal, subtotal, taxRate, taxAmount, paidAmount, items, branch_id,
-              customerPhone, pointsEarned, pointsRedeemed, createdAt, paidAt, updated_at, deleted_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+              customerPhone, pointsEarned, pointsRedeemed, cashierName, cashierAvatar, createdAt, paidAt, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               orderNumber = excluded.orderNumber,
+               tableId = excluded.tableId,
+               status = excluded.status,
+               paymentStatus = excluded.paymentStatus,
+               paymentMethod = excluded.paymentMethod,
+               totalAmount = excluded.totalAmount,
+               grandTotal = excluded.grandTotal,
+               subtotal = excluded.subtotal,
+               taxRate = excluded.taxRate,
+               taxAmount = excluded.taxAmount,
+               paidAmount = excluded.paidAmount,
+               items = excluded.items,
+               branch_id = excluded.branch_id,
+               customerPhone = excluded.customerPhone,
+               pointsEarned = excluded.pointsEarned,
+               pointsRedeemed = excluded.pointsRedeemed,
+               cashierName = excluded.cashierName,
+               cashierAvatar = excluded.cashierAvatar,
+               paidAt = excluded.paidAt,
+               updated_at = excluded.updated_at,
+               deleted_at = COALESCE(orders.deleted_at, excluded.deleted_at)
+             WHERE excluded.updated_at > orders.updated_at OR orders.updated_at IS NULL
+                OR (excluded.updated_at = orders.updated_at AND excluded.deleted_at IS NOT NULL AND orders.deleted_at IS NULL)`,
     params: (o) => [
       str(o.id), str(o.orderNumber, ''), str(o.tableId, ''), str(o.status, 'New'),
       str(o.paymentStatus, 'Unpaid'), str(o.paymentMethod), num(o.totalAmount, 0),
       num(o.grandTotal), num(o.subtotal), num(o.taxRate), num(o.taxAmount), num(o.paidAmount),
       typeof o.items === 'string' ? o.items : JSON.stringify(o.items ?? []),
       str(o.branchId ?? o.branch_id), str(o.customerPhone),
-      num(o.pointsEarned, 0), num(o.pointsRedeemed, 0),
+      num(o.pointsEarned, 0), num(o.pointsRedeemed, 0), str(o.cashierName), str(o.cashierAvatar),
       str(o.createdAt, nowIso()), str(o.paidAt),
       str(o.updatedAt ?? o.updated_at, nowIso()), str(o.deletedAt ?? o.deleted_at),
     ],
@@ -290,9 +327,17 @@ const SYNC_TABLES = {
 
   customers: {
     table: 'customers',
-    upsert: `INSERT OR REPLACE INTO customers
+    upsert: `INSERT INTO customers
              (id, name, phone, points, createdAt, updated_at, deleted_at, branch_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name,
+               phone = excluded.phone,
+               points = excluded.points,
+               branch_id = excluded.branch_id,
+               updated_at = excluded.updated_at,
+               deleted_at = COALESCE(customers.deleted_at, excluded.deleted_at)
+             WHERE excluded.updated_at > customers.updated_at OR customers.updated_at IS NULL`,
     params: (c) => [
       str(c.id), str(c.name, ''), str(c.phone, ''), num(c.points, 0),
       str(c.createdAt, nowIso()), str(c.updatedAt ?? c.updated_at, nowIso()),
@@ -302,9 +347,19 @@ const SYNC_TABLES = {
 
   inventory: {
     table: 'inventory',
-    upsert: `INSERT OR REPLACE INTO inventory
+    upsert: `INSERT INTO inventory
              (id, name, unit, stock, minStock, costPerUnit, branch_id, created_at, updated_at, deleted_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name,
+               unit = excluded.unit,
+               stock = excluded.stock,
+               minStock = excluded.minStock,
+               costPerUnit = excluded.costPerUnit,
+               branch_id = excluded.branch_id,
+               updated_at = excluded.updated_at,
+               deleted_at = COALESCE(inventory.deleted_at, excluded.deleted_at)
+             WHERE excluded.updated_at > inventory.updated_at OR inventory.updated_at IS NULL`,
     params: (i) => [
       str(i.id), str(i.name, ''), str(i.unit, ''), num(i.stock, 0), num(i.minStock, 0),
       num(i.costPerUnit, 0), str(i.branchId ?? i.branch_id),
@@ -313,9 +368,28 @@ const SYNC_TABLES = {
     ],
   },
 
+  cashiers: {
+    table: 'cashiers',
+    upsert: `INSERT INTO cashiers
+             (id, name, avatar, branch_id, created_at, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name,
+               avatar = excluded.avatar,
+               branch_id = excluded.branch_id,
+               updated_at = excluded.updated_at,
+               deleted_at = COALESCE(cashiers.deleted_at, excluded.deleted_at)
+             WHERE excluded.updated_at > cashiers.updated_at OR cashiers.updated_at IS NULL`,
+    params: (c) => [
+      str(c.id), str(c.name, ''), str(c.avatar), str(c.branchId ?? c.branch_id),
+      str(c.createdAt ?? c.created_at, nowIso()), str(c.updatedAt ?? c.updated_at, nowIso()),
+      str(c.deletedAt ?? c.deleted_at),
+    ],
+  },
+
   'inventory-transactions': {
     table: 'inventory_transactions',
-    upsert: `INSERT OR REPLACE INTO inventory_transactions
+    upsert: `INSERT OR IGNORE INTO inventory_transactions
              (id, itemId, type, quantity, referenceId, createdAt, branch_id, notes)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     params: (tx) => [
@@ -326,7 +400,7 @@ const SYNC_TABLES = {
 
   'points-transactions': {
     table: 'points_transactions',
-    upsert: `INSERT OR REPLACE INTO points_transactions
+    upsert: `INSERT OR IGNORE INTO points_transactions
              (id, customerId, orderId, type, points, balance, createdAt, branch_id)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     params: (e) => [
@@ -477,14 +551,14 @@ async function runMigration(db) {
     paymentStatus TEXT, paymentMethod TEXT, totalAmount REAL, grandTotal REAL, subtotal REAL,
     taxRate REAL, taxAmount REAL, paidAmount REAL, items TEXT, branch_id TEXT,
     customerPhone TEXT, pointsEarned REAL, pointsRedeemed REAL,
-    createdAt TEXT, paidAt TEXT, updated_at TEXT, deleted_at TEXT
+    cashierName TEXT, cashierAvatar TEXT, createdAt TEXT, paidAt TEXT, updated_at TEXT, deleted_at TEXT
   )`));
 
   // CREATE TABLE IF NOT EXISTS is a no-op against an existing table, so a column added
   // after the first deploy needs its own ALTER to reach an already-live database.
   for (const col of [
     'totalAmount REAL', 'paidAmount REAL', 'customerPhone TEXT',
-    'pointsEarned REAL', 'pointsRedeemed REAL', 'paidAt TEXT',
+    'pointsEarned REAL', 'pointsRedeemed REAL', 'cashierName TEXT', 'cashierAvatar TEXT', 'paidAt TEXT',
   ]) {
     results.push(await tryExec(`orders.${col.split(' ')[0]}`, `ALTER TABLE orders ADD COLUMN ${col}`));
   }
@@ -514,6 +588,12 @@ async function runMigration(db) {
     id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT, address TEXT,
     active INTEGER DEFAULT 1, created_at TEXT, updated_at TEXT, deleted_at TEXT
   )`));
+  results.push(await tryExec('cashiers', `CREATE TABLE IF NOT EXISTS cashiers (
+    id TEXT PRIMARY KEY, name TEXT NOT NULL, avatar TEXT, branch_id TEXT,
+    created_at TEXT NOT NULL, updated_at TEXT NOT NULL, deleted_at TEXT
+  )`));
+  results.push(await tryExec('idx.cashiers_updated_at', 'CREATE INDEX IF NOT EXISTS idx_cashiers_updated_at ON cashiers(updated_at)'));
+  results.push(await tryExec('idx.cashiers_branch', 'CREATE INDEX IF NOT EXISTS idx_cashiers_branch ON cashiers(branch_id)'));
   // The public menu's identity and display rules, as one row. Created here rather than on
   // first write, so a publish either succeeds against a migrated database or fails loudly
   // instead of issuing DDL on a request path.

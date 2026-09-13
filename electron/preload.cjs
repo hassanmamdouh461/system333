@@ -23,9 +23,10 @@ contextBridge.exposeInMainWorld('electronAPI', {
   deleteCustomer: (id) => ipcRenderer.invoke('db:delete-customer', id),
 
   getCashiers: (branchId) => ipcRenderer.invoke('db:get-cashiers', branchId),
-  createCashier: (name) => ipcRenderer.invoke('db:create-cashier', name),
+  createCashier: (name, avatar) => ipcRenderer.invoke('db:create-cashier', name, avatar),
   deleteCashier: (id) => ipcRenderer.invoke('db:delete-cashier', id),
   renameCashier: (id, name) => ipcRenderer.invoke('db:rename-cashier', id, name),
+  setCashierAvatar: (id, avatar) => ipcRenderer.invoke('db:set-cashier-avatar', id, avatar),
 
   getSettings: () => ipcRenderer.invoke('db:get-settings'),
   saveSetting: (key, value) => ipcRenderer.invoke('db:save-setting', key, value),
@@ -58,5 +59,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     const listener = (event, status) => callback(status);
     ipcRenderer.on('sync:status-update', listener);
     return () => ipcRenderer.removeListener('sync:status-update', listener);
-  }
+  },
+
+  // Printing API
+  printReceipt: (html) => ipcRenderer.invoke('app:print-receipt', html),
 });

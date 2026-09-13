@@ -4,16 +4,27 @@
   "version": "0.0.0",
   "type": "module",
   "main": "electron/main.cjs",
+  "engines": {
+    "node": ">=24.16.0 <25",
+    "npm": ">=11 <12"
+  },
   "scripts": {
     "dev": "vite",
-    "build": "vite build",
-    "lint": "eslint . --ext ts,tsx,js,cjs --report-unused-disable-directives",
+    "build": "vite build && node scripts/build-freshness.mjs stamp",
+    "lint": "eslint . --ext ts,tsx,js,cjs,mjs --report-unused-disable-directives --max-warnings 0",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:electron-unit": "node scripts/run-electron-unit.mjs",
+    "test:tooling": "node --test scripts/*.test.mjs",
+    "test:native": "node scripts/electron-smoke.mjs",
+    "test:packaged": "node scripts/electron-smoke.mjs --packaged",
+    "native:rebuild": "node scripts/native-rebuild.mjs",
+    "check:build": "node scripts/build-freshness.mjs check",
     "preview": "vite preview",
-    "electron:dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
-    "electron:build": "vite build && electron-builder"
+    "electron:dev": "concurrently -k \"vite --host 127.0.0.1 --strictPort\" \"wait-on http://127.0.0.1:5173 && node scripts/electron-dev.mjs\"",
+    "electron:build": "npm run build && electron-builder",
+    "electron:package": "npm run build && electron-builder --win --x64 --dir"
   },
   "build": {
     "appId": "com.restaurant-management-system",
@@ -23,11 +34,12 @@
     },
     "files": [
       "dist/**/*",
-      "electron/**/*"
+      "electron/**/*",
+      "!electron/__tests__/**/*"
     ],
     "win": {
       "target": "nsis",
-      "icon": "electron/icon.png"
+      "icon": "electron/icon.ico"
     }
   },
   "dependencies": {
@@ -37,30 +49,32 @@
     "lucide-react": "^0.330.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "react-router-dom": "^6.22.0",
+    "react-router-dom": "^7.18.3",
     "tailwind-merge": "^2.2.0"
   },
   "devDependencies": {
-    "@types/node": "^25.2.0",
+    "@testing-library/react": "^16.3.3",
+    "@types/node": "^24.13.4",
     "@types/react": "^18.2.56",
     "@types/react-dom": "^18.2.19",
-    "@typescript-eslint/eslint-plugin": "7.18.0",
-    "@typescript-eslint/parser": "7.18.0",
-    "@vitejs/plugin-react": "^4.2.1",
+    "@typescript-eslint/eslint-plugin": "^8.70.0",
+    "@typescript-eslint/parser": "^8.70.0",
+    "@vitejs/plugin-react": "^5.2.0",
     "autoprefixer": "^10.4.17",
     "concurrently": "^8.2.2",
     "electron": "^29.4.6",
-    "electron-builder": "^24.13.3",
+    "electron-builder": "^26.15.3",
     "eslint": "8.57.1",
     "eslint-plugin-react-hooks": "4.6.2",
     "eslint-plugin-react-refresh": "0.4.14",
+    "jsdom": "^30.0.1",
     "postcss": "^8.4.35",
     "tailwindcss": "^3.4.1",
     "ts-node": "^10.9.2",
     "tsx": "^4.21.0",
     "typescript": "^5.2.2",
-    "vite": "^5.1.4",
-    "vitest": "^2.1.9",
+    "vite": "^7.3.6",
+    "vitest": "^4.1.11",
     "wait-on": "^7.2.0"
   }
 }

@@ -154,6 +154,15 @@ class SyncEngine {
         return;
       }
 
+      const phaseErrors = [];
+
+      // 1b. Flush persistent reports outbox
+      try {
+        await mockApi.flushReportsOutbox();
+      } catch (outboxError) {
+        console.warn('[syncEngine] Reports outbox flush failed:', outboxError.message);
+      }
+
       // 2. Pull updates from the cloud incrementally (Issue 21)
       try {
         const dbModule = require('./database.cjs');
@@ -176,15 +185,17 @@ class SyncEngine {
         }
       } catch (pullError) {
         console.error('[syncEngine] Failed to pull remote orders:', pullError.message);
+        phaseErrors.push(`Failed to pull orders: ${pullError.message}`);
       }
 
-      // 2b. Pull shared tables (menu, customers, inventory) so edits and — crucially —
+      // 2b. Pull shared tables (menu, customers, inventory, cashiers) so edits and — crucially —
       // deletions made on other branches propagate here. Each table keeps its own
       // high-water mark so a failure in one does not reset the others.
       const sharedPulls = [
         { target: 'menu-items', setting: 'last_pulled_menu_items_at', repo: 'MenuRepository.cjs', apply: 'upsertPulledMenuItems', rowTime: (r) => r.updated_at },
         { target: 'customers', setting: 'last_pulled_customers_at', repo: 'CustomerRepository.cjs', apply: 'upsertPulledCustomers', rowTime: (r) => r.updated_at },
         { target: 'inventory', setting: 'last_pulled_inventory_at', repo: 'InventoryRepository.cjs', apply: 'upsertPulledInventory', rowTime: (r) => r.updated_at },
+        { target: 'cashiers', setting: 'last_pulled_cashiers_at', repo: 'CashierRepository.cjs', apply: 'upsertPulledCashiers', rowTime: (r) => r.updated_at },
       ];
       for (const { target, setting, repo, apply, rowTime } of sharedPulls) {
         try {
@@ -204,33 +215,22 @@ class SyncEngine {
           }
         } catch (pullError) {
           console.error(`[syncEngine] Failed to pull ${target}:`, pullError.message);
+          phaseErrors.push(`Failed to pull ${target}: ${pullError.message}`);
         }
       }
 
-      // 3. Update the lastSyncAt timestamp since we successfully reached the server and pulled
-      this.status.lastSyncAt = new Date().toISOString();
+      // 3. Query pending local records to push
+      const statsBeforePush = this.updatePendingCount();
+      console.log(`[syncEngine] Online: Found ${statsBeforePush.totalPending} pending records before push.`);
 
-      // 4. Get current stats of pending local records to push
-      const stats = this.updatePendingCount();
-      
-      if (stats.totalPending === 0) {
-        // Nothing to push, sync is complete!
-        this.status.state = 'synced';
-        this.status.lastError = null;
-        this.consecutiveFailures = 0;
-        this.emitStatus();
-        this.isSyncing = false;
-        return;
-      }
-
-      console.log(`[syncEngine] Online: Found ${stats.totalPending} pending records to push/sync.`);
-      
-      // 5. Query the actual unsynced records from repositories
+      // 4. Query the actual unsynced records from repositories
       const menuRepository = require('./MenuRepository.cjs');
       const customerRepository = require('./CustomerRepository.cjs');
       const orderRepository = require('./OrderRepository.cjs');
+      const cashierRepository = require('./CashierRepository.cjs');
 
       const unsyncedMenu = menuRepository.getUnsyncedMenu();
+      const unsyncedCashiers = cashierRepository.getUnsyncedCashiers();
       const unsyncedCustomers = customerRepository.getUnsyncedCustomers();
       const unsyncedOrders = orderRepository.getUnsyncedOrders();
       
@@ -239,11 +239,26 @@ class SyncEngine {
         const ids = unsyncedMenu.map(item => item.id);
         try {
           await mockApi.pushMenuItems(unsyncedMenu);
-          menuRepository.markMenuSynced(ids);
+          menuRepository.markMenuSynced(ids, unsyncedMenu);
           console.log(`[syncEngine] Marked ${ids.length} menu items as synced in local DB.`);
         } catch (e) {
           console.error('[syncEngine] Menu push failed:', e.message);
+          phaseErrors.push(`Menu push failed: ${e.message}`);
           this.db.markSyncFailure('menu_items', ids, e.message);
+        }
+      }
+
+      // Sync Cashiers
+      if (unsyncedCashiers.length > 0) {
+        const ids = unsyncedCashiers.map(c => c.id);
+        try {
+          await mockApi.pushCashiers(unsyncedCashiers);
+          cashierRepository.markCashiersSynced(ids, unsyncedCashiers);
+          console.log(`[syncEngine] Marked ${ids.length} cashiers as synced in local DB.`);
+        } catch (e) {
+          console.error('[syncEngine] Cashiers push failed:', e.message);
+          phaseErrors.push(`Cashiers push failed: ${e.message}`);
+          this.db.markSyncFailure('cashiers', ids, e.message, unsyncedCashiers);
         }
       }
 
@@ -252,10 +267,11 @@ class SyncEngine {
         const ids = unsyncedCustomers.map(c => c.id);
         try {
           await mockApi.pushCustomers(unsyncedCustomers);
-          customerRepository.markCustomersSynced(ids);
+          customerRepository.markCustomersSynced(ids, unsyncedCustomers);
           console.log(`[syncEngine] Marked ${ids.length} customers as synced in local DB.`);
         } catch (e) {
           console.error('[syncEngine] Customers push failed:', e.message);
+          phaseErrors.push(`Customers push failed: ${e.message}`);
           this.db.markSyncFailure('customers', ids, e.message);
         }
       }
@@ -265,10 +281,11 @@ class SyncEngine {
         const ids = unsyncedOrders.map(o => o.id);
         try {
           await mockApi.pushOrders(unsyncedOrders);
-          orderRepository.markOrdersSynced(ids);
+          orderRepository.markOrdersSynced(ids, unsyncedOrders);
           console.log(`[syncEngine] Marked ${ids.length} orders as synced in local DB.`);
         } catch (e) {
           console.error('[syncEngine] Orders push failed:', e.message);
+          phaseErrors.push(`Orders push failed: ${e.message}`);
           this.db.markSyncFailure('orders', ids, e.message);
         }
       }
@@ -281,10 +298,11 @@ class SyncEngine {
           const ids = unsyncedInventory.map(inv => inv.id);
           try {
             await mockApi.pushInventory(unsyncedInventory);
-            inventoryRepository.markInventorySynced(ids);
+            inventoryRepository.markInventorySynced(ids, unsyncedInventory);
             console.log(`[syncEngine] Marked ${ids.length} inventory items as synced in local DB.`);
           } catch (e) {
             console.error('[syncEngine] Inventory push failed:', e.message);
+            phaseErrors.push(`Inventory push failed: ${e.message}`);
             this.db.markSyncFailure('inventory', ids, e.message);
           }
         }
@@ -298,6 +316,7 @@ class SyncEngine {
             console.log(`[syncEngine] Marked ${txIds.length} inventory transactions as synced in local DB.`);
           } catch (e) {
             console.error('[syncEngine] Inventory transactions push failed:', e.message);
+            phaseErrors.push(`Inventory transactions push failed: ${e.message}`);
             this.db.markSyncFailure('inventory_transactions', txIds, e.message);
           }
         }
@@ -314,6 +333,7 @@ class SyncEngine {
             console.log(`[syncEngine] Marked ${ptxIds.length} points transactions as synced in local DB.`);
           } catch (e) {
             console.error('[syncEngine] Points transactions push failed:', e.message);
+            phaseErrors.push(`Points transactions push failed: ${e.message}`);
             this.db.markSyncFailure('points_transactions', ptxIds, e.message);
           }
         }
@@ -321,13 +341,27 @@ class SyncEngine {
         console.warn('[syncEngine] Inventory/points sync bypassed:', invError.message);
       }
 
-      // 6. Update success status
-      this.status.state = 'synced';
-      this.status.lastError = null;
-      this.consecutiveFailures = 0;
-      this.updatePendingCount(); // Updates pending count and calls emitStatus()
-      
-      console.log('[syncEngine] Sync cycle completed successfully.');
+      // 5. Update final status based on errors and pending count
+      const finalStats = this.updatePendingCount();
+      if (phaseErrors.length > 0) {
+        this.status.state = 'error';
+        this.status.lastError = phaseErrors.join('; ');
+        this.consecutiveFailures += 1;
+        console.warn(`[syncEngine] Sync cycle completed with ${phaseErrors.length} error(s):`, this.status.lastError);
+      } else if (finalStats.totalPending > 0) {
+        this.status.state = 'syncing';
+        this.status.lastError = null;
+        this.status.lastSyncAt = new Date().toISOString();
+        this.consecutiveFailures = 0;
+        console.log(`[syncEngine] Sync cycle completed with ${finalStats.totalPending} pending records remaining.`);
+      } else {
+        this.status.state = 'synced';
+        this.status.lastError = null;
+        this.status.lastSyncAt = new Date().toISOString();
+        this.consecutiveFailures = 0;
+        console.log('[syncEngine] Sync cycle completed successfully.');
+      }
+      this.emitStatus();
     } catch (error) {
       console.error('[syncEngine] Sync cycle failed with error:', error.message);
       this.status.state = 'error';

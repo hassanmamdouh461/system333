@@ -66,7 +66,7 @@ function App() {
   return (
     <AuthProvider>
       <LanguageProvider>
-        <Router future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
+        <Router>
           <AppRoutes />
         </Router>
       </LanguageProvider>

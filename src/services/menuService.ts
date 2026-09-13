@@ -1,6 +1,5 @@
 import { MenuItem } from '../types/menu';
 import { PublicMenuConfig } from '../types/menuBranding';
-import { callWorker } from './workerClient';
 
 interface MenuItemRow {
   id: string;
@@ -49,8 +48,10 @@ export const menuService = {
       }
     }
 
-    // In the browser (public menu / web build):
-    // First try the public reports worker endpoint (engaz-reports-db) which needs no auth
+    // In the browser (public menu / web build) the menu is read from the public reports
+    // worker endpoint, which needs no credential. There is no authenticated fallback any
+    // more: the key that fallback used to send was inlined into the public bundle, so the
+    // whole path had to go. Reading the live menu is the public endpoint's job.
     try {
       const reportsUrl = (import.meta.env.VITE_REPORTS_WORKER_URL as string) || 'https://api-reports.engaz.tech';
       const res = await fetch(`${reportsUrl.replace(/\/+$/, '')}/read/public-menu`, {
@@ -64,16 +65,10 @@ export const menuService = {
         }
       }
     } catch (e) {
-      console.warn('[menuService] Public menu fetch from reports worker failed, falling back:', e);
+      console.warn('[menuService] Public menu fetch from reports worker failed:', e);
     }
 
-    try {
-      const data = await callWorker<{ menuItems: MenuItemRow[] }>('/read/menu-items');
-      return (data.menuItems || []).map(mapRow);
-    } catch (error) {
-      console.error('[menuService] Error fetching menu items from the worker:', error);
-      throw new Error('فشل قراءة أصناف القائمة');
-    }
+    throw new Error('فشل قراءة أصناف القائمة');
   },
 
   async getPublicMenuData(): Promise<{ menuItems: MenuItem[]; config: PublicMenuConfig | null }> {

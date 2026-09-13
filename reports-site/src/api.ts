@@ -81,6 +81,8 @@ export interface Snapshot {
   movements: SnapshotRow[];
   /** Branch registry, so a branch can be shown by name instead of by its id. */
   branches: SnapshotRow[];
+  /** Cashiers list if provided by the reports worker. */
+  cashiers?: SnapshotRow[];
   /** When the worker read these rows, so the portal can show the age of what it displays. */
   serverTime: string;
 }
@@ -95,6 +97,7 @@ export async function fetchSnapshot(token: string): Promise<Snapshot> {
     menuItems: data.menuItems || [],
     movements: data.movements || [],
     branches: data.branches || [],
+    cashiers: data.cashiers || [],
     serverTime: data.serverTime || new Date().toISOString(),
   };
 }

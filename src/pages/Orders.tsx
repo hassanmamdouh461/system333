@@ -20,7 +20,8 @@ export default function Orders() {
     paymentStatus: 'Paid' | 'Unpaid',
     paymentMethod?: 'Cash' | 'Card',
     paidAmount?: number,
-    cashierName?: string
+    cashierName?: string,
+    cashierAvatar?: string
   ) => {
     // Snapshot the financial fields at creation time (Issue 25) so every screen
     // and report reads stored values instead of re-computing tax retroactively.
@@ -42,12 +43,13 @@ export default function Orders() {
       grandTotal,
       ...(collected != null ? { paidAmount: collected } : {}),
       ...(cashierName ? { cashierName } : {}),
+      ...(cashierAvatar ? { cashierAvatar } : {}),
       createdAt: new Date().toISOString(),
       paidAt: paymentStatus === 'Paid' ? new Date().toISOString() : undefined,
     } as Omit<Order, 'id'>);
     if (newOrder) {
-      printKitchenReceipt(newOrder);
-      printDrinksReceipt(newOrder);
+      printKitchenReceipt(newOrder).catch((err) => console.error('Kitchen receipt print failed:', err));
+      printDrinksReceipt(newOrder).catch((err) => console.error('Drinks receipt print failed:', err));
     }
     return newOrder;
   };

@@ -23,7 +23,7 @@ interface OrdersState {
   error: Error | null;
   addOrder: (order: Omit<Order, 'id'>) => Promise<Order | null>;
   updateOrderStatus: (id: string, status: OrderStatus) => Promise<void>;
-  completeWithPayment: (id: string, method?: 'Cash' | 'Card') => Promise<void>;
+  completeWithPayment: (id: string, method?: 'Cash' | 'Card') => Promise<Order>;
   updateOrder: (id: string, data: Partial<Omit<Order, 'id'>>) => Promise<void>;
   deleteOrder: (id: string) => Promise<void>;
   refetch: () => Promise<void>;
@@ -206,6 +206,7 @@ export function DataProvider({ children }: { children: React.ReactNode }) {
       const updatedOrder = await orderRepository.completeWithPayment(id, method);
       setOrdersList(prev => prev.map(o => o.id === id ? updatedOrder : o));
       setOrdersError(null);
+      return updatedOrder;
     } catch (err) {
       console.error('[DataContext] Failed to complete payment in repository:', err);
       setOrdersError(toError(err));

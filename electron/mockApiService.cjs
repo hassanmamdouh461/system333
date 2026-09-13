@@ -168,48 +168,74 @@ async function callWorker(endpoint, body) {
   }
 
   // Only writes are mirrored: the reports database is a read model built from them.
-  // A failed mirror is queued (bounded) and retried on the next calls, so a transient
-  // reports-worker outage no longer leaves the portal permanently behind the POS data.
+  // A failed mirror is enqueued in the persistent SQLite reports_outbox so a transient
+  // reports-worker outage or app restart no longer loses unmirrored writes.
   if (endpoint.startsWith('/sync/')) {
-    mirrorToReports(endpoint, body)
-      .catch(() => queueMirrorRetry(endpoint, body))
-      .finally(flushMirrorRetryQueue);
+    const target = endpoint.replace(/^\/sync\//, '');
+    mirrorToReports(endpoint, body).catch((err) => {
+      console.warn(`[D1 Sync API] Reports mirror failed for ${target}, persisting to reports_outbox:`, err.message);
+      if (Array.isArray(body?.items)) {
+        for (const item of body.items) {
+          if (item && item.id) {
+            const version = item.updated_at || item.updatedAt || item.createdAt || new Date().toISOString();
+            database.enqueueReportOutbox(target, item.id, item, version);
+          }
+        }
+      }
+    });
   }
 
   return response;
 }
 
 /**
- * Retry queue for failed report mirrors. Bounded so an unreachable reports worker cannot
- * grow memory unboundedly; oldest entries are dropped first, matching the read model's
- * replace-by-id semantics (a newer version of the same row supersedes an older retry).
+ * Flushes pending items from the persistent SQLite reports_outbox to the isolated reports database.
  */
-const MIRROR_RETRY_QUEUE = [];
-const MIRROR_RETRY_MAX = 50;
+let outboxFlushInProgress = false;
+async function flushReportsOutbox(limit = 100) {
+  loadConfig();
+  if (!REPORTS_WORKER_KEY || outboxFlushInProgress) return { success: true, sent: 0 };
+  outboxFlushInProgress = true;
+  let sentCount = 0;
 
-function queueMirrorRetry(endpoint, body) {
-  while (MIRROR_RETRY_QUEUE.length >= MIRROR_RETRY_MAX) MIRROR_RETRY_QUEUE.shift();
-  MIRROR_RETRY_QUEUE.push({ endpoint, body });
-}
-
-let mirrorFlushInProgress = false;
-async function flushMirrorRetryQueue() {
-  if (mirrorFlushInProgress || MIRROR_RETRY_QUEUE.length === 0) return;
-  mirrorFlushInProgress = true;
   try {
-    while (MIRROR_RETRY_QUEUE.length > 0) {
-      const { endpoint, body } = MIRROR_RETRY_QUEUE[0];
+    const pending = database.getPendingReportOutbox(limit);
+    if (!pending || pending.length === 0) return { success: true, sent: 0 };
+
+    const grouped = new Map();
+    for (const row of pending) {
+      if (!grouped.has(row.target)) grouped.set(row.target, []);
+      grouped.get(row.target).push(row);
+    }
+
+    for (const [target, rows] of grouped.entries()) {
       try {
-        await mirrorToReports(endpoint, body);
-        MIRROR_RETRY_QUEUE.shift();
-      } catch {
-        // Still unreachable; leave the entry for the next cycle rather than spinning.
+        const items = rows.map(r => (typeof r.payload === 'string' ? JSON.parse(r.payload) : r.payload));
+        for (let i = 0; i < items.length; i += MAX_BATCH) {
+          const chunk = items.slice(i, i + MAX_BATCH);
+          const chunkRows = rows.slice(i, i + MAX_BATCH);
+          await postJson({
+            baseUrl: REPORTS_WORKER_URL,
+            endpoint: `/sync/${target}`,
+            body: { items: chunk },
+            apiKey: REPORTS_WORKER_KEY,
+            timeout: MIRROR_TIMEOUT_MS,
+          });
+          for (const r of chunkRows) {
+            database.deleteReportOutbox(target, r.record_id, r.version);
+            sentCount++;
+          }
+        }
+      } catch (err) {
+        console.warn(`[D1 Sync API] Reports outbox flush failed for ${target}:`, err.message);
         break;
       }
     }
   } finally {
-    mirrorFlushInProgress = false;
+    outboxFlushInProgress = false;
   }
+
+  return { success: true, sent: sentCount };
 }
 
 /**
@@ -298,6 +324,12 @@ async function pushOrders(orders) {
   return syncRecords('orders', orders);
 }
 
+async function pushCashiers(cashiers) {
+  if (cashiers.length === 0) return { success: true };
+  console.log(`[D1 Sync API] Pushing ${cashiers.length} cashiers...`);
+  return syncRecords('cashiers', cashiers);
+}
+
 async function pushCustomers(customers) {
   if (customers.length === 0) return { success: true };
   console.log(`[D1 Sync API] Pushing ${customers.length} customers...`);
@@ -339,14 +371,31 @@ function toNumberOrNull(value) {
 }
 
 /**
- * Incremental pull for a shared table (menu items, customers, inventory).
+ * Incremental pull for a shared table (menu items, customers, inventory, cashiers).
  *
  * Tombstones are included: the caller upserts rows with their deleted_at so a deletion
  * made on another branch disappears locally too, instead of only leaving the cloud.
+ * Follows nextCursor pages if available.
  */
 async function pullShared(target, since = null) {
-  const res = await callWorker(`/pull/${target}`, { since: since || null });
-  return (res && res.rows) || [];
+  const allRows = [];
+  let cursor = null;
+  const MAX_PAGES = 50;
+  let pageCount = 0;
+
+  do {
+    const payload = {
+      since: since || null,
+      cursor,
+    };
+    const res = await callWorker(`/pull/${target}`, payload);
+    const rows = (res && res.rows) || [];
+    allRows.push(...rows);
+    cursor = (res && res.nextCursor) || null;
+    pageCount++;
+  } while (cursor && pageCount < MAX_PAGES);
+
+  return allRows;
 }
 
 function mapOrderRow(row) {
@@ -370,6 +419,7 @@ function mapOrderRow(row) {
     paidAt: row.paidAt || null,
     customerPhone: row.customerPhone || null,
     cashierName: row.cashierName || null,
+    cashierAvatar: row.cashierAvatar || null,
     pointsEarned: toNumberOrNull(row.pointsEarned),
     pointsRedeemed: toNumberOrNull(row.pointsRedeemed),
     items: row.items, // JSON string
@@ -382,7 +432,7 @@ function mapOrderRow(row) {
 
 /**
  * Incremental pull: only rows changed since the last pull, scoped to this branch plus
- * shared rows.
+ * shared rows. Loops until nextCursor is null or MAX_PAGES is hit.
  *
  * The high-water mark is inclusive on purpose. It is max(updated_at) of the previous batch,
  * and batch writes share a millisecond timestamp, so a strict comparison skipped any row
@@ -392,13 +442,51 @@ function mapOrderRow(row) {
 async function pullOrders(since = null, branchId = null) {
   console.log(`[D1 Sync API] Pulling orders from D1 (since=${since || 'full'}, branch=${branchId || 'all'})...`);
 
-  const res = await callWorker('/pull/orders', {
-    since: since || null,
-    // The manager view is not a branch; it reads everything.
-    branchId: branchId && branchId !== 'manager' ? branchId : null,
-  });
+  const effectiveBranch = branchId && branchId !== 'manager' ? branchId : null;
+  const allOrders = [];
+  let cursor = null;
+  const MAX_PAGES = 50;
+  let pageCount = 0;
 
-  return (res.orders || []).map(mapOrderRow);
+  do {
+    const payload = {
+      since: since || null,
+      branchId: effectiveBranch,
+      cursor,
+    };
+    const res = await callWorker('/pull/orders', payload);
+    const pageOrders = (res && (res.orders || res.rows)) || [];
+    allOrders.push(...pageOrders);
+    cursor = (res && res.nextCursor) || null;
+    pageCount++;
+  } while (cursor && pageCount < MAX_PAGES);
+
+  return allOrders.map(mapOrderRow);
+}
+
+async function pullCashiers(since = null, branchId = null) {
+  console.log(`[D1 Sync API] Pulling cashiers from D1 (since=${since || 'full'}, branch=${branchId || 'all'})...`);
+
+  const effectiveBranch = branchId && branchId !== 'manager' ? branchId : null;
+  const allCashiers = [];
+  let cursor = null;
+  const MAX_PAGES = 50;
+  let pageCount = 0;
+
+  do {
+    const payload = {
+      since: since || null,
+      branchId: effectiveBranch,
+      cursor,
+    };
+    const res = await callWorker('/pull/cashiers', payload);
+    const rows = (res && (res.cashiers || res.rows)) || [];
+    allCashiers.push(...rows);
+    cursor = (res && res.nextCursor) || null;
+    pageCount++;
+  } while (cursor && pageCount < MAX_PAGES);
+
+  return allCashiers;
 }
 
 /** Liveness probe used by the sync engine's connectivity check. */
@@ -435,13 +523,17 @@ async function checkWorkerHealth() {
 module.exports = {
   pushMenuItems,
   pushOrders,
+  pushCashiers,
   pushCustomers,
   pushInventory,
   pushInventoryTransactions,
   pushPointsTransactions,
   pullOrders,
+  pullCashiers,
   pullShared,
   deleteMenuItem,
   publishMenuConfig,
   checkWorkerHealth,
+  flushReportsOutbox,
+  mirrorToReports,
 };

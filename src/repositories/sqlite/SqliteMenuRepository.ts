@@ -5,9 +5,11 @@ import { requireDesktopApi } from '../../services/desktopBridge';
 export class SqliteMenuRepository implements IMenuRepository {
   async getAll(branchId?: string): Promise<MenuItem[]> {
     const items = await requireDesktopApi('قراءة القائمة').getMenu();
+    // The main process already scopes by branch (own rows + shared NULL rows); this
+    // secondary filter exists for the non-desktop reads that bypass it. It mirrors that
+    // same rule: a row with no branch is shared, not owned by 'default'.
     if (!branchId) return items;
-    // Auto-filter by branch_id
-    return items.filter(item => !item.branchId || item.branchId === branchId || item.branchId === 'default');
+    return items.filter(item => !item.branchId || item.branchId === branchId);
   }
 
   async create(item: Omit<MenuItem, 'id'>, branchId?: string): Promise<MenuItem> {

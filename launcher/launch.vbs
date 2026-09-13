@@ -29,16 +29,11 @@ If WScript.Arguments.Count > 0 Then
     mode = WScript.Arguments(0)
 End If
 
-Dim electronExe, distIndex
-electronExe = fso.BuildPath(repoRoot, "node_modules\electron\dist\electron.exe")
-distIndex = fso.BuildPath(repoRoot, "dist\index.html")
-
-' Fast path: If the production build and Electron binary are present, launch Electron directly.
-' This completely bypasses PowerShell CLR runtime overhead (~1.5-2.5s) for instant startup.
-If (mode = "Auto" Or mode = "FastElectron" Or mode = "Electron") And fso.FileExists(electronExe) And fso.FileExists(distIndex) Then
-    shell.CurrentDirectory = repoRoot
-    shell.Run """" & electronExe & """ .", 1, False
-    WScript.Quit 0
+' Always use the checked/logged path: a present dist or Electron binary may be stale
+' or have the wrong SQLite ABI. Never bypass launch.ps1's preflight.
+If mode <> "Auto" And mode <> "Electron" And mode <> "Browser" Then
+    MsgBox "Mode must be Auto, Electron, or Browser.", 16, "Engaz POS"
+    WScript.Quit 1
 End If
 
 ' First run (no dependencies yet) stays visible so the install is not silent.

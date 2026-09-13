@@ -1,6 +1,12 @@
 const database = require('./database.cjs');
 const { randomUUID } = require('crypto');
 
+// Monotonic per-row version: a second edit in the same millisecond still gets a newer
+// updated_at, which the sync version guards compare on.
+function nextUpdatedAt(previous) {
+  return new Date(Math.max(Date.now(), (Date.parse(previous) || 0) + 1)).toISOString();
+}
+
 class InventoryRepository {
   getDb() {
     return database.getDb();
@@ -12,9 +18,21 @@ class InventoryRepository {
 
   // ─── Inventory Items CRUD ───────────────────────────────────────────────────
 
+  /**
+   * Resolves the branch scope for a request: the caller may pass its own branch id (used
+   * by the renderer, which knows it), but an id that is not this till's own never widens
+   * the scope. 'manager' and 'default' see everything (shared/global stock).
+   */
+  resolveBranch(branchId) {
+    const active = this.getBranchId();
+    if (branchId === undefined || branchId === null || branchId === '') return active;
+    if (branchId === active || branchId === 'manager' || branchId === 'default') return branchId;
+    throw new Error('Cannot access another branch');
+  }
+
   getInventory(branchId) {
     const sqlite = this.getDb();
-    const activeBranch = branchId || this.getBranchId();
+    const activeBranch = this.resolveBranch(branchId);
     // Filter by branch in SQL when a concrete branch is known (Issue 22 + 41).
     // 'manager' and 'default' see all (shared/global stock).
     let rows;
@@ -83,7 +101,10 @@ class InventoryRepository {
     const sqlite = this.getDb();
     const id = item.id || `inv-${randomUUID()}`;
     const now = new Date().toISOString();
-    const branchId = item.branchId || this.getBranchId();
+    // A branchId from the caller only sticks when it names this branch: the IPC surface is
+    // untrusted, and a foreign id would create stock this till then cannot read back.
+    const activeBranch = this.getBranchId();
+    const branchId = (item.branchId && item.branchId === activeBranch) ? item.branchId : activeBranch;
 
     sqlite.prepare(`
       INSERT INTO inventory (id, name, unit, stock, minStock, costPerUnit, branch_id, is_synced, created_at, updated_at)
@@ -120,6 +141,8 @@ class InventoryRepository {
 
   updateInventoryItem(id, data) {
     const sqlite = this.getDb();
+    const current = this.getInventoryItem(id);
+    if (!current) return null;
     const fields = [];
     const values = [];
 
@@ -128,13 +151,16 @@ class InventoryRepository {
     if (data.stock !== undefined) { fields.push('stock = ?'); values.push(Number(data.stock)); }
     if (data.minStock !== undefined) { fields.push('minStock = ?'); values.push(Number(data.minStock)); }
     if (data.costPerUnit !== undefined) { fields.push('costPerUnit = ?'); values.push(Number(data.costPerUnit)); }
-    if (data.branchId !== undefined) { fields.push('branch_id = ?'); values.push(data.branchId); }
+    // Moving stock between branches is not an editable field: an update arriving with a
+    // foreign branchId used to silently re-scope the row.
 
-    const now = new Date().toISOString();
+    // Always mark as unsynced and update timestamp on mutation. A local edit also
+    // re-enables retry of a previously parked row.
+    const now = nextUpdatedAt(current.updatedAt);
     fields.push('updated_at = ?'); values.push(now);
     fields.push('is_synced = 0');
-
-    if (fields.length === 0) return this.getInventoryItem(id);
+    fields.push('sync_attempts = 0');
+    fields.push('last_error = NULL');
 
     values.push(id);
     sqlite.prepare(`
@@ -176,7 +202,7 @@ class InventoryRepository {
 
   getInventoryTransactions(itemId, branchId) {
     const sqlite = this.getDb();
-    const activeBranch = branchId || this.getBranchId();
+    const activeBranch = this.resolveBranch(branchId);
     let query = 'SELECT t.*, i.name as itemName, i.unit as itemUnit FROM inventory_transactions t JOIN inventory i ON t.itemId = i.id';
     const params = [];
     const conditions = [];
@@ -217,7 +243,8 @@ class InventoryRepository {
    * Records a stock movement and applies it to the balance.
    *
    * The direction comes from the type, never from the sign of the quantity: an "IN" always
-   * adds and an "OUT" always subtracts, so the ledger and the balance can never disagree
+   * adds, an "OUT" always subtracts, and an "ADJUST" is a physical count that sets the
+   * balance to the entered quantity — so the ledger and the balance can never disagree
    * about which way stock moved.
    *
    * The item must exist. Without that check an unknown id updated zero rows while the
@@ -227,7 +254,10 @@ class InventoryRepository {
     const sqlite = this.getDb();
     const id = tx.id || `tx-${randomUUID()}`;
     const now = new Date().toISOString();
-    const branchId = tx.branchId || this.getBranchId();
+    // Same rule as item creation: a caller-supplied branchId is honoured only when it is
+    // this till's own id.
+    const activeBranch = this.getBranchId();
+    const branchId = (tx.branchId && tx.branchId === activeBranch) ? tx.branchId : activeBranch;
     const quantity = Math.abs(Number(tx.quantity));
 
     const runTx = sqlite.transaction(() => {
@@ -250,7 +280,17 @@ class InventoryRepository {
         tx.notes || null
       );
 
-      const stockChange = tx.type === 'OUT' ? -quantity : quantity;
+      // IN adds, OUT subtracts. ADJUST is a physical count: the entered quantity is the
+      // new balance, so the delta is counted from the current stock rather than added to
+      // it. Treating a count as an IN meant every stocktake inflated the balance.
+      let stockChange;
+      if (tx.type === 'OUT') {
+        stockChange = -quantity;
+      } else if (tx.type === 'ADJUST') {
+        stockChange = quantity - item.stock;
+      } else {
+        stockChange = quantity;
+      }
 
       // Stock is floored at zero: a physical count cannot be negative, and a negative
       // balance propagates into the valuation as negative money.
@@ -444,7 +484,11 @@ class InventoryRepository {
 
   getUnsyncedInventory() {
     const sqlite = this.getDb();
-    const rows = sqlite.prepare('SELECT * FROM inventory WHERE is_synced = 0 AND sync_attempts < 5').all();
+    const branchId = this.getBranchId();
+    const rows = sqlite.prepare(`
+      SELECT * FROM inventory
+      WHERE is_synced = 0 AND sync_attempts < 5 AND (branch_id = ? OR branch_id IS NULL)
+    `).all(branchId);
     // No silent 'branch_1' fallback (Issue 22): branchless (NULL) rows are shared
     // stock and must stay branchless in the cloud too.
     return rows.map(row => ({
@@ -458,7 +502,9 @@ class InventoryRepository {
       deleted_at: row.deleted_at || null,
       is_synced: row.is_synced,
       created_at: row.created_at,
-      updated_at: row.updated_at
+      updated_at: row.updated_at,
+      // Snapshot consumers (markInventorySynced) read either casing.
+      updatedAt: row.updated_at || null
     }));
   }
 
@@ -482,7 +528,9 @@ class InventoryRepository {
   markTransactionsSynced(ids) {
     if (!ids || ids.length === 0) return;
     const sqlite = this.getDb();
-    const stmt = sqlite.prepare('UPDATE inventory_transactions SET is_synced = 1 WHERE id = ?');
+    // Same reset as the other tables: without it a ledger row that succeeded after a few
+    // failed attempts keeps its old count and parks earlier next time.
+    const stmt = sqlite.prepare('UPDATE inventory_transactions SET is_synced = 1, sync_attempts = 0, last_error = NULL WHERE id = ?');
     sqlite.transaction(() => {
       for (const id of ids) {
         stmt.run(id);
@@ -490,13 +538,21 @@ class InventoryRepository {
     })();
   }
 
-  markInventorySynced(ids) {
-    if (ids.length === 0) return;
+  markInventorySynced(ids, snapshots) {
+    if (!ids || ids.length === 0) return;
     const sqlite = this.getDb();
-    const stmt = sqlite.prepare('UPDATE inventory SET is_synced = 1, sync_attempts = 0, last_error = NULL WHERE id = ?');
+    const branchId = this.getBranchId();
+    // Version-guarded like the other tables: a row edited while its push was in flight
+    // stays unsynced so the edit is pushed next cycle.
+    const versions = snapshots === undefined ? null : new Map((snapshots || []).map(row => [row.id, row.updatedAt ?? row.updated_at ?? null]));
+    const stmt = sqlite.prepare(`
+      UPDATE inventory SET is_synced = 1, sync_attempts = 0, last_error = NULL
+      WHERE id = ? AND (branch_id = ? OR branch_id IS NULL)${versions ? ' AND (updated_at IS ? OR updated_at IS NULL)' : ''}
+    `);
     sqlite.transaction(() => {
       for (const id of ids) {
-        stmt.run(id);
+        if (versions && !versions.has(id)) continue;
+        stmt.run(id, branchId, ...(versions ? [versions.get(id)] : []));
       }
     })();
   }

@@ -1,4 +1,5 @@
-import { useState, useMemo, useEffect, useRef } from 'react';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { useAuth } from '../../context/AuthContext';
 import { getTaxRate } from '../../utils/settingsConfig';
 import { MenuItem } from '../../types/menu';
 import { OrderItem, Order } from '../../types/order';
@@ -10,7 +11,7 @@ import { playKeypadClick, playAddItemSound, playPaymentSuccessChime, playWarning
 import { getTables, removeTable } from '../../utils/tablesConfig';
 import { TablesConfigModal } from '../settings/TablesConfigModal';
 import { Cashier } from '../../global';
-import { UserRound, UserRoundPlus, UserRoundCheck, X } from 'lucide-react';
+import { UserRound, UserRoundPlus, UserRoundCheck, X, Camera } from 'lucide-react';
 
 interface POSViewProps {
   menuItems: MenuItem[];
@@ -20,13 +21,19 @@ interface POSViewProps {
     paymentStatus: 'Paid' | 'Unpaid',
     paymentMethod?: 'Cash' | 'Card',
     paidAmount?: number,
-    cashierName?: string
+    cashierName?: string,
+    cashierAvatar?: string
   ) => Promise<Order | null>;
   estimatedOrderNumber: string;
 }
 
 export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSViewProps) {
   const { t, isRtl } = useLanguage();
+  const { branch } = useAuth();
+  const branchId = branch?.branchId;
+  const [isSaving, setIsSaving] = useState(false);
+  const savingRef = useRef(false);
+  const [saveError, setSaveError] = useState('');
   
   const [invoiceItems, setInvoiceItems] = useState<OrderItem[]>(() => {
     try {
@@ -57,60 +64,144 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
 
   // ─── Cashier selection ─────────────────────────────────────────────────────
   const [cashiers, setCashiers] = useState<Cashier[]>([]);
-  const [activeCashier, setActiveCashier] = useState<Cashier | null>(() => {
-    try {
-      const saved = localStorage.getItem('pos_activeCashier');
-      return saved ? JSON.parse(saved) : null;
-    } catch {
-      return null;
-    }
-  });
-  const [isCashierModalOpen, setIsCashierModalOpen] = useState(false);
-  const [newCashierName, setNewCashierName] = useState('');
+  // Persist only an identity hint. Names/photos must come from the current branch's DB.
+  const [activeCashier, setActiveCashier] = useState<Cashier | null>(null);
+  const selectedCashierId = useRef<string | null>(null);
+  const cashierFetchId = useRef(0);
+  const currentBranch = useRef(branchId);
+  currentBranch.current = branchId;
 
-  const refreshCashiers = async () => {
-    if (!window.electronAPI?.getCashiers) return;
-    try {
-      setCashiers(await window.electronAPI.getCashiers());
-    } catch (err) {
-      console.error('Failed to load cashiers:', err);
-    }
-  };
-
-  useEffect(() => {
-    refreshCashiers();
-  }, []);
-
-  useEffect(() => {
-    if (activeCashier) {
-      localStorage.setItem('pos_activeCashier', JSON.stringify(activeCashier));
+  const selectCashier = useCallback((cashier: Cashier | null) => {
+    selectedCashierId.current = cashier?.id ?? null;
+    setActiveCashier(cashier);
+    if (cashier) {
+      localStorage.setItem('pos_activeCashier', JSON.stringify({ id: cashier.id, branchId }));
     } else {
       localStorage.removeItem('pos_activeCashier');
     }
-  }, [activeCashier]);
+  }, [branchId]);
 
-  // Drop the selection if the cashier was deleted on another screen
-  useEffect(() => {
-    if (activeCashier && cashiers.length > 0 && !cashiers.some(c => c.id === activeCashier.id)) {
-      setActiveCashier(null);
+  const [isCashierModalOpen, setIsCashierModalOpen] = useState(false);
+  const [newCashierName, setNewCashierName] = useState('');
+
+  const refreshCashiers = useCallback(async () => {
+    if (!window.electronAPI?.getCashiers) return;
+    const fetchId = ++cashierFetchId.current;
+    try {
+      const list = await window.electronAPI.getCashiers();
+      if (fetchId !== cashierFetchId.current || currentBranch.current !== branchId) return;
+      setCashiers(list);
+
+      let targetId = selectedCashierId.current;
+      if (!targetId) {
+        try {
+          const savedRaw = localStorage.getItem('pos_activeCashier');
+          if (savedRaw) {
+            const parsed = JSON.parse(savedRaw);
+            if (parsed && typeof parsed === 'object' && parsed.id) {
+              if (!parsed.branchId || parsed.branchId === branchId) {
+                targetId = parsed.id;
+              }
+            }
+          }
+        } catch {
+          // ignore error
+        }
+      }
+
+      if (list.length === 0) {
+        selectCashier(null);
+      } else if (targetId) {
+        const found = list.find(c => c.id === targetId);
+        if (found) {
+          selectCashier(found);
+        } else {
+          selectCashier(null);
+        }
+      } else {
+        selectCashier(null);
+      }
+    } catch (err) {
+      console.error('Failed to load cashiers:', err);
     }
-  }, [cashiers]);
+  }, [branchId, selectCashier]);
+
+  useEffect(() => {
+    refreshCashiers();
+  }, [refreshCashiers]);
+
+  // ─── Cashier avatar ─────────────────────────────────────────────────────────
+  const [newCashierAvatar, setNewCashierAvatar] = useState<string | undefined>(undefined);
+
+  // Shrink the picked photo to a small square JPEG data URL so it stays cheap to store
+  // and print; the raw phone-camera file is multi-MB and would bloat SQLite and receipts.
+  const resizeImageFile = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('read failed'));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error('decode failed'));
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 96;
+          canvas.height = 96;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) { reject(new Error('canvas unavailable')); return; }
+          ctx.drawImage(img, 0, 0, 96, 96);
+          resolve(canvas.toDataURL('image/jpeg', 0.82));
+        };
+        img.src = reader.result as string;
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handlePickAvatar = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      setNewCashierAvatar(await resizeImageFile(file));
+    } catch (err) {
+      console.error('Failed to process cashier photo:', err);
+      showToast(t('Invalid photo'));
+    }
+  };
+
+  const handleSetAvatar = async (cashierId: string, file: File | undefined) => {
+    if (!file || !window.electronAPI?.setCashierAvatar) return;
+    try {
+      const avatar = await resizeImageFile(file);
+      const updated = await window.electronAPI.setCashierAvatar(cashierId, avatar);
+      setCashiers(prev => prev.map(c => (c.id === cashierId ? updated : c)));
+      if (selectedCashierId.current === cashierId) {
+        selectCashier(updated);
+      }
+    } catch (err) {
+      console.error(err);
+      showToast(t('Could not save photo'));
+    }
+  };
 
   const handleAddCashier = async () => {
     const name = newCashierName.trim();
     if (!name) return;
+    if (name.length > 60) {
+      showToast(t('Cashier name must be at most 60 characters'));
+      return;
+    }
     if (!window.electronAPI?.createCashier) return;
     try {
-      const created = await window.electronAPI.createCashier(name);
+      const created = await window.electronAPI.createCashier(name, newCashierAvatar);
       setCashiers(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
-      setActiveCashier(created);
+      selectCashier(created);
       setNewCashierName('');
+      setNewCashierAvatar(undefined);
       setIsCashierModalOpen(false);
       playKeypadClick();
     } catch (err) {
       console.error(err);
       playWarningSound();
-      alert('Failed to add cashier');
+      showToast(t('Failed to add cashier'));
     }
   };
 
@@ -118,7 +209,16 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     if (!window.electronAPI?.deleteCashier) return;
     try {
       await window.electronAPI.deleteCashier(id);
-      setCashiers(prev => prev.filter(c => c.id !== id));
+      if (selectedCashierId.current === id) {
+        selectCashier(null);
+      }
+      setCashiers(prev => {
+        const remaining = prev.filter(c => c.id !== id);
+        if (remaining.length === 0) {
+          selectCashier(null);
+        }
+        return remaining;
+      });
     } catch (err) {
       console.error(err);
     }
@@ -388,6 +488,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
 
   // Save and place order directly
   const handleSaveOrder = async () => {
+    if (savingRef.current) return;
     if (invoiceItems.length === 0) {
       alert(t('Please add items to invoice first'));
       return;
@@ -398,52 +499,107 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       return;
     }
 
+    savingRef.current = true;
+    setIsSaving(true);
+    setSaveError('');
     try {
       const finalTableId = orderMode === 'Takeaway' ? 'Takeaway' : `${t('Table')} ${tableId}`;
       const paidAmt = paymentStatus === 'Paid' ? grandTotal : undefined;
-      await onCreateOrder(finalTableId, invoiceItems, paymentStatus, paymentMethod, paidAmt, activeCashier?.name);
+      const createdOrder = await onCreateOrder(
+        finalTableId,
+        invoiceItems,
+        paymentStatus,
+        paymentMethod,
+        paidAmt,
+        activeCashier?.name,
+        activeCashier?.avatar
+      );
 
-      handleReset();
-      playPaymentSuccessChime();
-      showToast(t('Successfully saved order'));
-    } catch (err) {
-      console.error(err);
-      playWarningSound();
-      alert('Failed to save order');
-    }
-  };
-
-  // Print receipt and save directly
-  const handlePrintAndPay = async () => {
-    if (invoiceItems.length === 0) {
-      alert(t('Please add items to invoice first'));
-      return;
-    }
-
-    if (orderMode === 'Dine-in' && !tableId.trim()) {
-      alert(t('Please select table number first'));
-      return;
-    }
-
-    try {
-      const finalTableId = orderMode === 'Takeaway' ? 'Takeaway' : `${t('Table')} ${tableId}`;
-      const finalPaymentStatus = 'Paid';
-      const paidAmt = grandTotal;
-
-      // Create order
-      const newOrder = await onCreateOrder(finalTableId, invoiceItems, finalPaymentStatus, paymentMethod, paidAmt, activeCashier?.name);
-
-      if (newOrder) {
-        printCustomerReceipt(newOrder);
+      if (!createdOrder) {
+        const msg = t('Failed to save order');
+        setSaveError(msg);
+        playWarningSound();
+        showToast(msg);
+        return;
       }
 
       handleReset();
       playPaymentSuccessChime();
       showToast(t('Successfully saved order'));
-    } catch (err) {
+    } catch (err: unknown) {
       console.error(err);
       playWarningSound();
-      alert('Failed to process print and save');
+      const msg = (err as Error)?.message || t('Failed to save order');
+      setSaveError(msg);
+      showToast(msg);
+    } finally {
+      savingRef.current = false;
+      setIsSaving(false);
+    }
+  };
+
+  // Print receipt and save directly
+  const handlePrintAndPay = async () => {
+    if (savingRef.current) return;
+    if (invoiceItems.length === 0) {
+      alert(t('Please add items to invoice first'));
+      return;
+    }
+
+    if (orderMode === 'Dine-in' && !tableId.trim()) {
+      alert(t('Please select table number first'));
+      return;
+    }
+
+    savingRef.current = true;
+    setIsSaving(true);
+    setSaveError('');
+    let createdOrder: Order | null = null;
+    try {
+      const finalTableId = orderMode === 'Takeaway' ? 'Takeaway' : `${t('Table')} ${tableId}`;
+      const finalPaymentStatus = 'Paid';
+      const paidAmt = grandTotal;
+
+      createdOrder = await onCreateOrder(
+        finalTableId,
+        invoiceItems,
+        finalPaymentStatus,
+        paymentMethod,
+        paidAmt,
+        activeCashier?.name,
+        activeCashier?.avatar
+      );
+
+      if (!createdOrder) {
+        const msg = t('Failed to save order');
+        setSaveError(msg);
+        playWarningSound();
+        showToast(msg);
+        return;
+      }
+
+      handleReset();
+      playPaymentSuccessChime();
+      showToast(t('Successfully saved order'));
+    } catch (err: unknown) {
+      console.error(err);
+      playWarningSound();
+      const msg = (err as Error)?.message || t('Failed to process print and save');
+      setSaveError(msg);
+      showToast(msg);
+      return;
+    } finally {
+      savingRef.current = false;
+      setIsSaving(false);
+    }
+
+    if (createdOrder) {
+      try {
+        await printCustomerReceipt(createdOrder, activeCashier?.avatar);
+      } catch (printErr) {
+        console.error('Print failed:', printErr);
+        showToast(t('Order saved but printing failed'));
+      }
     }
   };
 
@@ -573,39 +729,50 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
 
           {/* Action Button Row */}
           <div className="space-y-1.5 mt-2 pt-1.5 border-t border-gray-100 shrink-0">
+            {saveError && (
+              <div className="text-center text-xs text-red-600 font-bold bg-red-50 p-1.5 rounded-xl border border-red-200">
+                {saveError}
+              </div>
+            )}
             <button
               onClick={handlePrintAndPay}
-              disabled={invoiceItems.length === 0}
+              disabled={invoiceItems.length === 0 || isSaving}
               className={clsx(
                 "w-full font-black py-1.5 rounded-xl border transition-all text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm",
-                invoiceItems.length === 0
+                invoiceItems.length === 0 || isSaving
                   ? "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed shadow-none"
                   : "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 active:scale-95 shadow-emerald-600/20"
               )}
             >
               <Printer size={14} />
-              <span className="font-sans">{t('Print & Pay')}</span>
+              <span className="font-sans">{isSaving ? t('Saving...') : t('Print & Pay')}</span>
             </button>
             
             <div className="grid grid-cols-2 gap-1.5">
               <button
                 onClick={handleReset}
-                className="bg-red-50 hover:bg-red-100 text-red-600 font-black py-1.5 rounded-xl border border-red-200 transition-all active:scale-95 text-xs sm:text-sm text-center"
+                disabled={isSaving}
+                className={clsx(
+                  "font-black py-1.5 rounded-xl border transition-all text-xs sm:text-sm text-center",
+                  isSaving
+                    ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
+                    : "bg-red-50 hover:bg-red-100 text-red-600 border-red-200 active:scale-95"
+                )}
               >
                 <span className="font-sans">{t('Clear / Reset')}</span>
               </button>
               <button
                 onClick={handleSaveOrder}
-                disabled={invoiceItems.length === 0}
+                disabled={invoiceItems.length === 0 || isSaving}
                 className={clsx(
                   "font-black py-1.5 rounded-xl border transition-all text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm",
-                  invoiceItems.length === 0
+                  invoiceItems.length === 0 || isSaving
                     ? "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed shadow-none"
                     : "bg-mocha-600 hover:bg-mocha-700 text-white border-mocha-700 active:scale-95 shadow-mocha-600/20"
                 )}
               >
                 <Check size={14} />
-                <span className="font-sans">{t('Save Invoice')}</span>
+                <span className="font-sans">{isSaving ? t('Saving...') : t('Save Invoice')}</span>
               </button>
             </div>
           </div>
@@ -747,7 +914,9 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
             title={t('Select Cashier')}
           >
             <span className="flex items-center gap-2 min-w-0">
-              {activeCashier ? <UserRoundCheck size={18} className="shrink-0" /> : <UserRound size={18} className="shrink-0" />}
+              {activeCashier?.avatar ? (
+                <img src={activeCashier.avatar} alt={activeCashier.name} className="w-9 h-9 rounded-full object-cover border-2 border-current shrink-0" />
+              ) : activeCashier ? <UserRoundCheck size={18} className="shrink-0" /> : <UserRound size={18} className="shrink-0" />}
               <span className="flex flex-col items-start leading-tight min-w-0">
                 <span className="text-[10px] font-bold uppercase opacity-70">{t('Cashier')}</span>
                 <span className="font-black text-sm truncate">
@@ -944,17 +1113,34 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
             <div className="grid grid-cols-2 gap-1.5 pt-1">
               <button
                 onClick={handleReset}
-                className="bg-red-50 hover:bg-red-100 text-red-600 font-black py-2 rounded-xl border border-red-200 transition-all active:scale-95 text-xs md:text-sm text-center"
+                disabled={isSaving}
+                className={clsx(
+                  "font-black py-2 rounded-xl border transition-all text-xs md:text-sm text-center",
+                  isSaving
+                    ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
+                    : "bg-red-50 hover:bg-red-100 text-red-600 border-red-200 active:scale-95"
+                )}
               >
                 {t('Clear / Reset')}
               </button>
               <button
                 onClick={handleSaveOrder}
-                className="bg-mocha-600 hover:bg-mocha-700 text-white font-black py-2 rounded-xl border border-mocha-700 transition-all active:scale-95 text-xs md:text-sm text-center flex items-center justify-center gap-1 shadow-sm"
+                disabled={invoiceItems.length === 0 || isSaving}
+                className={clsx(
+                  "font-black py-2 rounded-xl border transition-all text-xs md:text-sm text-center flex items-center justify-center gap-1 shadow-sm",
+                  invoiceItems.length === 0 || isSaving
+                    ? "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed shadow-none"
+                    : "bg-mocha-600 hover:bg-mocha-700 text-white border-mocha-700 active:scale-95 shadow-mocha-600/20"
+                )}
               >
                 <Check size={14} />
-                {t('Save Invoice')}
+                {isSaving ? t('Saving...') : t('Save Invoice')}
               </button>
+            </div>
+          )}
+          {saveError && (
+            <div className="mt-1 text-center text-xs text-red-600 font-bold bg-red-50 p-1.5 rounded-xl border border-red-200">
+              {saveError}
             </div>
           )}
         </div>
@@ -995,7 +1181,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
               {activeCashier && (
                 <button
                   type="button"
-                  onClick={() => { setActiveCashier(null); setIsCashierModalOpen(false); }}
+                  onClick={() => { selectCashier(null); setIsCashierModalOpen(false); }}
                   className="w-full px-3 py-2 rounded-xl border-2 border-amber-300 bg-amber-50 text-amber-800 font-bold text-sm hover:bg-amber-100 transition-all"
                 >
                   {t('Clear selection')}
@@ -1013,7 +1199,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
                   <div key={c.id} className="flex items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={() => { setActiveCashier(c); setIsCashierModalOpen(false); playKeypadClick(); }}
+                      onClick={() => { selectCashier(c); setIsCashierModalOpen(false); playKeypadClick(); }}
                       className={clsx(
                         "flex-1 px-3 py-2.5 rounded-xl border-2 font-black text-sm text-start transition-all flex items-center gap-2",
                         activeCashier?.id === c.id
@@ -1021,9 +1207,23 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
                           : "bg-gray-50 border-gray-200 text-gray-700 hover:bg-mocha-50 hover:border-mocha-300"
                       )}
                     >
-                      {activeCashier?.id === c.id && <UserRoundCheck size={16} className="shrink-0" />}
+                      {c.avatar ? (
+                        <img src={c.avatar} alt={c.name} className="w-8 h-8 rounded-full object-cover shrink-0" />
+                      ) : activeCashier?.id === c.id ? <UserRoundCheck size={16} className="shrink-0" /> : <UserRound size={16} className="shrink-0 opacity-40" />}
                       <span className="truncate">{c.name}</span>
                     </button>
+                    <label
+                      className="px-2 py-2.5 rounded-xl text-gray-300 hover:text-mocha-600 hover:bg-mocha-50 transition-all shrink-0 cursor-pointer"
+                      title={t('Change photo')}
+                    >
+                      <Camera size={16} />
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => handleSetAvatar(c.id, e.target.files?.[0])}
+                      />
+                    </label>
                     <button
                       type="button"
                       onClick={() => handleDeleteCashier(c.id)}
@@ -1039,13 +1239,25 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
               <div className="border-t border-gray-100 pt-3 space-y-2">
                 <label className="text-xs text-gray-500 font-extrabold uppercase">{t('Add New Cashier')}</label>
                 <div className="flex gap-1.5">
+                  <label className="w-10 h-10 rounded-xl border-2 border-dashed border-gray-300 flex items-center justify-center shrink-0 cursor-pointer hover:border-mocha-400 hover:bg-mocha-50/50 transition-all overflow-hidden">
+                    {newCashierAvatar ? (
+                      <img src={newCashierAvatar} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <Camera size={16} className="text-gray-400" />
+                    )}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => handlePickAvatar(e.target.files?.[0])}
+                    />
+                  </label>
                   <input
                     type="text"
                     value={newCashierName}
                     onChange={(e) => setNewCashierName(e.target.value)}
                     onKeyDown={(e) => { if (e.key === 'Enter') handleAddCashier(); }}
                     placeholder={t('Cashier name')}
-                    autoFocus
                     maxLength={60}
                     className="flex-1 px-3 py-2 bg-gray-50 border border-gray-300 rounded-xl font-bold text-sm focus:outline-none focus:border-mocha-600 focus:ring-2 focus:ring-mocha-100"
                   />

@@ -6,7 +6,6 @@ import { motion } from 'framer-motion';
 import { useOrders } from '../hooks/useOrders';
 import { useLanguage } from '../context/LanguageContext';
 import { orderTotals, orderRevenue } from '../utils/orderTotals';
-import { reportFailure } from '../utils/reportFailure';
 
 /**
  * Queue order for the cashier: ready first, then preparing, then new.
@@ -70,13 +69,10 @@ export default function Payment() {
     setIsPaymentModalOpen(true);
   };
 
-  const handlePaymentComplete = async (orderId: string, method: 'Cash' | 'Card') => {
-    try {
-      await completeWithPayment(orderId, method);
-    } catch (err) {
-      console.error('Failed to complete payment:', err);
-      reportFailure(t('Failed to complete payment'), err);
-    }
+  const handlePaymentComplete = async (orderId: string, method: 'Cash' | 'Card'): Promise<Order> => {
+    const updatedOrder = await completeWithPayment(orderId, method);
+    setSelectedOrder(current => current?.id === orderId ? updatedOrder : current);
+    return updatedOrder;
   };
 
   const filteredOrders = useMemo(() => {
@@ -84,11 +80,13 @@ export default function Payment() {
       const matchesSearch = o.tableId.toLowerCase().includes(searchTerm.toLowerCase()) ||
                             o.orderNumber.toLowerCase().includes(searchTerm.toLowerCase());
       
+      // Pending invoices remain visible until paid, regardless of the selected report date.
+      // Date/time filters apply only to the paid-history tab.
       const orderDate = new Date(o.paidAt || o.createdAt).toLocaleDateString('en-CA'); // YYYY-MM-DD local time
-      const matchesDate = !filterDate || orderDate === filterDate;
+      const matchesDate = activeTab === 'pending' || !filterDate || orderDate === filterDate;
       
       let matchesTime = true;
-      if (filterStartTime || filterEndTime) {
+      if (activeTab === 'paid' && (filterStartTime || filterEndTime)) {
         const orderDateObj = new Date(o.paidAt || o.createdAt);
         const orderMinutes = orderDateObj.getHours() * 60 + orderDateObj.getMinutes();
         
@@ -128,7 +126,7 @@ export default function Payment() {
   }, [orders, searchTerm, activeTab, filterDate, filterStartTime, filterEndTime]);
 
   // Show error state
-  if (error) {
+  if (error && allOrders.length === 0 && !isPaymentModalOpen) {
     return (
       <div className="flex items-center justify-center h-96">
         <div className="text-center">
@@ -216,8 +214,8 @@ export default function Payment() {
           />
         </div>
 
-        {/* Date and Time Range Filters */}
-        <div className="flex flex-wrap items-center gap-3">
+        {/* Pending invoices never expire; report filters only affect paid history. */}
+        {activeTab === 'paid' && <div className="flex flex-wrap items-center gap-3">
           {/* Date Calendar Picker */}
           <div className="flex items-center gap-2">
             <input
@@ -277,7 +275,7 @@ export default function Payment() {
               {t('Clear Filter')}
             </button>
           )}
-        </div>
+        </div>}
       </div>
 
       {/* Orders Grid */}
@@ -353,7 +351,7 @@ export default function Payment() {
 
       <PaymentModal
         isOpen={isPaymentModalOpen}
-        onClose={() => setIsPaymentModalOpen(false)}
+        onClose={() => { setIsPaymentModalOpen(false); setSelectedOrder(null); }}
         order={selectedOrder}
         onPaymentComplete={handlePaymentComplete}
       />

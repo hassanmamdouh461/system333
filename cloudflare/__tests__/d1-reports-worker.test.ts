@@ -30,6 +30,7 @@ const SECRET = 'reports-token-secret-for-tests';
 describe('mirror targets', () => {
   it('covers every collection the POS mirrors', () => {
     expect(Object.keys(SYNC_TABLES).sort()).toEqual([
+      'cashiers',
       'customers',
       'inventory',
       'inventory-transactions',
@@ -96,7 +97,7 @@ describe('viewer tokens', () => {
 
   it('rejects a token whose payload was edited', async () => {
     const { token } = await issueViewerToken(SECRET);
-    const [payload, signature] = token.split('.');
+    const [, signature] = token.split('.');
     const forgedPayload = btoa(JSON.stringify({ scope: 'read', expiresAt: Date.now() + 10 ** 12 }))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { checkRateLimit, timingSafeEqual, __testing } from '../d1-proxy-worker.js';
 
 const { SYNC_TABLES, buildSyncStatements, assertItems, MAX_BATCH } = __testing;
@@ -25,10 +25,11 @@ function fakeDb() {
 }
 
 describe('sync endpoint coverage', () => {
-  it('exposes exactly the six tables the POS syncs', () => {
+  it('exposes exactly the seven tables the POS syncs', () => {
     // A new target must be added deliberately: an unlisted path 404s rather than silently
     // writing somewhere unexpected.
     expect(Object.keys(SYNC_TABLES).sort()).toEqual([
+      'cashiers',
       'customers',
       'inventory',
       'inventory-transactions',

@@ -13,6 +13,7 @@ module.exports = {
     'reports-site/dist',
     'reports-site/node_modules',
     'scratch',
+    '.zcode',
     '.eslintrc.cjs',
   ],
   parser: '@typescript-eslint/parser',
@@ -26,12 +27,24 @@ module.exports = {
     // The codebase predates this config and uses `any` at the IPC and D1 boundaries.
     // Warn rather than error so lint stays runnable while those are typed incrementally.
     '@typescript-eslint/no-explicit-any': 'warn',
-    '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_' }],
+    '@typescript-eslint/no-unused-vars': ['warn', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none' }],
     // An empty catch is how errors got silently swallowed across this project; the fixes
     // added logging, and this keeps it from creeping back.
     'no-empty': ['error', { allowEmptyCatch: false }],
   },
   overrides: [
+    {
+      // These provider modules intentionally co-locate their public hooks/helpers.
+      // They may reload a boundary instead of preserving Fast Refresh state.
+      files: ['src/context/AuthContext.tsx', 'src/context/DataContext.tsx', 'src/context/LanguageContext.tsx'],
+      rules: { 'react-refresh/only-export-components': 'off' },
+    },
+
+    {
+      files: ['scripts/**/*.{mjs,cjs}', 'electron/**/*.cjs'],
+      env: { browser: false, node: true, es2022: true },
+      rules: { '@typescript-eslint/no-require-imports': 'off' },
+    },
     {
       // Cloudflare Workers: worker globals, ES modules, no React. These were excluded from
       // linting entirely, which meant the code guarding two internet-facing databases was

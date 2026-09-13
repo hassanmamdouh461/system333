@@ -5,17 +5,40 @@ import { getStoreConfig } from './settingsConfig';
 
 const CURRENCY = 'ج.م';
 
+function escapeHtml(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function safeDataImage(value: unknown): string {
+  const image = typeof value === 'string' ? value : '';
+  return /^data:image\/(?:png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/i.test(image)
+    ? escapeHtml(image)
+    : '';
+}
+
 /**
- * Open a temporary window, write receipt content, trigger print, and close.
+ * Send receipt HTML to isolated Electron printer or browser fallback.
  */
-function printHtml(htmlContent: string) {
-  const printWindow = window.open('', '_blank');
-  if (!printWindow) {
-    alert('يرجى السماح بالنوافذ المنبثقة لطباعة الفواتير');
-    return;
+async function printHtml(htmlContent: string): Promise<void> {
+  if (window.electronAPI?.printReceipt) {
+    return window.electronAPI.printReceipt(htmlContent);
   }
-  printWindow.document.write(htmlContent);
-  printWindow.document.close();
+  return new Promise((resolve) => {
+    const printWindow = window.open('', '_blank');
+    if (!printWindow) {
+      alert('يرجى السماح بالنوافذ المنبثقة لطباعة الفواتير');
+      return resolve();
+    }
+    printWindow.document.open();
+    printWindow.document.write(htmlContent);
+    printWindow.document.close();
+    resolve();
+  });
 }
 
 /** Tables named 'Takeaway'/'Dine-in' are mode markers, not table numbers. */
@@ -40,9 +63,18 @@ const AUTO_PRINT_SCRIPT = `
 /**
  * Print standard customer receipt
  */
-export function printCustomerReceipt(order: Order) {
+export async function printCustomerReceipt(order: Order, cashierAvatar?: string): Promise<void> {
   const currency = CURRENCY;
   const storeConfig = getStoreConfig();
+  // Historical snapshot saved with the order takes precedence over the currently active till cashier
+  const safeCashierAvatar = safeDataImage(order.cashierAvatar || cashierAvatar);
+  const safeStoreName = escapeHtml(storeConfig.storeName || 'ENGAZ');
+  const safeTagline = escapeHtml(storeConfig.tagline);
+  const safeAddress = escapeHtml(storeConfig.address);
+  const safePhone = escapeHtml(storeConfig.phone);
+  const safeOrderNumber = escapeHtml(order.orderNumber);
+  const safeTable = escapeHtml(formatTable(order.tableId));
+  const safeCashierName = escapeHtml(order.cashierName);
   // Read the snapshot stored with the order. Deriving tax from `totalAmount` here taxed
   // POS orders a second time, because that column already holds the tax-inclusive total.
   const { subtotal, taxRate, taxAmount, grandTotal } = orderTotals(order);
@@ -75,7 +107,7 @@ export function printCustomerReceipt(order: Order) {
     <!DOCTYPE html>
     <html dir="rtl">
     <head>
-      <title>${title} - ${order.orderNumber}</title>
+      <title>${escapeHtml(title)} - ${escapeHtml(order.orderNumber)}</title>
       <meta charset="utf-8">
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -159,10 +191,10 @@ export function printCustomerReceipt(order: Order) {
     </head>
     <body>
       <div class="header">
-        <h1>${storeConfig.storeName || 'ENGAZ'}</h1>
-        ${storeConfig.tagline ? `<p>${storeConfig.tagline}</p>` : ''}
-        ${storeConfig.address ? `<p>${storeConfig.address}</p>` : ''}
-        ${storeConfig.phone ? `<p>Tel: ${storeConfig.phone}</p>` : ''}
+        <h1>${safeStoreName}</h1>
+        ${storeConfig.tagline ? `<p>${safeTagline}</p>` : ''}
+        ${storeConfig.address ? `<p>${safeAddress}</p>` : ''}
+        ${storeConfig.phone ? `<p>Tel: ${safePhone}</p>` : ''}
       </div>
 
       <div class="stamp">${cashierStamp}</div>
@@ -170,20 +202,23 @@ export function printCustomerReceipt(order: Order) {
       <div class="info">
         <div class="info-row">
           <strong>${orderLabel}:</strong>
-          <span>#${order.orderNumber}</span>
+          <span>#${safeOrderNumber}</span>
         </div>
         <div class="info-row">
           <strong>${tableLabel}:</strong>
-          <span>${formatTable(order.tableId)}</span>
+          <span>${safeTable}</span>
         </div>
         <div class="info-row">
           <strong>${dateLabel}:</strong>
           <span>${formatDate(order.createdAt)}</span>
         </div>
         ${order.cashierName ? `
-        <div class="info-row">
+        <div class="info-row" style="align-items: center;">
           <strong>${cashierLabel}:</strong>
-          <span>${order.cashierName}</span>
+          <span style="display: flex; align-items: center; gap: 6px;">
+            ${safeCashierAvatar ? `<img src="${safeCashierAvatar}" alt="" style="width: 22px; height: 22px; border-radius: 50%; object-fit: cover;" />` : ''}
+            <span>${safeCashierName}</span>
+          </span>
         </div>
         ` : ''}
       </div>
@@ -192,7 +227,7 @@ export function printCustomerReceipt(order: Order) {
         <h3 style="font-size: 13px; margin-bottom: 6px;">${itemLabel}:</h3>
         ${order.items.map(item => `
           <div class="item">
-            <span class="item-name">${item.quantity}x ${item.name}</span>
+            <span class="item-name">${escapeHtml(item.quantity)}x ${escapeHtml(item.name)}</span>
             <span>${roundMoney(item.price * item.quantity).toFixed(2)} ${currency}</span>
           </div>
         `).join('')}
@@ -225,7 +260,7 @@ export function printCustomerReceipt(order: Order) {
 
       ${isPaid && order.paymentMethod ? `
         <div class="payment-info">
-          <strong>${paymentMethodLabel}:</strong> ${methodLabel}
+          <strong>${paymentMethodLabel}:</strong> ${escapeHtml(methodLabel)}
         </div>
       ` : ''}
 
@@ -238,7 +273,7 @@ ${AUTO_PRINT_SCRIPT}
     </html>
   `;
 
-  printHtml(html);
+  return printHtml(html);
 }
 
 interface TicketStyle {
@@ -267,9 +302,9 @@ const TICKET_STYLES: Record<'kitchen' | 'drinks', TicketStyle> = {
  * share this layout and differ only by title, icon, printer name, and which items
  * of the order they carry.
  */
-function printSectionTicket(order: Order, section: 'kitchen' | 'drinks') {
+function printSectionTicket(order: Order, section: 'kitchen' | 'drinks'): Promise<void> {
   const items = filterItemsBySection(order.items, section);
-  if (items.length === 0) return;
+  if (items.length === 0) return Promise.resolve();
 
   const style = TICKET_STYLES[section];
   const title = style.title;
@@ -279,12 +314,15 @@ function printSectionTicket(order: Order, section: 'kitchen' | 'drinks') {
   const dateLabel = 'التاريخ';
   const cashierTicketLabel = 'الكاشير';
   const totalQuantity = items.reduce((sum, i) => sum + i.quantity, 0);
+  const safeTicketOrderNumber = escapeHtml(order.orderNumber);
+  const safeTicketTable = escapeHtml(formatTable(order.tableId));
+  const safeTicketCashier = escapeHtml(order.cashierName);
 
   const html = `
     <!DOCTYPE html>
     <html dir="rtl">
     <head>
-      <title>${title} - ${order.orderNumber}</title>
+      <title>${escapeHtml(title)} - ${escapeHtml(order.orderNumber)}</title>
       <meta charset="utf-8">
       <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
@@ -364,11 +402,11 @@ function printSectionTicket(order: Order, section: 'kitchen' | 'drinks') {
       <div class="details-box">
         <div class="details-row">
           <span><strong>${orderLabel}:</strong></span>
-          <span class="large-text">#${order.orderNumber}</span>
+          <span class="large-text">#${safeTicketOrderNumber}</span>
         </div>
         <div class="details-row">
           <span><strong>${tableLabel}:</strong></span>
-          <span class="large-text">${formatTable(order.tableId)}</span>
+          <span class="large-text">${safeTicketTable}</span>
         </div>
         <div class="details-row" style="font-size: 11px; margin-top: 6px;">
           <span>${dateLabel}: ${formatDate(order.createdAt)}</span>
@@ -376,7 +414,7 @@ function printSectionTicket(order: Order, section: 'kitchen' | 'drinks') {
         </div>
         ${order.cashierName ? `
         <div class="details-row" style="font-size: 11px; margin-top: 4px;">
-          <span>${cashierTicketLabel}: ${order.cashierName}</span>
+          <span>${cashierTicketLabel}: ${safeTicketCashier}</span>
         </div>
         ` : ''}
       </div>
@@ -384,33 +422,33 @@ function printSectionTicket(order: Order, section: 'kitchen' | 'drinks') {
       <div class="items-list">
         ${items.map(item => `
           <div class="item-row">
-            <span class="item-qty">${item.quantity}</span>
-            <span class="item-name">${item.name}</span>
+            <span class="item-qty">${escapeHtml(item.quantity)}</span>
+            <span class="item-name">${escapeHtml(item.name)}</span>
           </div>
         `).join('')}
       </div>
 
       <div class="footer">
-        <p>${style.printerName}</p>
+        <p>${escapeHtml(style.printerName)}</p>
       </div>
 ${AUTO_PRINT_SCRIPT}
     </body>
     </html>
   `;
 
-  printHtml(html);
+  return printHtml(html);
 }
 
 /**
  * Print kitchen receipt containing food items
  */
-export function printKitchenReceipt(order: Order) {
-  printSectionTicket(order, 'kitchen');
+export function printKitchenReceipt(order: Order): Promise<void> {
+  return printSectionTicket(order, 'kitchen');
 }
 
 /**
  * Print drinks/beverage receipt
  */
-export function printDrinksReceipt(order: Order) {
-  printSectionTicket(order, 'drinks');
+export function printDrinksReceipt(order: Order): Promise<void> {
+  return printSectionTicket(order, 'drinks');
 }

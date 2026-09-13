@@ -38,7 +38,7 @@ $ViteErrLog = Join-Path $LogDir 'vite.err.log'
 $ElecOutLog = Join-Path $LogDir 'electron.out.log'
 $ElecErrLog = Join-Path $LogDir 'electron.err.log'
 $InstallLog = Join-Path $LogDir 'npm-install.log'
-$Url        = "http://localhost:$Port/"
+$Url        = "http://127.0.0.1:$Port/"
 
 if (-not (Test-Path -LiteralPath $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
@@ -67,14 +67,16 @@ function Show-Problem {
 function Test-AppReady {
     try {
         $request = [System.Net.HttpWebRequest]::Create($Url)
-        $request.Method = 'HEAD'
+        $request.Method = 'GET'
         $request.Timeout = 2000
         $response = $request.GetResponse()
+        $reader = New-Object System.IO.StreamReader($response.GetResponseStream())
+        $html = $reader.ReadToEnd()
+        $reader.Dispose()
         $response.Close()
-        return $true
+        # A 404/500 or unrelated server is not a ready POS renderer.
+        return ($html -match '/@vite/client' -and $html -match '/src/main.tsx')
     } catch [System.Net.WebException] {
-        # A served 404/500 still proves something is listening and speaking HTTP.
-        if ($_.Exception.Response) { return $true }
         return $false
     } catch {
         return $false
@@ -114,19 +116,27 @@ try {
         Show-Problem "Node.js was not found on this computer (neither 'node' nor 'npm' is on PATH).`n`nInstall the LTS version from https://nodejs.org and run this shortcut again."
         exit 1
     }
-    Write-Log "node: $node ($(& $node -v))"
+    $nodeVersion = (& $node -p 'process.versions.node')
+    Write-Log "node: $node ($nodeVersion)"
     Write-Log "npm:  $npm"
+    if ([version]$nodeVersion -lt [version]'24.16.0' -or ([version]$nodeVersion).Major -ne 24) {
+        throw 'Supported tooling runtime is Node 24.16.0 or newer in the 24.x line; see .nvmrc.'
+    }
+    $running = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object {
+        $_.Name -match '^(electron|Engaz POS)\.exe$'
+    })
 
     if (-not (Test-Path -LiteralPath (Join-Path $RepoRoot 'node_modules'))) {
-        Write-Log 'node_modules is missing - running the first-time dependency install. This can take several minutes.'
+        if ($running.Count -gt 0) { throw 'Cannot install dependencies while Electron/Engaz is running. Close it yourself, then retry.' }
+        Write-Log 'node_modules is missing - running npm ci from the lockfile. This can take several minutes.'
         Write-Host ''
         Write-Host '  Installing dependencies for the first time. Please leave this window open.'
         Write-Host "  Progress is also written to: $InstallLog"
         Write-Host ''
-        $install = Start-Process -FilePath $npm -ArgumentList 'install' -WorkingDirectory $RepoRoot `
+        $install = Start-Process -FilePath $npm -ArgumentList 'ci' -WorkingDirectory $RepoRoot `
             -NoNewWindow -Wait -PassThru -RedirectStandardOutput $InstallLog -RedirectStandardError "$InstallLog.err"
         if ($install.ExitCode -ne 0) {
-            Show-Problem "'npm install' failed with exit code $($install.ExitCode).`n`nSee $InstallLog and $InstallLog.err"
+            Show-Problem "'npm ci' failed with exit code $($install.ExitCode).`n`nSee $InstallLog and $InstallLog.err"
             exit $install.ExitCode
         }
         Write-Log 'Dependency install finished successfully.'
@@ -142,8 +152,27 @@ try {
     # port wait, and no first-compile delay. We only fall back to the Vite dev server
     # when the build is missing.
     $distIndex = Join-Path $RepoRoot 'dist\index.html'
-    $buildAvailable = Test-Path -LiteralPath $distIndex
-    Write-Log "Production build present: $buildAvailable."
+    $freshnessOutput = & $node (Join-Path $RepoRoot 'scripts\build-freshness.mjs') check 2>&1 | Out-String
+    $buildAvailable = ($LASTEXITCODE -eq 0) -and (Test-Path -LiteralPath $distIndex)
+    Write-Log $freshnessOutput.Trim()
+
+    if ($Mode -ne 'Browser' -and $electronAvailable) {
+        if ($running.Count -gt 0) {
+            # Never start another native app/probe or rebuild under a running user process.
+            Write-Log 'Electron/Engaz is already running. No process was started, stopped or rebuilt.' 'WARN'
+            exit 0
+        }
+        $previousPreference = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $nativeOutput = & $node (Join-Path $RepoRoot 'scripts\electron-smoke.mjs') 2>&1 | Out-String
+        $nativeCode = $LASTEXITCODE
+        $ErrorActionPreference = $previousPreference
+        Write-Log $nativeOutput.Trim()
+        if ($nativeCode -ne 0) {
+            $electronAvailable = $false
+            Write-Log 'Electron version/SQLite ABI preflight failed. No rebuild attempted. Close POS, run npm ci then npm run native:rebuild. Falling back to browser (no native SQLite).' 'WARN'
+        }
+    }
 
     $effectiveMode = $Mode
     if ($effectiveMode -eq 'Auto') {
@@ -152,14 +181,16 @@ try {
         else { $effectiveMode = 'Browser' }
         Write-Log "Mode Auto resolved to $effectiveMode (electron binary: $electronAvailable, build: $buildAvailable)."
     } elseif ($effectiveMode -eq 'Electron' -and -not $electronAvailable) {
-        Write-Log 'Electron was requested but its binary is missing - falling back to the browser.' 'WARN'
+        Write-Log 'Electron is unavailable or failed its native preflight - falling back to browser (no native SQLite).' 'WARN'
         $effectiveMode = 'Browser'
+    } elseif ($effectiveMode -eq 'Electron' -and $buildAvailable) {
+        $effectiveMode = 'FastElectron'
     }
 
     # FastElectron loads straight from dist/ and never needs a dev server. Only Electron
     # (no build) and Browser modes start Vite.
     if ($effectiveMode -ne 'FastElectron' -and (Test-AppReady)) {
-        Write-Log "Something is already serving $Url - reusing it instead of starting a second dev server."
+        Write-Log "A matching Vite renderer is already serving $Url - reusing it without taking ownership of its process."
     } elseif ($effectiveMode -ne 'FastElectron') {
         Write-Log "Starting the Vite dev server on port $Port."
         $devServerProcess = Start-Process -FilePath $npm -ArgumentList 'run', 'dev', '--', '--port', "$Port", '--strictPort' `

@@ -47,8 +47,11 @@ const DEV_ORIGINS = [
 
 /** Largest number of records one sync call may carry. */
 const MAX_BATCH = 200;
-/** Rows returned by a single read endpoint. */
+/** Legacy nonincremental reads. */
 const READ_LIMIT = 1000;
+/** Keep inline cashier avatars from making a pull page unboundedly large. */
+const PULL_PAGE_SIZE = 25;
+const MAX_AVATAR_CHARS = 400_000;
 
 function allowedOrigins(env) {
   return env && String(env.ALLOW_DEV_ORIGINS) === 'true'
@@ -142,10 +145,39 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+function rejected(message) {
+  const error = new Error(message);
+  error.isRejection = true;
+  return error;
+}
+
 function assertItems(items) {
-  if (!Array.isArray(items)) throw new Error('Expected an "items" array');
-  if (items.length > MAX_BATCH) throw new Error(`Too many records (max ${MAX_BATCH})`);
+  if (!Array.isArray(items)) throw rejected('Expected an "items" array');
+  if (items.length > MAX_BATCH) throw rejected(`Too many records (max ${MAX_BATCH})`);
   return items;
+}
+
+function cashierName(value, required = false) {
+  if (value == null && !required) return null;
+  if (typeof value !== 'string') throw rejected('Cashier name must be a string');
+  const name = value.trim();
+  if ((required && !name) || name.length > 60) throw rejected('Cashier name must be 1-60 characters');
+  return name || null;
+}
+
+function cashierAvatar(value) {
+  if (value == null || value === '') return null;
+  if (typeof value !== 'string' || value.length > MAX_AVATAR_CHARS ||
+      !/^data:image\/(?:png|jpe?g|gif|webp|avif);base64,(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/i.test(value) ||
+      value.endsWith(',')) {
+    throw rejected(`Cashier avatar must be a raster base64 data URI of at most ${MAX_AVATAR_CHARS} characters`);
+  }
+  return value;
+}
+
+function recordUpdatedAt(record) {
+  return str(record.updatedAt ?? record.updated_at ?? record.deletedAt ?? record.deleted_at,
+    str(record.createdAt ?? record.created_at, nowIso()));
 }
 
 // ─── Sync statement builders ─────────────────────────────────────────────────
@@ -160,8 +192,8 @@ function assertItems(items) {
 const SYNC_TABLES = {
   'menu-items': {
     table: 'menu_items',
-    upsert: `INSERT INTO menu_items (id, name, description, price, category, image, available, branch_id, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    upsert: `INSERT INTO menu_items (id, name, description, price, category, image, available, branch_id, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                name = excluded.name,
                description = excluded.description,
@@ -170,8 +202,10 @@ const SYNC_TABLES = {
                image = excluded.image,
                available = excluded.available,
                branch_id = excluded.branch_id,
-               updated_at = excluded.updated_at
-             WHERE excluded.updated_at > menu_items.updated_at OR menu_items.updated_at IS NULL`,
+               updated_at = excluded.updated_at,
+               deleted_at = COALESCE(menu_items.deleted_at, excluded.deleted_at)
+             WHERE excluded.updated_at > menu_items.updated_at OR menu_items.updated_at IS NULL
+                OR (excluded.updated_at = menu_items.updated_at AND excluded.deleted_at IS NOT NULL AND menu_items.deleted_at IS NULL)`,
     upsertParams: (i) => [
       str(i.id),
       str(i.name, ''),
@@ -181,14 +215,15 @@ const SYNC_TABLES = {
       str(i.image, ''),
       bool01(i.available),
       str(i.branchId ?? i.branch_id),
-      str(i.updatedAt ?? i.updated_at, nowIso()),
+      recordUpdatedAt(i),
+      str(i.deletedAt ?? i.deleted_at),
     ],
   },
 
   orders: {
     table: 'orders',
-    upsert: `INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, paidAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, cashierName, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    upsert: `INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, paidAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, cashierName, cashierAvatar, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                orderNumber = excluded.orderNumber,
                tableId = excluded.tableId,
@@ -208,8 +243,11 @@ const SYNC_TABLES = {
                pointsRedeemed = excluded.pointsRedeemed,
                branch_id = excluded.branch_id,
                cashierName = excluded.cashierName,
-               updated_at = excluded.updated_at
-             WHERE excluded.updated_at > orders.updated_at OR orders.updated_at IS NULL`,
+               cashierAvatar = excluded.cashierAvatar,
+               updated_at = excluded.updated_at,
+               deleted_at = COALESCE(orders.deleted_at, excluded.deleted_at)
+             WHERE excluded.updated_at > orders.updated_at OR orders.updated_at IS NULL
+                OR (excluded.updated_at = orders.updated_at AND excluded.deleted_at IS NOT NULL AND orders.deleted_at IS NULL)`,
     upsertParams: (o) => [
       str(o.id),
       str(o.orderNumber, ''),
@@ -230,15 +268,17 @@ const SYNC_TABLES = {
       num(o.pointsEarned, 0),
       num(o.pointsRedeemed, 0),
       str(o.branchId ?? o.branch_id),
-      str(o.cashierName),
-      str(o.updatedAt ?? o.updated_at, nowIso()),
+      cashierName(o.cashierName),
+      cashierAvatar(o.cashierAvatar),
+      recordUpdatedAt(o),
+      str(o.deletedAt ?? o.deleted_at),
     ],
   },
 
   customers: {
     table: 'customers',
-    upsert: `INSERT INTO customers (id, name, phone, points, createdAt, branch_id, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?)
+    upsert: `INSERT INTO customers (id, name, phone, points, createdAt, branch_id, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                name = excluded.name,
                phone = excluded.phone,
@@ -253,14 +293,15 @@ const SYNC_TABLES = {
       num(c.points, 0),
       str(c.createdAt, nowIso()),
       str(c.branchId ?? c.branch_id),
-      str(c.updatedAt ?? c.updated_at, nowIso()),
+      recordUpdatedAt(c),
+      str(c.deletedAt ?? c.deleted_at),
     ],
   },
 
   inventory: {
     table: 'inventory',
-    upsert: `INSERT INTO inventory (id, name, unit, stock, minStock, costPerUnit, branch_id, created_at, updated_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    upsert: `INSERT INTO inventory (id, name, unit, stock, minStock, costPerUnit, branch_id, created_at, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                name = excluded.name,
                unit = excluded.unit,
@@ -279,7 +320,22 @@ const SYNC_TABLES = {
       num(i.costPerUnit, 0),
       str(i.branchId ?? i.branch_id),
       str(i.createdAt ?? i.created_at, nowIso()),
-      str(i.updatedAt ?? i.updated_at, nowIso()),
+      recordUpdatedAt(i),
+      str(i.deletedAt ?? i.deleted_at),
+    ],
+  },
+
+  cashiers: {
+    table: 'cashiers',
+    upsert: `INSERT INTO cashiers (id, name, avatar, branch_id, created_at, updated_at, deleted_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?)
+             ON CONFLICT(id) DO UPDATE SET
+               name = excluded.name, avatar = excluded.avatar, branch_id = excluded.branch_id,
+               updated_at = excluded.updated_at
+             WHERE excluded.updated_at > cashiers.updated_at OR cashiers.updated_at IS NULL`,
+    upsertParams: (c) => [
+      str(c.id), cashierName(c.name, true), cashierAvatar(c.avatar), str(c.branchId ?? c.branch_id),
+      str(c.createdAt ?? c.created_at, nowIso()), recordUpdatedAt(c), str(c.deletedAt ?? c.deleted_at),
     ],
   },
 
@@ -373,52 +429,62 @@ async function readManagerSnapshot(db) {
 }
 
 /**
- * Incremental pull: only rows changed since the caller's high-water mark, scoped to its
- * branch plus rows with no branch (shared records).
+ * Generic keyset-paginated pull.
+ *
+ * Supports:
+ * - request: { since?: string, branchId?: string, cursor?: { updatedAt: string, id: string }, limit?: number }
+ * - response: { rows: [...], nextCursor: { updatedAt: string, id: string } | null }
+ *
+ * Boundary handling:
+ * - When no cursor is given and since is provided:
+ *   WHERE updated_at >= since (inclusive boundary so same-millisecond rows aren't lost)
+ * - When cursor is given ({ updatedAt, id }):
+ *   WHERE (updated_at > cursor.updatedAt OR (updated_at = cursor.updatedAt AND id > cursor.id))
+ * - Order: COALESCE(updated_at, '') ASC, id ASC
+ * - Limit: query limit = pageSize + 1. If results.length > pageSize, nextCursor is taken from row[pageSize - 1], and row[pageSize] is dropped.
  */
-async function pullOrders(db, { since, branchId }) {
-  const sinceValue = str(since);
-  const branchValue = str(branchId);
+export async function pullTableWithCursor(db, table, options = {}, defaultPageSize = PULL_PAGE_SIZE) {
+  const { since, branchId, cursor, limit } = options || {};
+  const pageSize = Math.min(Number(limit) > 0 ? Number(limit) : defaultPageSize, 100);
+  const fetchLimit = pageSize + 1;
 
-  let stmt;
-  if (sinceValue && branchValue) {
-    stmt = db.prepare(
-      `SELECT * FROM orders WHERE updated_at > ? AND (branch_id = ? OR branch_id IS NULL)
-       ORDER BY updated_at ASC LIMIT ?`
-    ).bind(sinceValue, branchValue, READ_LIMIT);
-  } else if (sinceValue) {
-    stmt = db.prepare(
-      `SELECT * FROM orders WHERE updated_at > ? ORDER BY updated_at ASC LIMIT ?`
-    ).bind(sinceValue, READ_LIMIT);
-  } else if (branchValue) {
-    stmt = db.prepare(
-      `SELECT * FROM orders WHERE branch_id = ? OR branch_id IS NULL
-       ORDER BY updated_at ASC LIMIT ?`
-    ).bind(branchValue, READ_LIMIT);
-  } else {
-    stmt = db.prepare(`SELECT * FROM orders ORDER BY updated_at ASC LIMIT ?`).bind(READ_LIMIT);
+  const conditions = [];
+  const bindings = [];
+
+  const timeCol = (table === 'inventory_transactions' || table === 'points_transactions') ? 'createdAt' : 'updated_at';
+
+  if (cursor && typeof cursor === 'object' && cursor.updatedAt != null && cursor.id != null) {
+    conditions.push(`(${timeCol} > ? OR (${timeCol} = ? AND id > ?))`);
+    bindings.push(str(cursor.updatedAt), str(cursor.updatedAt), str(cursor.id));
+  } else if (since) {
+    conditions.push(`${timeCol} >= ?`);
+    bindings.push(str(since));
   }
 
-  const { results } = await stmt.all();
-  return { orders: results || [] };
-}
+  if (branchId) {
+    conditions.push(`(branch_id = ? OR branch_id IS NULL)`);
+    bindings.push(str(branchId));
+  }
 
-/**
- * Incremental pull for the shared tables (menu items, customers, inventory).
- *
- * Tombstones are included deliberately: without them a deletion pushed from one branch
- * never reached the others, and a deleted item kept reappearing on every other till.
- * The row is either re-inserted with its deleted_at or the local copy is deleted via the
- * WHERE-guarded upsert on the client side.
- */
-async function pullSharedTable(db, table, since) {
-  const sinceValue = str(since);
-  const stmt = sinceValue
-    ? db.prepare(`SELECT * FROM ${table} WHERE updated_at > ? ORDER BY updated_at ASC LIMIT ?`)
-        .bind(sinceValue, READ_LIMIT)
-    : db.prepare(`SELECT * FROM ${table} ORDER BY updated_at ASC LIMIT ?`).bind(READ_LIMIT);
+  const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+  const sql = `SELECT * FROM ${table} ${whereClause} ORDER BY COALESCE(${timeCol}, '') ASC, id ASC LIMIT ?`;
+  bindings.push(fetchLimit);
+
+  const stmt = db.prepare(sql).bind(...bindings);
   const { results } = await stmt.all();
-  return results || [];
+  const rows = results || [];
+
+  let nextCursor = null;
+  if (rows.length > pageSize) {
+    rows.pop();
+    const lastRow = rows[rows.length - 1];
+    nextCursor = {
+      updatedAt: str(lastRow[timeCol]),
+      id: str(lastRow.id),
+    };
+  }
+
+  return { rows, nextCursor };
 }
 
 // ─── Migration ───────────────────────────────────────────────────────────────
@@ -450,6 +516,7 @@ async function runMigration(db) {
   await tryExec('orders.pointsRedeemed', 'ALTER TABLE orders ADD COLUMN pointsRedeemed REAL DEFAULT 0');
   await tryExec('orders.deleted_at', 'ALTER TABLE orders ADD COLUMN deleted_at TEXT');
   await tryExec('orders.cashierName', 'ALTER TABLE orders ADD COLUMN cashierName TEXT');
+  await tryExec('orders.cashierAvatar', 'ALTER TABLE orders ADD COLUMN cashierAvatar TEXT');
   await tryExec('orders.updated_at_backfill', 'UPDATE orders SET updated_at = createdAt WHERE updated_at IS NULL');
 
   // customers / menu_items / inventory: updated_at + soft delete
@@ -484,6 +551,19 @@ async function runMigration(db) {
   await tryExec('idx.orders_updated_at', 'CREATE INDEX IF NOT EXISTS idx_orders_updated_at ON orders(updated_at)');
   await tryExec('idx.orders_branch', 'CREATE INDEX IF NOT EXISTS idx_orders_branch ON orders(branch_id)');
   await tryExec('idx.inv_tx_item', 'CREATE INDEX IF NOT EXISTS idx_inv_tx_item ON inventory_transactions(itemId)');
+
+  // cashiers table & indexes
+  await tryExec('cashiers.table', `CREATE TABLE IF NOT EXISTS cashiers (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    avatar TEXT,
+    branch_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    deleted_at TEXT
+  )`);
+  await tryExec('idx.cashiers_updated_at', 'CREATE INDEX IF NOT EXISTS idx_cashiers_updated_at ON cashiers(updated_at)');
+  await tryExec('idx.cashiers_branch', 'CREATE INDEX IF NOT EXISTS idx_cashiers_branch ON cashiers(branch_id)');
 
   const failed = results.filter(r => !r.ok);
   return { results, failed };
@@ -561,7 +641,13 @@ export default {
       }
 
       if (url.pathname === '/pull/orders') {
-        return json({ success: true, ...(await pullOrders(env.DB, payload)) }, 200, origin, env);
+        const { rows, nextCursor } = await pullTableWithCursor(env.DB, 'orders', payload, PULL_PAGE_SIZE);
+        return json({ success: true, orders: rows, rows, nextCursor }, 200, origin, env);
+      }
+
+      if (url.pathname === '/pull/cashiers') {
+        const { rows, nextCursor } = await pullTableWithCursor(env.DB, 'cashiers', payload, PULL_PAGE_SIZE);
+        return json({ success: true, cashiers: rows, rows, nextCursor }, 200, origin, env);
       }
 
       // Pull for shared tables: menu items, customers, inventory. Tombstones included so
@@ -569,8 +655,18 @@ export default {
       const pullSharedMatch = /^\/pull\/(menu-items|customers|inventory)$/.exec(url.pathname);
       if (pullSharedMatch) {
         const table = SYNC_TABLES[pullSharedMatch[1]].table;
-        const rows = await pullSharedTable(env.DB, table, payload.since);
-        return json({ success: true, rows }, 200, origin, env);
+        const { rows, nextCursor } = await pullTableWithCursor(env.DB, table, payload, 100);
+        return json({ success: true, rows, nextCursor }, 200, origin, env);
+      }
+
+      if (url.pathname === '/pull/inventory-transactions') {
+        const { rows, nextCursor } = await pullTableWithCursor(env.DB, 'inventory_transactions', payload, 100);
+        return json({ success: true, rows, nextCursor }, 200, origin, env);
+      }
+
+      if (url.pathname === '/pull/points-transactions') {
+        const { rows, nextCursor } = await pullTableWithCursor(env.DB, 'points_transactions', payload, 100);
+        return json({ success: true, rows, nextCursor }, 200, origin, env);
       }
 
       if (url.pathname === '/read/menu-items') {
@@ -583,10 +679,11 @@ export default {
 
       return json({ success: false, error: `Unknown endpoint: ${url.pathname}` }, 404, origin, env);
     } catch (err) {
-      return json({ success: false, error: String(err.message || err) }, 500, origin, env);
+      const status = (err && (err.isRejection || /rejection|expected|too many|must be/i.test(String(err.message || '')))) ? 400 : 500;
+      return json({ success: false, error: String(err.message || err) }, status, origin, env);
     }
   },
 };
 
 // Exported for the test suite; not part of the HTTP surface.
-export const __testing = { SYNC_TABLES, buildSyncStatements, assertItems, MAX_BATCH, RATE_MAX_REQUESTS };
+export const __testing = { SYNC_TABLES, buildSyncStatements, assertItems, MAX_BATCH, RATE_MAX_REQUESTS, PULL_PAGE_SIZE, pullTableWithCursor };

@@ -209,6 +209,7 @@ function validateNewOrder(order) {
     pointsRedeemed: optionalNumber(order.pointsRedeemed, 'pointsRedeemed', { min: 0, max: MAX_MONEY }) ?? 0,
     branchId: optionalString(order.branchId ?? order.branch_id, 'branchId', { max: 60 }),
     cashierName: optionalString(order.cashierName, 'cashierName', { max: 60 }),
+    cashierAvatar: optionalString(order.cashierAvatar, 'cashierAvatar', { max: 400000 }),
   };
 
   // A paid order must record how it was paid, otherwise the payment-method breakdown

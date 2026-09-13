@@ -15,6 +15,8 @@ export type { MenuItem, Order, OrderItem, OrderStatus, PaymentStatus, Customer }
 export interface Cashier {
   id: string;
   name: string;
+  /** Small base64 data URL photo, shown on the till button and printed on receipts. */
+  avatar?: string;
   branchId?: string;
   createdAt?: string;
   updatedAt?: string;
@@ -80,9 +82,10 @@ declare global {
       deleteCustomer: (id: string) => Promise<void>;
 
       getCashiers: (branchId?: string) => Promise<Cashier[]>;
-      createCashier: (name: string) => Promise<Cashier>;
+      createCashier: (name: string, avatar?: string) => Promise<Cashier>;
       deleteCashier: (id: string) => Promise<void>;
       renameCashier: (id: string, name: string) => Promise<Cashier>;
+      setCashierAvatar: (id: string, avatar?: string) => Promise<Cashier>;
 
       getSettings: () => Promise<Record<string, string>>;
       saveSetting: (key: string, value: string) => Promise<void>;
@@ -125,11 +128,18 @@ declare global {
         lastError: string | null;
       }) => void) => () => void;
 
+      /**
+       * Today's local-day sales summary. `totalRevenue` reads paidAmount so a bill settled
+       * partly with loyalty points is not reported at its full value.
+       */
       getDailyReportStats: () => Promise<{
-        orderCount: number;
-        revenue: number;
-        cash: number;
-        card: number;
+        date: string;
+        totalOrders: number;
+        totalRevenue: number;
+        totalUnpaid: number;
+        cashRevenue: number;
+        cardRevenue: number;
+        itemsSold: Array<{ name: string; quantity: number }>;
       }>;
       sendDailyReportToTelegram: () => Promise<{ success: boolean; error?: string }>;
 
@@ -140,6 +150,7 @@ declare global {
         last_error: string | null;
       }>>;
       retryParkedSyncRows: (table: string, ids?: string[] | null) => Promise<number>;
+      printReceipt?: (html: string) => Promise<void>;
     };
   }
 }

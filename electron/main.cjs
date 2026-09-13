@@ -27,6 +27,7 @@ const cashierRepository = require('./CashierRepository.cjs');
 const telegramService = require('./telegramService.cjs');
 const validate = require('./validate.cjs');
 const syncApi = require('./mockApiService.cjs');
+const printManager = require('./printManager.cjs');
 
 let mainWindow;
 let syncEngine;
@@ -170,13 +171,18 @@ function registerIpcHandlers() {
   handle('db:get-cashiers', (branchId) => cashierRepository.getCashiers(
     validate.optionalString(branchId, 'branchId', { max: 60 }) ?? undefined
   ));
-  handle('db:create-cashier', (name) => cashierRepository.createCashier(
-    validate.requireString(name, 'name')
+  handle('db:create-cashier', (name, avatar) => cashierRepository.createCashier(
+    validate.requireString(name, 'name'),
+    validate.optionalString(avatar, 'avatar', { max: 400000 })
   ));
   handle('db:delete-cashier', (id) => cashierRepository.deleteCashier(validate.requireId(id, 'id')));
   handle('db:rename-cashier', (id, name) => cashierRepository.renameCashier(
     validate.requireId(id, 'id'),
     validate.requireString(name, 'name')
+  ));
+  handle('db:set-cashier-avatar', (id, avatar) => cashierRepository.setCashierAvatar(
+    validate.requireId(id, 'id'),
+    validate.optionalString(avatar, 'avatar', { max: 400000 })
   ));
 
   // ─── Settings ──────────────────────────────────────────────────────────────
@@ -280,6 +286,9 @@ function registerIpcHandlers() {
   handle('menu:publish-config', (config) => syncApi.publishMenuConfig(
     validate.validateMenuConfig(config)
   ));
+
+  // ─── Printing ──────────────────────────────────────────────────────────────
+  handle('app:print-receipt', (html) => printManager.printReceiptHtml(html));
 }
 
 app.whenReady().then(() => {

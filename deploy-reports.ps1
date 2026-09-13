@@ -7,11 +7,11 @@
 
   Prereq (once):
     $env:CLOUDFLARE_API_TOKEN = '...'   # token with Workers, D1, Pages perms on engaz.tech
-    # OR run: npx wrangler login
+    # OR run: npx --yes wrangler@$WranglerVersion login
 
   Authentication note (learned the hard way): the account's two credentials cover different
   steps. The token stored in `.env` has Workers/Pages scope but NOT D1, so step 1 (database)
-  and the worker deploy need a token that also holds `d1:write` — the `npx wrangler login`
+  and the worker deploy need a token that also holds `d1:write` — the `npx --yes wrangler@$WranglerVersion login`
   OAuth token in %APPDATA% has it. Set CLOUDFLARE_API_TOKEN to whichever token the current
   step needs; this script reads it once at the top.
 
@@ -35,6 +35,12 @@ param(
 $ErrorActionPreference = 'Stop'
 $root = $PSScriptRoot
 Set-Location $root
+$WranglerVersion = '4.42.0' # exact version validated by the portal deploy guide
+$TrackedReportsConfig = Join-Path $root 'wrangler-reports.toml'
+$ReportsConfigPath = Join-Path ([IO.Path]::GetTempPath()) ("engaz-wrangler-reports-$PID.toml")
+$PortalConfigPath = Join-Path ([IO.Path]::GetTempPath()) ("engaz-wrangler-portal-$PID.toml")
+Copy-Item -LiteralPath $TrackedReportsConfig -Destination $ReportsConfigPath -Force
+Copy-Item -LiteralPath (Join-Path $root 'wrangler-reports-site.toml') -Destination $PortalConfigPath -Force
 
 function Step([string]$msg) { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
 
@@ -56,6 +62,7 @@ function Invoke-Native([string]$what, [scriptblock]$cmd) {
   $ErrorActionPreference = $prev
   if ($code -ne 0) {
     Write-Host "$what failed with exit code $code. Aborting." -ForegroundColor Red
+    Remove-Item -LiteralPath @($ReportsConfigPath, $PortalConfigPath) -Force -ErrorAction SilentlyContinue
     exit $code
   }
 }
@@ -67,10 +74,10 @@ if (-not $env:CLOUDFLARE_API_TOKEN) {
   $envToken = Get-Content (Join-Path $root '.env') -ErrorAction SilentlyContinue | Where-Object { $_ -match '^CLOUDFLARE_API_TOKEN=' } | Select-Object -First 1
   if ($envToken) { $env:CLOUDFLARE_API_TOKEN = ($envToken -split '=', 2)[1].Trim() }
 }
-$who = npx wrangler whoami 2>&1 | Out-String
+$who = npx --yes wrangler@$WranglerVersion whoami 2>&1 | Out-String
 if ($LASTEXITCODE -ne 0 -or $who -match 'not authenticated') {
   Write-Host $who
-  Write-Host 'Not authenticated. Put your token in .env as CLOUDFLARE_API_TOKEN=... or run `npx wrangler login`.' -ForegroundColor Yellow
+  Write-Host 'Not authenticated. Put your token in .env as CLOUDFLARE_API_TOKEN=... or run `npx --yes wrangler@$WranglerVersion login`.' -ForegroundColor Yellow
   exit 1
 }
 Write-Host 'Authenticated to Cloudflare.'
@@ -80,7 +87,7 @@ Step '1/5 Creating isolated D1 database: engaz-reports-db'
 # Routed through cmd /c: wrangler writes its "already exists" notice to stderr, and under
 # $ErrorActionPreference='Stop' a native command's stderr becomes a terminating ErrorRecord
 # in PowerShell 5.1, killing the script at exactly the idempotent re-run path.
-$createOut = & cmd /c "npx wrangler d1 create engaz-reports-db 2>&1" | Out-String
+$createOut = & cmd /c "npx --yes wrangler@$WranglerVersion d1 create engaz-reports-db 2>&1" | Out-String
 $dbId = ''
 if ($createOut -match 'database_id.*?([0-9a-f-]{20,})') {
   $dbId = $Matches[1]
@@ -89,7 +96,7 @@ if ($createOut -match 'database_id.*?([0-9a-f-]{20,})') {
   # Fetch the existing database's id. The JSON output may be prefixed by a banner line, so
   # start the parse at the first '['. Selecting by name matters: a plain regex over the raw
   # output grabbed every database in the account and joined them into one id.
-  $listOut = & cmd /c "npx wrangler d1 list --json 2>&1" | Out-String
+  $listOut = & cmd /c "npx --yes wrangler@$WranglerVersion d1 list --json 2>&1" | Out-String
   $jsonStart = $listOut.IndexOf('[')
   if ($jsonStart -ge 0) {
     $dbs = $listOut.Substring($jsonStart) | ConvertFrom-Json
@@ -115,8 +122,8 @@ if ($dbId) {
   if ($updated -eq $toml) {
     Write-Host "database_id already set to $dbId; no change needed."
   } else {
-    Set-Content $tomlPath $updated -NoNewline
-    Write-Host "Wrote database_id $dbId into wrangler-reports.toml."
+    Set-Content $ReportsConfigPath $updated -NoNewline
+    Write-Host "Wrote database_id $dbId into temporary Wrangler config (tracked config unchanged)."
   }
 } else {
   Write-Host 'No database id resolved; leaving wrangler-reports.toml untouched.' -ForegroundColor Yellow
@@ -125,7 +132,7 @@ if ($dbId) {
 # ── 2. Set the worker secrets ─────────────────────────────────────────────
 Step '2/5 Setting worker secrets'
 
-# Reads a value from the root .env when it was not passed in.
+# Reads a value from the root .env when it was not passed in. Values are never logged.
 function Get-EnvValue([string]$name) {
   $line = Get-Content (Join-Path $root '.env') -ErrorAction SilentlyContinue |
     Where-Object { $_ -match "^$name=" } | Select-Object -First 1
@@ -138,10 +145,10 @@ function Get-EnvValue([string]$name) {
 function Set-WorkerSecret([string]$name, [string]$value) {
   if (-not $value) {
     Write-Host "No $name provided. Set it later with:" -ForegroundColor Yellow
-    Write-Host "  npx wrangler secret put $name -c wrangler-reports.toml"
+    Write-Host "  npx --yes wrangler@$WranglerVersion secret put $name -c $ReportsConfigPath"
     return
   }
-  $value | npx wrangler secret put $name -c wrangler-reports.toml 2>&1 | Out-String | Write-Host
+  $value | npx --yes wrangler@$WranglerVersion secret put $name -c $ReportsConfigPath 2>&1 | Out-String | Write-Host
   if ($LASTEXITCODE -ne 0) {
     Write-Host "Setting $name failed with exit code $LASTEXITCODE. Aborting." -ForegroundColor Red
     exit $LASTEXITCODE
@@ -164,17 +171,18 @@ if (-not $ViewerPassword -or -not $TokenSecret) {
 
 # ── 3. Deploy the reports worker (isolated DB) ────────────────────────────
 Step '3/5 Deploying reports worker to api-reports.engaz.tech'
-Invoke-Native 'Reports worker deploy' { npx wrangler deploy -c wrangler-reports.toml }
+Invoke-Native 'Reports worker deploy' { npx --yes wrangler@$WranglerVersion deploy -c $ReportsConfigPath }
 
 # ── 4. Build + deploy the reports portal to reporting.engaz.tech ──────────
+# npm ci is deterministic and the portal build performs a sentinel secret scan.
 Step '4/5 Building reports portal'
 Set-Location (Join-Path $root 'reports-site')
-Invoke-Native 'npm install (reports-site)' { npm install --silent }
+Invoke-Native 'npm install (reports-site)' { npm ci --ignore-scripts }
 Invoke-Native 'Reports portal build' { npm run build }
 Set-Location $root
 
 Step 'Deploying reports portal to reporting.engaz.tech'
-Invoke-Native 'Reports portal deploy' { npx wrangler deploy -c wrangler-reports-site.toml }
+Invoke-Native 'Reports portal deploy' { npx --yes wrangler@$WranglerVersion deploy -c $PortalConfigPath }
 
 # ── 5. Schema migration on the new database ───────────────────────────────
 Step '5/5 Running schema migration on engaz-reports-db'
@@ -197,4 +205,5 @@ if ($ReportsKey) {
   Write-Host 'Skipped migrate (no key).'
 }
 
-Write-Host "`n✅ Deploy complete. Portal: https://reporting.engaz.tech" -ForegroundColor Green
+Remove-Item -LiteralPath @($ReportsConfigPath, $PortalConfigPath) -Force -ErrorAction SilentlyContinue
+Write-Host "`nDeploy complete. Portal: https://reporting.engaz.tech" -ForegroundColor Green
