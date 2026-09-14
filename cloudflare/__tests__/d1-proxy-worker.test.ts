@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { checkRateLimit, timingSafeEqual, __testing } from '../d1-proxy-worker.js';
+import { checkRateLimit, timingSafeEqual, RATE_MAX_REQUESTS, SYNC_RATE_MAX_REQUESTS, __testing } from '../d1-proxy-worker.js';
 
 const {
   SYNC_TABLES, buildSyncStatements, assertItems, MAX_BATCH,
@@ -285,11 +285,16 @@ describe('timingSafeEqual', () => {
 });
 
 describe('checkRateLimit', () => {
+  // The budget is an explicit argument now: the limiter is shared with the reports worker,
+  // which meters sync traffic against a different number from anonymous traffic.
+  const limit = (clientId: string, now: number, buckets: Map<string, unknown>, max = RATE_MAX_REQUESTS) =>
+    checkRateLimit(clientId, max, now, buckets as never);
+
   it('allows a client under the limit', () => {
     const buckets = new Map();
     const now = 1_000_000;
     for (let i = 0; i < 50; i++) {
-      expect(checkRateLimit('1.2.3.4', now, buckets).allowed).toBe(true);
+      expect(limit('1.2.3.4', now, buckets).allowed).toBe(true);
     }
   });
 
@@ -298,7 +303,7 @@ describe('checkRateLimit', () => {
     const now = 1_000_000;
     let blocked = false;
     for (let i = 0; i < 200; i++) {
-      if (!checkRateLimit('1.2.3.4', now, buckets).allowed) {
+      if (!limit('1.2.3.4', now, buckets).allowed) {
         blocked = true;
         break;
       }
@@ -306,11 +311,24 @@ describe('checkRateLimit', () => {
     expect(blocked).toBe(true);
   });
 
+  it('honours the budget it is given rather than a fixed one', () => {
+    // This is the whole reason the budget is a parameter: a till is allowed far more than an
+    // anonymous caller, and the same limiter serves both.
+    const buckets = new Map();
+    const now = 1_000_000;
+    for (let i = 0; i < 200; i++) limit('1.2.3.4', now, buckets, SYNC_RATE_MAX_REQUESTS);
+    expect(limit('1.2.3.4', now, buckets, SYNC_RATE_MAX_REQUESTS).allowed).toBe(true);
+
+    const tight = new Map();
+    for (let i = 0; i < 200; i++) limit('1.2.3.4', now, tight, RATE_MAX_REQUESTS);
+    expect(limit('1.2.3.4', now, tight, RATE_MAX_REQUESTS).allowed).toBe(false);
+  });
+
   it('reports how long the caller must wait', () => {
     const buckets = new Map();
     const now = 1_000_000;
-    for (let i = 0; i < 200; i++) checkRateLimit('1.2.3.4', now, buckets);
-    const result = checkRateLimit('1.2.3.4', now, buckets);
+    for (let i = 0; i < 200; i++) limit('1.2.3.4', now, buckets);
+    const result = limit('1.2.3.4', now, buckets);
     expect(result.allowed).toBe(false);
     expect(result.retryAfter).toBeGreaterThan(0);
   });
@@ -318,16 +336,16 @@ describe('checkRateLimit', () => {
   it('counts each client separately', () => {
     const buckets = new Map();
     const now = 1_000_000;
-    for (let i = 0; i < 200; i++) checkRateLimit('1.2.3.4', now, buckets);
+    for (let i = 0; i < 200; i++) limit('1.2.3.4', now, buckets);
     // One noisy client must not lock out every other branch.
-    expect(checkRateLimit('5.6.7.8', now, buckets).allowed).toBe(true);
+    expect(limit('5.6.7.8', now, buckets).allowed).toBe(true);
   });
 
   it('lets a blocked client through again in the next window', () => {
     const buckets = new Map();
     const now = 1_000_000;
-    for (let i = 0; i < 200; i++) checkRateLimit('1.2.3.4', now, buckets);
-    expect(checkRateLimit('1.2.3.4', now, buckets).allowed).toBe(false);
-    expect(checkRateLimit('1.2.3.4', now + 61_000, buckets).allowed).toBe(true);
+    for (let i = 0; i < 200; i++) limit('1.2.3.4', now, buckets);
+    expect(limit('1.2.3.4', now, buckets).allowed).toBe(false);
+    expect(limit('1.2.3.4', now + 61_000, buckets).allowed).toBe(true);
   });
 });

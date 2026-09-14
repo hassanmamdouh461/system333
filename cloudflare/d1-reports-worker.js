@@ -32,6 +32,37 @@
  * Secrets: REPORTS_API_KEY (write), REPORTS_VIEWER_PASSWORD, REPORTS_TOKEN_SECRET.
  */
 
+import {
+  timingSafeEqual,
+  checkRateLimit,
+  budgetFor,
+  RATE_MAX_REQUESTS,
+  SYNC_RATE_MAX_REQUESTS,
+  str,
+  num,
+  nowIso,
+  capped,
+  orderItemsJson,
+  rejected,
+  MAX_TEXT_BYTES,
+  MAX_IMAGE_BYTES,
+  MAX_JSON_BYTES,
+  MAX_BODY_BYTES,
+} from './shared/common.js';
+
+// Re-exported so the test suite and anything else importing from this module keeps working.
+export {
+  timingSafeEqual,
+  checkRateLimit,
+  budgetFor,
+  RATE_MAX_REQUESTS,
+  SYNC_RATE_MAX_REQUESTS,
+  MAX_TEXT_BYTES,
+  MAX_IMAGE_BYTES,
+  MAX_JSON_BYTES,
+  MAX_BODY_BYTES,
+};
+
 const ALLOWED_ORIGINS = [
   'https://reporting.engaz.tech',
   'https://menu.engaz.tech',
@@ -55,11 +86,13 @@ const MAX_MENU_CONFIG_CHARS = 900_000;
  * the only defence that costs nothing — it runs before a single byte is read.
  *
  * Writes here are orders and their line items. A generous order is a few kilobytes, so 2 MB
- * leaves a wide margin while still bounding the isolate.
+ * leaves a wide margin while still bounding the isolate. (MAX_BODY_BYTES, shared/common.js.)
  */
-const MAX_BODY_BYTES = 2 * 1024 * 1024;
 /** Viewer sessions are short: the portal re-authenticates rather than holding a long token. */
 const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
+
+/** Per-isolate rate-limit state. Shared by every request this isolate serves. */
+const rateBuckets = new Map();
 
 function corsHeaders(origin, isPublic = false) {
   const allowed = isPublic ? '*' : (ALLOWED_ORIGINS.includes(origin) ? origin : ALLOWED_ORIGINS[0]);
@@ -79,70 +112,9 @@ function json(data, status = 200, origin = '*', isPublic = false) {
   });
 }
 
-/** Length-independent comparison so a key check does not leak length via timing. */
-export function timingSafeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const encoder = new TextEncoder();
-  const aBytes = encoder.encode(a);
-  const bBytes = encoder.encode(b);
-  let diff = aBytes.length ^ bBytes.length;
-  const len = Math.max(aBytes.length, bBytes.length);
-  for (let i = 0; i < len; i++) diff |= (aBytes[i] || 0) ^ (bBytes[i] || 0);
-  return diff === 0;
-}
-
-// ─── Rate limiting ───────────────────────────────────────────────────────────
-// Fixed window per client IP in isolate memory. Cloudflare may run several isolates per
-// colo, so the real ceiling is a multiple of this — a brake on scripted abuse, not a quota.
-// The login endpoint gets a much tighter budget because it is the one path where guessing
-// pays off.
-const RATE_WINDOW_MS = 60_000;
-const RATE_MAX_REQUESTS = 120;
-/**
- * Budget for a caller that already holds the write key.
- *
- * A till syncs every 30 seconds and walks a backlog in pages, so a cold or busy branch
- * legitimately sends several hundred requests a minute — and several tills can share one
- * public address. At the anonymous budget the limiter reads that as abuse and answers 429,
- * which the client answers by backing off, so the branch stays behind for longer.
- *
- * Note this is keyed by address, not by the key: one write key is shared by every install,
- * so bucketing by it would put the whole estate in a single bucket and throttle the busiest
- * branch against the quietest.
- */
-const SYNC_RATE_MAX_REQUESTS = 600;
+// The login endpoint gets a much tighter budget than reads, because it is the one path
+// where guessing pays off.
 const LOGIN_MAX_ATTEMPTS = 10;
-const rateBuckets = new Map();
-
-/**
- * A rate budget, unless the deployment has overridden it.
- *
- * These are brakes sized by guesswork against traffic nobody can predict from here; making
- * them settable means a branch reporting spurious 429s can be unblocked without a code
- * change and a redeploy of the whole worker.
- */
-function budgetFor(env, name, fallback) {
-  const configured = Number(env && env[name]);
-  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : fallback;
-}
-
-export function checkRateLimit(clientId, max = RATE_MAX_REQUESTS, now = Date.now(), buckets = rateBuckets) {
-  const bucket = buckets.get(clientId);
-
-  if (!bucket || now >= bucket.resetAt) {
-    buckets.set(clientId, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    if (buckets.size > 10_000) {
-      for (const [id, b] of buckets) if (now >= b.resetAt) buckets.delete(id);
-    }
-    return { allowed: true, retryAfter: 0 };
-  }
-
-  bucket.count += 1;
-  if (bucket.count > max) {
-    return { allowed: false, retryAfter: Math.ceil((bucket.resetAt - now) / 1000) };
-  }
-  return { allowed: true, retryAfter: 0 };
-}
 
 // ─── Viewer tokens ───────────────────────────────────────────────────────────
 // A token is `<base64url payload>.<base64url HMAC>`. The signature is what makes it
@@ -196,56 +168,10 @@ export async function verifyViewerToken(secret, token, now = Date.now()) {
   }
 }
 
-// ─── Input coercion ──────────────────────────────────────────────────────────
-// Values arrive over the network and go straight into bind parameters. D1 rejects undefined
-// and objects, and a NaN would be stored as a number that poisons every sum downstream.
-
-function str(value, fallback = null) {
-  if (value === null || value === undefined) return fallback;
-  return String(value);
-}
-
-function num(value, fallback = null) {
-  if (value === null || value === undefined || value === '') return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-// ─── Field bounds ────────────────────────────────────────────────────────────
-// This database is a mirror of the POS one, so a record that the POS worker refuses or
-// trims must be refused or trimmed the same way here. Otherwise the two copies drift: the
-// till shows one name and the manager portal another, with nothing to say which is right.
-//
-// The bounds match d1-proxy-worker.js exactly for the same reason.
-
-const MAX_TEXT_BYTES = 4_000;
-const MAX_IMAGE_BYTES = 400_000;
-const MAX_JSON_BYTES = 64_000;
-
-/** Trims a text field to its cap rather than rejecting the record it belongs to. */
-function capped(value, max) {
-  if (value === null || value === undefined) return value;
-  const text = String(value);
-  return text.length > max ? text.slice(0, max) : text;
-}
-
-/**
- * An order's line items, as the JSON text the column stores.
- *
- * Unlike the text fields this is refused rather than trimmed: cutting a JSON document at an
- * arbitrary byte leaves an unparseable order, which is worse than one that stays unsynced.
- */
-function orderItemsJson(items) {
-  const text = typeof items === 'string' ? items : JSON.stringify(items ?? []);
-  if (text.length > MAX_JSON_BYTES) {
-    throw rejected(`Order items exceed ${MAX_JSON_BYTES} characters`);
-  }
-  return text;
-}
+// Coercion, field bounds and rejections live in shared/common.js. This database is a mirror
+// of the POS one, so a record the POS worker refuses or trims must be refused or trimmed
+// identically here — sharing the functions is what guarantees that, where matching constants
+// only promised it.
 
 function assertItems(items) {
   if (!Array.isArray(items)) throw new Error('Expected an "items" array');
@@ -700,12 +626,6 @@ async function savePublicMenuConfig(db, config) {
 }
 
 /** An error caused by what the caller sent, rather than by this worker or its database. */
-function rejected(message) {
-  const error = new Error(message);
-  error.isRejection = true;
-  return error;
-}
-
 async function runMigration(db) {
   const tryExec = async (label, sql) => {
     try {
@@ -820,7 +740,9 @@ export default {
             env,
             hasWriteKey ? 'SYNC_RATE_MAX_REQUESTS' : 'RATE_MAX_REQUESTS',
             hasWriteKey ? SYNC_RATE_MAX_REQUESTS : RATE_MAX_REQUESTS
-          )
+          ),
+      Date.now(),
+      rateBuckets
     );
     if (!limit.allowed) {
       return new Response(JSON.stringify({ success: false, error: 'Too many requests' }), {

@@ -30,6 +30,38 @@
  * Auth: X-API-Key header must match the WORKER_API_KEY secret.
  */
 
+import {
+  timingSafeEqual,
+  checkRateLimit,
+  budgetFor,
+  RATE_MAX_REQUESTS,
+  SYNC_RATE_MAX_REQUESTS,
+  str,
+  num,
+  bool01,
+  nowIso,
+  capped,
+  orderItemsJson,
+  rejected,
+  MAX_TEXT_BYTES,
+  MAX_IMAGE_BYTES,
+  MAX_JSON_BYTES,
+  MAX_BODY_BYTES,
+} from './shared/common.js';
+
+// Re-exported so the test suite and anything else importing from this module keeps working.
+export {
+  timingSafeEqual,
+  checkRateLimit,
+  budgetFor,
+  RATE_MAX_REQUESTS,
+  SYNC_RATE_MAX_REQUESTS,
+  MAX_TEXT_BYTES,
+  MAX_IMAGE_BYTES,
+  MAX_JSON_BYTES,
+  MAX_BODY_BYTES,
+};
+
 const PROD_ORIGINS = [
   'https://manager.engaz.tech',
   'https://pos.engaz.tech',
@@ -79,102 +111,11 @@ function json(data, status = 200, origin = '*', env = null) {
   });
 }
 
-/** Length-independent comparison so the key check does not leak length via timing. */
-export function timingSafeEqual(a, b) {
-  if (typeof a !== 'string' || typeof b !== 'string') return false;
-  const encoder = new TextEncoder();
-  const aBytes = encoder.encode(a);
-  const bBytes = encoder.encode(b);
-  let diff = aBytes.length ^ bBytes.length;
-  const len = Math.max(aBytes.length, bBytes.length);
-  for (let i = 0; i < len; i++) {
-    diff |= (aBytes[i] || 0) ^ (bBytes[i] || 0);
-  }
-  return diff === 0;
-}
+// Rate limiting, the timing-safe comparison, coercion, field bounds and rejections live in
+// shared/common.js, alongside the reports worker's copies of the same functions.
 
-// ─── Rate limiting ───────────────────────────────────────────────────────────
-// Fixed window per client IP, held in isolate memory. Cloudflare may run several isolates
-// per colo, so the effective ceiling is a multiple of this — it is a brake on scripted
-// abuse, not a precise quota. A precise one needs a Durable Object; this needs no binding
-// and cannot fail open.
-const RATE_WINDOW_MS = 60_000;
-const RATE_MAX_REQUESTS = 120;
-/**
- * Budget for a caller that already holds the API key, which here means every request that
- * gets past authentication at all.
- *
- * A till syncs every 30 seconds and pages through its backlog, so a cold or busy branch
- * legitimately sends several hundred requests a minute. At the anonymous budget the limiter
- * calls that abuse and answers 429, the client backs off, and the branch falls further
- * behind. Bucketing stays by address rather than by key because one key is shared by every
- * install: a per-key bucket would throttle the whole estate against its busiest branch.
- */
-const SYNC_RATE_MAX_REQUESTS = 600;
+/** Per-isolate rate-limit state. Shared by every request this isolate serves. */
 const rateBuckets = new Map();
-
-/** A rate budget, unless the deployment has overridden it by name. */
-function budgetFor(env, name, fallback) {
-  const configured = Number(env && env[name]);
-  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : fallback;
-}
-
-export function checkRateLimit(clientId, now = Date.now(), buckets = rateBuckets) {
-  const bucket = buckets.get(clientId);
-
-  if (!bucket || now >= bucket.resetAt) {
-    buckets.set(clientId, { count: 1, resetAt: now + RATE_WINDOW_MS });
-    // Drop expired buckets so a long-lived isolate cannot grow unboundedly.
-    if (buckets.size > 10_000) {
-      for (const [id, b] of buckets) if (now >= b.resetAt) buckets.delete(id);
-    }
-    return { allowed: true, retryAfter: 0 };
-  }
-
-  bucket.count += 1;
-  if (bucket.count > RATE_MAX_REQUESTS) {
-    return { allowed: false, retryAfter: Math.ceil((bucket.resetAt - now) / 1000) };
-  }
-  return { allowed: true, retryAfter: 0 };
-}
-
-// ─── Input coercion ──────────────────────────────────────────────────────────
-// Values arrive over the network and go straight into bind parameters. D1 rejects
-// undefined and objects, and a NaN would be stored as a number that poisons every sum
-// downstream, so each field is coerced to the exact type its column expects.
-
-function str(value, fallback = null) {
-  if (value === null || value === undefined) return fallback;
-  return String(value);
-}
-
-function num(value, fallback = null) {
-  if (value === null || value === undefined || value === '') return fallback;
-  const n = Number(value);
-  return Number.isFinite(n) ? n : fallback;
-}
-
-function bool01(value) {
-  return value ? 1 : 0;
-}
-
-function nowIso() {
-  return new Date().toISOString();
-}
-
-// Unbounded text is the cheapest way to hurt this worker: at MAX_BATCH 200 records a single
-// authenticated call could otherwise carry tens of megabytes into D1, and one oversized
-// record fails the whole batch.
-const MAX_TEXT_BYTES = 4_000;
-const MAX_IMAGE_BYTES = 400_000;
-const MAX_JSON_BYTES = 64_000;
-const MAX_BODY_BYTES = 2 * 1024 * 1024;
-
-function capped(value, max) {
-  if (value === null || value === undefined) return value;
-  const text = String(value);
-  return text.length > max ? text.slice(0, max) : text;
-}
 
 // The branch id is stamped on every row and compared literally in every filter. Its character
 // rules are enforced where ids are created (the reports worker registry and the desktop
@@ -192,12 +133,6 @@ function branchIdOf(record) {
     throw rejected(`branchId must be at most ${BRANCH_ID_MAX} characters`);
   }
   return id;
-}
-
-function rejected(message) {
-  const error = new Error(message);
-  error.isRejection = true;
-  return error;
 }
 
 function assertItems(items) {
@@ -222,20 +157,6 @@ function cashierAvatar(value) {
     throw rejected(`Cashier avatar must be a raster base64 data URI of at most ${MAX_AVATAR_CHARS} characters`);
   }
   return value;
-}
-
-/**
- * The order's line items, as the JSON text the column stores.
- *
- * Already-encoded text is passed through: the desktop stores this column as a string and
- * re-sends it verbatim, so re-encoding would double-escape it.
- */
-function orderItemsJson(items) {
-  const text = typeof items === 'string' ? items : JSON.stringify(items ?? []);
-  if (text.length > MAX_JSON_BYTES) {
-    throw rejected(`Order items exceed ${MAX_JSON_BYTES} characters`);
-  }
-  return text;
 }
 
 function recordUpdatedAt(record) {
@@ -668,7 +589,9 @@ export default {
         env,
         authenticated ? 'SYNC_RATE_MAX_REQUESTS' : 'RATE_MAX_REQUESTS',
         authenticated ? SYNC_RATE_MAX_REQUESTS : RATE_MAX_REQUESTS
-      )
+      ),
+      Date.now(),
+      rateBuckets
     );
     if (!limit.allowed) {
       return new Response(JSON.stringify({ success: false, error: 'Too many requests' }), {
