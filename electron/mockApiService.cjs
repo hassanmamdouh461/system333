@@ -81,6 +81,20 @@ function loadConfig(force = false) {
 
   if (WORKER_URL !== previousUrl) {
     console.log('[D1 Sync API] Configured Worker URL:', WORKER_URL);
+
+    // A URL change means the previous one may have been the reason rows were parked, so
+    // give them their budget back. Skipped on the first load: an empty previous URL is not
+    // a change of destination, and releasing then would retry rows this process never tried.
+    if (previousUrl) {
+      try {
+        const released = database.releaseParkedSyncRows();
+        if (released > 0) {
+          console.log(`[D1 Sync API] Released ${released} row(s) parked against the previous worker.`);
+        }
+      } catch (e) {
+        console.error('[D1 Sync API] Could not release parked rows:', e.message);
+      }
+    }
   }
 }
 

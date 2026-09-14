@@ -528,4 +528,73 @@ describe('Repositories & Outbox Unit Tests (Isolated SQLite)', () => {
       assert.equal(shared.branchId, undefined, 'a branchless row must stay branchless, not become "default"');
     });
   });
+
+  describe('Parked sync rows', () => {
+    /** Parks a row by exhausting its retry budget, the way repeated push failures do. */
+    const park = (table, id) => {
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        database.markSyncFailure(table, [id], 'worker rejected the row');
+      }
+    };
+
+    test('a row that exhausts its budget is parked and stops counting as pending work', () => {
+      const cashier = cashierRepository.createCashier('Parked Cashier');
+      park('cashiers', cashier.id);
+
+      assert.equal(
+        database.getParkedSyncRows().filter(r => r.id === cashier.id).length,
+        1,
+        'the row is reported as parked so the condition is visible'
+      );
+      assert.equal(database.getSyncStats().pendingCashiers, 0, 'a parked row leaves the push queue');
+    });
+
+    test('releaseParkedSyncRows gives the row its budget back', () => {
+      const cashier = cashierRepository.createCashier('Released Cashier');
+      park('cashiers', cashier.id);
+      assert.equal(database.getSyncStats().pendingCashiers, 0);
+
+      const released = database.releaseParkedSyncRows();
+
+      assert.equal(released, 1, 'exactly the parked row is released');
+      assert.equal(database.getSyncStats().pendingCashiers, 1, 'the row is pending work again');
+      assert.equal(database.getParkedSyncRows().length, 0);
+    });
+
+    test('releasing clears the stored error, so the next failure is reported fresh', () => {
+      const cashier = cashierRepository.createCashier('Fresh Error Cashier');
+      park('cashiers', cashier.id);
+      assert.ok(
+        database.getParkedSyncRows().some(r => r.last_error),
+        'parked rows carry the error that parked them'
+      );
+
+      database.releaseParkedSyncRows();
+      database.markSyncFailure('cashiers', [cashier.id], 'a new, different failure');
+
+      // Not parked yet on one attempt, so read the error off the row itself.
+      const row = database.getDb().prepare('SELECT last_error FROM cashiers WHERE id = ?').get(cashier.id);
+      assert.equal(row.last_error, 'a new, different failure');
+    });
+
+    test('only rows that exhausted their budget are touched', () => {
+      const pending = cashierRepository.createCashier('Still Trying');
+      database.markSyncFailure('cashiers', [pending.id], 'first failure');
+      const parked = cashierRepository.createCashier('Given Up');
+      park('cashiers', parked.id);
+
+      database.releaseParkedSyncRows();
+
+      const attempts = database.getDb()
+        .prepare('SELECT sync_attempts FROM cashiers WHERE id = ?')
+        .get(pending.id).sync_attempts;
+      assert.equal(attempts, 1, 'a row mid-retry keeps its count instead of starting over');
+    });
+
+    test('release is idempotent and safe when nothing is parked', () => {
+      cashierRepository.createCashier('Healthy Cashier');
+      assert.equal(database.releaseParkedSyncRows(), 0);
+      assert.equal(database.releaseParkedSyncRows(), 0, 'releasing twice changes nothing');
+    });
+  });
 });

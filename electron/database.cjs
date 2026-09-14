@@ -674,6 +674,41 @@ function getParkedSyncRows() {
   return parked;
 }
 
+/**
+ * Clear the retry budget on every table, for rows that have exhausted it.
+ *
+ * A row parked at MAX_SYNC_ATTEMPTS is excluded from every push batch, so it never leaves
+ * the device again no matter how many times sync succeeds afterwards. The most common
+ * reason a whole branch's worth of rows parks at once is that the worker URL was wrong --
+ * every batch failed for the same reason -- and repointing the URL fixes the cause without
+ * releasing anything, so the device stays empty-looking and the operator has no way to tell.
+ *
+ * Nothing in the UI calls the per-table release, so this is the only path back.
+ *
+ * @returns {number} rows released
+ */
+function releaseParkedSyncRows() {
+  const sqlite = getDb();
+  let released = 0;
+  for (const table of SYNCABLE_TABLES) {
+    try {
+      // Scoped to rows at the budget, not to every unsynced row: a row that has failed once
+      // carries a real count, and clearing it would hand out five fresh attempts to work
+      // that is still failing for a reason nobody has looked at yet.
+      released += sqlite
+        .prepare(`UPDATE ${table} SET sync_attempts = 0, last_error = NULL WHERE is_synced = 0 AND sync_attempts >= ?`)
+        .run(MAX_SYNC_ATTEMPTS).changes;
+    } catch (e) {
+      // A table may not exist on an older schema; the others must still be released.
+      console.warn(`[database] Could not release parked rows in ${table}:`, e.message);
+    }
+  }
+  if (released > 0) {
+    console.log(`[database] Released ${released} parked row(s) for another attempt.`);
+  }
+  return released;
+}
+
 /** Clear the retry budget so parked rows are attempted again. */
 function resetSyncAttempts(table, ids = null) {
   if (!SYNCABLE_TABLES.has(table)) return 0;
@@ -773,6 +808,7 @@ module.exports = {
   markSyncFailure,
   getParkedSyncRows,
   resetSyncAttempts,
+  releaseParkedSyncRows,
   enqueueReportOutbox,
   getPendingReportOutbox,
   deleteReportOutbox,
