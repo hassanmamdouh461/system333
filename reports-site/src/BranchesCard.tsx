@@ -290,32 +290,37 @@ export function BranchesCard({
             })}
           </div>
 
-          {branches.length === 0 && (
-            <p className="empty">لا توجد فروع مسجَّلة بعد</p>
+          {branches.length === 0 && unregisteredIds.length === 0 && (
+            <p className="empty">لم تُسجَّل أي فروع بعد. أضف الفرع الرئيسي لتبدأ.</p>
           )}
 
           {unregisteredIds.length > 0 && (
             <div className="setting-list">
-              {unregisteredIds.map((id) => (
-                <div className="setting-row" key={id}>
-                  <div className="setting-text">
-                    <span className="setting-label" dir="ltr">
-                      {id}
-                      <span className="tag tag-warn">غير مسجَّل</span>
-                    </span>
-                    <span className="setting-hint">
-                      {`فرع يرسل بيانات ولم يُسجَّل بعد · ${formatCount(
-                        ordersByBranch.get(id) ?? 0
-                      )} طلب في الفترة`}
-                    </span>
+              {unregisteredIds.map((id) => {
+                // A stale id with zero orders in the current scope adds noise without
+                // telling the manager anything actionable, so only surface it when the
+                // snapshot still carries rows under it.
+                const orders = ordersByBranch.get(id) ?? 0;
+                if (orders === 0) return null;
+                return (
+                  <div className="setting-row" key={id}>
+                    <div className="setting-text">
+                      <span className="setting-label" dir="ltr">
+                        {id}
+                        <span className="tag tag-warn">غير مسجَّل</span>
+                      </span>
+                      <span className="setting-hint">
+                        {`فرع يرسل بيانات ولم يُسجَّل بعد · ${formatCount(orders)} طلب في الفترة`}
+                      </span>
+                    </div>
+                    <div className="setting-control">
+                      <button type="button" className="control" onClick={() => startNaming(id)}>
+                        تسمية
+                      </button>
+                    </div>
                   </div>
-                  <div className="setting-control">
-                    <button type="button" className="control" onClick={() => startNaming(id)}>
-                      تسمية
-                    </button>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
