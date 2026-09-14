@@ -495,6 +495,40 @@ async function runMigration(db) {
     }
   };
 
+  // Base tables. The migration has always issued ALTER TABLE for the columns added after the
+  // first deploy, and assumed the four core tables already existed -- so a fresh database
+  // could not bootstrap itself. Make them idempotent: existing tables match the schema
+  // exactly, and a missing table is created. CREATE TABLE IF NOT EXISTS is a no-op when the
+  // shape already matches, so this is safe to re-run against a database that came from the
+  // original schema.
+  await tryExec('orders.table', `CREATE TABLE IF NOT EXISTS orders (
+    id TEXT PRIMARY KEY,
+    orderNumber TEXT, tableId TEXT, items TEXT,
+    status TEXT DEFAULT 'New', paymentStatus TEXT DEFAULT 'Unpaid', paymentMethod TEXT,
+    totalAmount REAL, subtotal REAL, taxRate REAL, taxAmount REAL, grandTotal REAL, paidAmount REAL,
+    createdAt TEXT, paidAt TEXT, customerPhone TEXT,
+    pointsEarned REAL DEFAULT 0, pointsRedeemed REAL DEFAULT 0,
+    branch_id TEXT, cashierName TEXT, cashierAvatar TEXT,
+    updated_at TEXT, deleted_at TEXT
+  )`);
+  await tryExec('customers.table', `CREATE TABLE IF NOT EXISTS customers (
+    id TEXT PRIMARY KEY,
+    name TEXT, phone TEXT, points REAL DEFAULT 0,
+    createdAt TEXT, branch_id TEXT,
+    updated_at TEXT, deleted_at TEXT
+  )`);
+  await tryExec('menu_items.table', `CREATE TABLE IF NOT EXISTS menu_items (
+    id TEXT PRIMARY KEY,
+    name TEXT, description TEXT, price REAL, category TEXT,
+    image TEXT, available INTEGER, branch_id TEXT,
+    updated_at TEXT, deleted_at TEXT
+  )`);
+  await tryExec('inventory.table', `CREATE TABLE IF NOT EXISTS inventory (
+    id TEXT PRIMARY KEY,
+    name TEXT, unit TEXT, stock REAL DEFAULT 0, minStock REAL DEFAULT 0, costPerUnit REAL DEFAULT 0,
+    branch_id TEXT, created_at TEXT, updated_at TEXT, deleted_at TEXT
+  )`);
+
   // orders: tax snapshot + collected amount + loyalty + soft delete
   await tryExec('orders.updated_at', 'ALTER TABLE orders ADD COLUMN updated_at TEXT');
   await tryExec('orders.subtotal', 'ALTER TABLE orders ADD COLUMN subtotal REAL');
@@ -616,7 +650,7 @@ export default {
       const { results, failed } = await runMigration(env.DB);
       return json({
         success: failed.length === 0,
-        migration: '0003_named_endpoints',
+        migration: '0004_self_bootstrap',
         failedCount: failed.length,
         results,
       }, failed.length === 0 ? 200 : 500, origin, env);
