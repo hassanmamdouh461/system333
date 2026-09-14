@@ -2,34 +2,22 @@ name = "engaz-d1-proxy"
 main = "cloudflare/d1-proxy-worker.js"
 compatibility_date = "2025-01-01"
 
-# Stated explicitly rather than left to the default, which differs between wrangler
-# versions. This worker is bound to the production POS database, so it must be reachable on
-# exactly one hostname: api.engaz.tech.
-workers_dev = false
-
-# Route the worker on the production API subdomain. The zone (engaz.tech) must be on
-# this same Cloudflare account; wrangler resolves the zone_id automatically by name.
-# If the route conflicts with an existing deployment, remove `routes` below and use:
-#   npx wrangler routes add api.engaz.tech/* engaz-d1-proxy --zone engaz.tech
-routes = [
-  { pattern = "api.engaz.tech/*", zone_name = "engaz.tech" },
-]
+# Reachable on exactly one hostname. The natural production hostname (api.engaz.tech) is
+# already serving another service, so until that cutover is decided this worker answers on
+# its canonical workers.dev URL only. Switching the URL is then a config change here plus a
+# settings update in the POS, not a DNS or route migration.
+workers_dev = true
 
 # Cloudflare D1 database used by the desktop POS (writes) and the manager portal (reads).
-# The binding name must stay `DB` — the worker reads env.DB.
+# The binding name must stay `DB` -- the worker reads env.DB.
 #
-# database_id is intentionally a placeholder in version control: it identifies a live
-# database, and committing it would publish that identity. Fill it in locally before
-# deploying, from either:
-#   npx wrangler d1 create engaz-db      # first time
-#   npx wrangler d1 list                 # existing database
-#
-# Deploying with the placeholder in place fails fast with an "invalid database" error
-# rather than writing anywhere unexpected.
+# This database was created on 2026-09-14 to back the POS sync that the legacy
+# brewmaster-d1-proxy could no longer serve (different contract, returned HTTP 400
+# "Missing sql or batch"). The id is now in source because the database is the worker.
 [[d1_databases]]
 binding = "DB"
-database_name = "engaz-db"
-database_id = "REPLACE_WITH_D1_DATABASE_ID"
+database_name = "engaz-pos-db"
+database_id = "6e8450b3-2b08-46f2-8b80-a85ccce6b21f"
 
 # Local dev origins are refused unless this is explicitly "true". The worker reads it, so
 # without the declaration the setting could never be turned on for a dev deployment.
