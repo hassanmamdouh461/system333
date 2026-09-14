@@ -12,10 +12,14 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const database = require('./database.cjs');
+const {
+  DEFAULT_WORKER_URL,
+  REPORTS_WORKER_URL,
+  assertWorkerHostAllowed,
+} = require('./workerHostPolicy.cjs');
 
 // Worker URL and key are resolved lazily and re-read after a TTL. This used to run once at
 // module load, so rotating the key or URL in the settings UI had no effect until a restart.
-const DEFAULT_WORKER_URL = 'https://api.engaz.tech';
 const CONFIG_TTL_MS = 30000;
 const REQUEST_TIMEOUT_MS = 15000;
 const MIRROR_TIMEOUT_MS = 10000;
@@ -28,7 +32,6 @@ let configLoadedAt = 0;
 
 // Isolated reports database (the reporting.engaz.tech portal reads from it). The URL is
 // fixed; the key is loaded from .env like the production key.
-const REPORTS_WORKER_URL = 'https://api-reports.engaz.tech';
 let REPORTS_WORKER_KEY = '';
 
 function readEnvFileConfig() {
@@ -93,6 +96,19 @@ function postJson({ baseUrl, endpoint, body, apiKey, timeout }) {
       parsed = new URL(baseUrl);
     } catch {
       return reject(new Error(`Invalid worker URL: ${baseUrl}`));
+    }
+
+    // Checked here, at the one place the credential is attached, rather than where the URL is
+    // configured: the URL is a renderer-writable setting, so a check at config time can be
+    // bypassed by anything that reaches postJson with a different base. A key that is never
+    // readable by the renderer still has to be sent, and this is where it is sent.
+    if (apiKey) {
+      try {
+        assertWorkerHostAllowed(parsed);
+      } catch (err) {
+        console.error('[D1 Sync API]', err.message);
+        return reject(err);
+      }
     }
 
     const bodyStr = JSON.stringify(body || {});
