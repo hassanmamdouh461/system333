@@ -100,7 +100,24 @@ export function timingSafeEqual(a, b) {
 // and cannot fail open.
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX_REQUESTS = 120;
+/**
+ * Budget for a caller that already holds the API key, which here means every request that
+ * gets past authentication at all.
+ *
+ * A till syncs every 30 seconds and pages through its backlog, so a cold or busy branch
+ * legitimately sends several hundred requests a minute. At the anonymous budget the limiter
+ * calls that abuse and answers 429, the client backs off, and the branch falls further
+ * behind. Bucketing stays by address rather than by key because one key is shared by every
+ * install: a per-key bucket would throttle the whole estate against its busiest branch.
+ */
+const SYNC_RATE_MAX_REQUESTS = 600;
 const rateBuckets = new Map();
+
+/** A rate budget, unless the deployment has overridden it by name. */
+function budgetFor(env, name, fallback) {
+  const configured = Number(env && env[name]);
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : fallback;
+}
 
 export function checkRateLimit(clientId, now = Date.now(), buckets = rateBuckets) {
   const bucket = buckets.get(clientId);
@@ -639,7 +656,20 @@ export default {
     }
 
     const clientId = request.headers.get('CF-Connecting-IP') || 'unknown';
-    const limit = checkRateLimit(clientId);
+    // Authentication is a synchronous header comparison, so it is settled here rather than
+    // after the body is read: an authenticated caller can then be given the sync budget,
+    // while traffic that has not identified itself stays on the anonymous one.
+    const apiKey = request.headers.get('X-API-Key');
+    const authenticated = Boolean(env.WORKER_API_KEY) && timingSafeEqual(apiKey, env.WORKER_API_KEY);
+
+    const limit = checkRateLimit(
+      clientId,
+      budgetFor(
+        env,
+        authenticated ? 'SYNC_RATE_MAX_REQUESTS' : 'RATE_MAX_REQUESTS',
+        authenticated ? SYNC_RATE_MAX_REQUESTS : RATE_MAX_REQUESTS
+      )
+    );
     if (!limit.allowed) {
       return new Response(JSON.stringify({ success: false, error: 'Too many requests' }), {
         status: 429,
@@ -655,8 +685,7 @@ export default {
       return json({ success: false, error: 'Method not allowed' }, 405, origin, env);
     }
 
-    const apiKey = request.headers.get('X-API-Key');
-    if (!env.WORKER_API_KEY || !timingSafeEqual(apiKey, env.WORKER_API_KEY)) {
+    if (!env.WORKER_API_KEY || !authenticated) {
       return json({ success: false, error: 'Unauthorized' }, 401, origin, env);
     }
 
@@ -762,4 +791,5 @@ export const __testing = {
   SYNC_TABLES, buildSyncStatements, assertItems, MAX_BATCH, RATE_MAX_REQUESTS, PULL_PAGE_SIZE,
   pullTableWithCursor, MAX_TEXT_BYTES, MAX_IMAGE_BYTES, MAX_JSON_BYTES, MAX_BODY_BYTES,
   BRANCH_ID_MAX,
+  SYNC_RATE_MAX_REQUESTS, budgetFor,
 };

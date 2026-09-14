@@ -24,6 +24,9 @@ const {
   MAX_TEXT_BYTES,
   MAX_IMAGE_BYTES,
   MAX_JSON_BYTES,
+  SYNC_RATE_MAX_REQUESTS,
+  RATE_MAX_REQUESTS,
+  budgetFor,
   readBranches,
   saveBranch,
   deleteBranch,
@@ -201,6 +204,72 @@ describe('checkRateLimit', () => {
     for (let i = 0; i < 50; i++) checkRateLimit('login:1.2.3.4', LOGIN_MAX_ATTEMPTS, now, buckets);
     // Exhausting login attempts must not lock the same visitor out of reading reports.
     expect(checkRateLimit('1.2.3.4', 120, now, buckets).allowed).toBe(true);
+  });
+
+  it('gives a caller holding the write key room for a real backlog', () => {
+    // A till syncs every 30 seconds and pages through a backlog, so the anonymous budget is
+    // not enough for one busy branch, let alone several sharing an address.
+    expect(SYNC_RATE_MAX_REQUESTS).toBeGreaterThan(RATE_MAX_REQUESTS * 4);
+  });
+
+  it('lets a deployment raise the budget without a code change', () => {
+    // The default is a guess; being able to override it is what stops a branch reporting
+    // spurious 429s from needing a redeploy to be unblocked.
+    expect(budgetFor({ RATE_MAX_REQUESTS: 900 }, 'RATE_MAX_REQUESTS', 120)).toBe(900);
+    expect(budgetFor({ SYNC_RATE_MAX_REQUESTS: 5000 }, 'SYNC_RATE_MAX_REQUESTS', 600)).toBe(5000);
+  });
+
+  it('falls back to the default when the override is missing or unusable', () => {
+    // A mistyped variable must not silently remove the brake, which is what `Number()` would
+    // turn into a 0 budget if it were trusted.
+    for (const env of [{}, null, undefined, { RATE_MAX_REQUESTS: '0' }, { RATE_MAX_REQUESTS: 'abc' }]) {
+      expect(budgetFor(env as never, 'RATE_MAX_REQUESTS', 120)).toBe(120);
+    }
+  });
+
+  it('lets an authenticated branch page through a backlog without being throttled', async () => {
+    // RATE_MAX_REQUESTS + 10 in one window is what a cold branch walking its first sync
+    // looks like. At the anonymous budget the tail of that walk gets 429, the client backs
+    // off, and the branch falls further behind rather than catching up.
+    const env = { REPORTS_API_KEY: 'write-key', DB: {} };
+    const statuses: number[] = [];
+
+    for (let i = 0; i < RATE_MAX_REQUESTS + 10; i++) {
+      const res = await worker.fetch(
+        new Request('https://api-reports.engaz.tech/not-an-endpoint', {
+          method: 'POST',
+          body: '{}',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': 'write-key', 'CF-Connecting-IP': '10.0.0.99' },
+        }),
+        env as never
+      );
+      await res.text();
+      statuses.push(res.status);
+    }
+
+    // 404, not 401: the key was accepted, and the request reached the router.
+    expect(new Set(statuses)).toEqual(new Set([404]));
+  });
+
+  it('still throttles the same volume from a caller with no valid key', async () => {
+    // The wider budget is granted on proof of the key, not on the presence of a header.
+    const env = { REPORTS_API_KEY: 'write-key', DB: {} };
+    let throttled = false;
+
+    for (let i = 0; i < RATE_MAX_REQUESTS + 10; i++) {
+      const res = await worker.fetch(
+        new Request('https://api-reports.engaz.tech/not-an-endpoint', {
+          method: 'POST',
+          body: '{}',
+          headers: { 'Content-Type': 'application/json', 'X-API-Key': 'not-the-key', 'CF-Connecting-IP': '10.0.0.100' },
+        }),
+        env as never
+      );
+      await res.text();
+      if (res.status === 429) throttled = true;
+    }
+
+    expect(throttled).toBe(true);
   });
 
   it('resets in the next window', () => {

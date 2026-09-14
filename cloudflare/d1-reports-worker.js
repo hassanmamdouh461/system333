@@ -98,8 +98,33 @@ export function timingSafeEqual(a, b) {
 // pays off.
 const RATE_WINDOW_MS = 60_000;
 const RATE_MAX_REQUESTS = 120;
+/**
+ * Budget for a caller that already holds the write key.
+ *
+ * A till syncs every 30 seconds and walks a backlog in pages, so a cold or busy branch
+ * legitimately sends several hundred requests a minute — and several tills can share one
+ * public address. At the anonymous budget the limiter reads that as abuse and answers 429,
+ * which the client answers by backing off, so the branch stays behind for longer.
+ *
+ * Note this is keyed by address, not by the key: one write key is shared by every install,
+ * so bucketing by it would put the whole estate in a single bucket and throttle the busiest
+ * branch against the quietest.
+ */
+const SYNC_RATE_MAX_REQUESTS = 600;
 const LOGIN_MAX_ATTEMPTS = 10;
 const rateBuckets = new Map();
+
+/**
+ * A rate budget, unless the deployment has overridden it.
+ *
+ * These are brakes sized by guesswork against traffic nobody can predict from here; making
+ * them settable means a branch reporting spurious 429s can be unblocked without a code
+ * change and a redeploy of the whole worker.
+ */
+function budgetFor(env, name, fallback) {
+  const configured = Number(env && env[name]);
+  return Number.isFinite(configured) && configured > 0 ? Math.floor(configured) : fallback;
+}
 
 export function checkRateLimit(clientId, max = RATE_MAX_REQUESTS, now = Date.now(), buckets = rateBuckets) {
   const bucket = buckets.get(clientId);
@@ -780,9 +805,22 @@ export default {
 
     const clientId = request.headers.get('CF-Connecting-IP') || 'unknown';
     const isLogin = url.pathname === '/auth/login';
+
+    // The write key is a synchronous header comparison, so it can be settled before the
+    // limiter runs rather than after the body is read. That lets the budget be chosen by
+    // whether the caller has already authenticated, while still metering anonymous traffic.
+    const writeKey = request.headers.get('X-API-Key');
+    const hasWriteKey = Boolean(env.REPORTS_API_KEY) && timingSafeEqual(writeKey, env.REPORTS_API_KEY);
+
     const limit = checkRateLimit(
       isLogin ? `login:${clientId}` : clientId,
-      isLogin ? LOGIN_MAX_ATTEMPTS : RATE_MAX_REQUESTS
+      isLogin
+        ? LOGIN_MAX_ATTEMPTS
+        : budgetFor(
+            env,
+            hasWriteKey ? 'SYNC_RATE_MAX_REQUESTS' : 'RATE_MAX_REQUESTS',
+            hasWriteKey ? SYNC_RATE_MAX_REQUESTS : RATE_MAX_REQUESTS
+          )
     );
     if (!limit.allowed) {
       return new Response(JSON.stringify({ success: false, error: 'Too many requests' }), {
@@ -857,9 +895,6 @@ export default {
       const { token, expiresAt } = await issueViewerToken(env.REPORTS_TOKEN_SECRET);
       return json({ success: true, token, expiresAt }, 200, origin);
     }
-
-    const writeKey = request.headers.get('X-API-Key');
-    const hasWriteKey = Boolean(env.REPORTS_API_KEY) && timingSafeEqual(writeKey, env.REPORTS_API_KEY);
 
     const bearer = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
     const hasViewerToken = env.REPORTS_TOKEN_SECRET
@@ -978,6 +1013,9 @@ export const __testing = {
   MAX_IMAGE_BYTES,
   MAX_JSON_BYTES,
   MAX_BODY_BYTES,
+  SYNC_RATE_MAX_REQUESTS,
+  RATE_MAX_REQUESTS,
+  budgetFor,
   readBranches,
   saveBranch,
   deleteBranch,
