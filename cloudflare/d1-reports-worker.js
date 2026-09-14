@@ -790,6 +790,13 @@ export default {
     // Reading the text first also means a POST with no body — no Content-Length at all when
     // the client chunks — is an empty payload instead of a parse failure.
     const body = await request.text();
+    // The header check above is skipped entirely by a chunked request, which declares no
+    // Content-Length at all. Enforce the same ceiling on what actually arrived, before it is
+    // handed to JSON.parse, so the limit holds whether or not the sender declares one.
+    if (body.length > MAX_BODY_BYTES) {
+      return json({ success: false, error: 'Request body too large' }, 413, origin);
+    }
+
     let payload = {};
     if (body.trim()) {
       try {

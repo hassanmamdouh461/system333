@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import {
+import worker, {
   checkRateLimit,
   timingSafeEqual,
   issueViewerToken,
@@ -694,5 +694,36 @@ describe('parseBranchId', () => {
 describe('DEFAULT_BRANCH', () => {
   it('is a valid branch, so a fresh database is never branchless', () => {
     expect(parseBranch(DEFAULT_BRANCH).error).toBeUndefined();
+  });
+});
+
+describe('request body limits', () => {
+  const MAX_BODY_BYTES = 2 * 1024 * 1024;
+  const env = { REPORTS_API_KEY: 'write-key', REPORTS_TOKEN_SECRET: SECRET, DB: {} };
+
+  const post = (body: string) =>
+    worker.fetch(
+      new Request('https://api-reports.engaz.tech/migrate', {
+        method: 'POST',
+        body,
+        headers: { 'Content-Type': 'application/json', 'X-API-Key': 'write-key' },
+      }),
+      env as never
+    );
+
+  it('rejects an oversized body that declares no Content-Length', async () => {
+    // A chunked request carries no Content-Length, so a header-only check never sees it and
+    // the body is buffered into the isolate unchecked. The measured length has to be the
+    // backstop, and this is the case that reaches it.
+    const res = await post('x'.repeat(MAX_BODY_BYTES + 1));
+    expect(res.status).toBe(413);
+    await expect(res.json()).resolves.toMatchObject({ success: false });
+  });
+
+  it('lets a normal-sized body through to the router', async () => {
+    // The ceiling must not swallow ordinary traffic: a healthy request has to reach the
+    // endpoint, not be turned away at the door.
+    const res = await post('{"items":[]}');
+    expect(res.status).not.toBe(413);
   });
 });
