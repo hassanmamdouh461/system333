@@ -321,7 +321,7 @@ if (id === requestId.current && !options.silent) setLoading(false);
 |---|---|
 | `README.md:10` | الشارة تقول **Electron 44** بينما الفعلي **29.4.6** (`package.json:65`). مضلّل جداً لمن يقرأه |
 | `AI_HANDOFF.md:14-15` | يقول الفرع فيه «شغل غير ملتزم» وآخر commit `15a916a` — **متأخر**: الشجرة الآن نظيفة وآخر commit `6744d20`. وصفه للحالة (قسم 9) لم يعد مطابقاً |
-| `AI_HANDOFF.md:91` | يقول `VITE_REPORTS_API_KEY` غير مضبوط — صحيح (تحقّقت منه)، لكن `.env` يحتوي **`VITE_CF_WORKER_URL=https://brewmaster-d1-proxy.hassanmamdouh461.workers.dev`** وهو **عنوان العامل القديم المذكور في `AGENTS.md:145`** — أي أن المزامنة موجهة فعلياً إلى النسخة القديمة التي تُرجع 400 |
+| `AI_HANDOFF.md:91` | يقول `VITE_REPORTS_API_KEY` غير مضبوط — صحيح (تحقّقت منه)، لكن `.env` يحتوي **`VITE_CF_WORKER_URL=https://brewmaster-d1-proxy.hassanmamdouh461.workers.dev`** — **وهذا ليس خطأً**: تحقّقت أن `engaz-d1-proxy` غير منشور أصلاً (code 10007) وأن `api.engaz.tech` لا يردّ ردّ العامل. التوصية القديمة بتغييره كانت ستكسر المزامنة؛ التفاصيل في قسم 10 |
 | `README.md:151` | يقول CI يشغّل «نفس المجموعات» — صحيح، لكنه لا يذكر أن `npm audit` يُسقطه (4-ب) |
 | `AGENTS.md` + `AI_HANDOFF.md` | اثنان من ثلاثة ملفات توجيه؛ محتواهما متداخل ويختلف في التفاصيل. يفضّل دمجهما |
 
@@ -355,6 +355,41 @@ if (id === requestId.current && !options.silent) setLoading(false);
   `npx wrangler deploy -c wrangler-reports.toml` ثم `-c wrangler-reports-site.toml` و`-c wrangler-menu-site.toml`.
   ويفضّل حذف نُسخ `*.workers.dev` القديمة من لوحة Cloudflare إن كانت منشورة فعلاً.
 - حقل `truncated` الجديد لن يظهر قبل إعادة نشر عامل التقارير؛ البوابة تتعامل مع غيابه كـ«لا اقتطاع»، فلا انكسار، لكن التحذير لن يعمل حتى النشر.
+
+---
+
+## ⚠️ تصحيح جوهري: البند 5 من المرحلة 1 كان **سيكسر المزامنة**
+
+أثناء محاولة نشر عامل POS اكتشفت إن التوصية الأصلية خاطئة، وأصححها هنا صراحةً لأن تنفيذها كان هيوقف المزامنة تماماً.
+
+### ما قيل في البند 5 (خاطئ)
+> «تصحيح `engaz_d1_worker_url` إلى `https://api.engaz.tech` — المزامنة معطّلة حتى ذلك.»
+
+### الحقيقة بعد الفحص على الحساب الفعلي (14 سبتمبر، بالأدلة)
+
+| الفحص | النتيجة |
+|---|---|
+| `wrangler deployments list --name engaz-d1-proxy` | ❌ **`This Worker does not exist on your account` (code 10007)** — لم يُنشر قط |
+| `curl https://api.engaz.tech/health` | `401 {"error":"Unauthorized","message":"Missing or invalid session"}` — **ليس** ردّ العامل (العامل يردّ `{"ok":true,"service":"engaz-d1-proxy"}`) |
+| `curl https://brewmaster-d1-proxy...workers.dev/health` | ✅ `200 {"ok":true,"service":"brewmaster-d1-proxy"}` |
+| `wrangler d1 list` | **لا توجد قاعدة اسمها `engaz-db`**. الموجود: `engaz-reports-db`، `system-online-db`، `brewmaster-db` |
+| جداول `brewmaster-db` | `api_keys, customers, inventory, menu_items, orders, users` — **38 طلب** |
+| جداول `system-online-db` | `auth_users, companies, customers, inventory, inventory_transactions, login_attempts, menu_items, orders, recipes, settings, snapshots, stock_delta_ops` |
+
+**الاستنتاج:** عامل POS الحيّ فعلاً هو `brewmaster-d1-proxy` على `*.workers.dev`، وقاعدته على الأرجح `brewmaster-db`. أما `wrangler.toml` و`api.engaz.tech` فإعداد **لم يُنفَّذ قط**.
+
+**لذلك:** عنوان `.env` الحالي (`brewmaster-d1-proxy...workers.dev`) **ليس خطأً بل السبب الوحيد الذي يجعل المزامنة تعمل**. تغييره إلى `api.engaz.tech` كان سيوجّه المزامنة إلى عامل غير موجود، فيفشل كل دفع بصمت.
+
+### ما لم يصل إلى الإنتاج نتيجةً لذلك
+إصلاحات `cloudflare/d1-proxy-worker.js` (حدود الحجم، وحارس LWW على الحذف) **ليست مطبَّقة في أي مكان حيّ** — لأنها في عامل لم يُنشر.
+
+### الإجراء الصحيح (يحتاج تأكيدك)
+لا أنفذه تلقائياً لأنه يربط عاملاً جديداً بقاعدة بيانات إنتاجية:
+1. تأكيد أن `brewmaster-db` (`2ad7a77f-29a7-493a-94e5-4e43790b5c36`) هي قاعدة POS المقصودة — أم أن `system-online-db` هي الأحدث؟
+2. تعبئة `database_id` في `wrangler.toml:32` بالـ id المؤكَّد.
+3. ضبط سرّ `WORKER_API_KEY` على العامل الجديد (بدونه يردّ 401 على كل شيء — فشل آمن).
+4. `npx wrangler deploy -c wrangler.toml`، ثم تحويل `.env` إلى `api.engaz.tech`.
+5. التحقق من `api.engaz.tech` — هل الـ 401 الحالي من Cloudflare Access؟ إن كان كذلك فلن يمرّ الطلب إلا بعد إضافة سياسة تجيزه.
 
 ### المرحلة 4 — تحسين مستمر
 16. Error Boundary + بوابة مسارات المشغّل (6-9، 6-10).
