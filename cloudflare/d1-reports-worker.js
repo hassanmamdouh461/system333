@@ -190,6 +190,38 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+// ─── Field bounds ────────────────────────────────────────────────────────────
+// This database is a mirror of the POS one, so a record that the POS worker refuses or
+// trims must be refused or trimmed the same way here. Otherwise the two copies drift: the
+// till shows one name and the manager portal another, with nothing to say which is right.
+//
+// The bounds match d1-proxy-worker.js exactly for the same reason.
+
+const MAX_TEXT_BYTES = 4_000;
+const MAX_IMAGE_BYTES = 400_000;
+const MAX_JSON_BYTES = 64_000;
+
+/** Trims a text field to its cap rather than rejecting the record it belongs to. */
+function capped(value, max) {
+  if (value === null || value === undefined) return value;
+  const text = String(value);
+  return text.length > max ? text.slice(0, max) : text;
+}
+
+/**
+ * An order's line items, as the JSON text the column stores.
+ *
+ * Unlike the text fields this is refused rather than trimmed: cutting a JSON document at an
+ * arbitrary byte leaves an unparseable order, which is worse than one that stays unsynced.
+ */
+function orderItemsJson(items) {
+  const text = typeof items === 'string' ? items : JSON.stringify(items ?? []);
+  if (text.length > MAX_JSON_BYTES) {
+    throw rejected(`Order items exceed ${MAX_JSON_BYTES} characters`);
+  }
+  return text;
+}
+
 function assertItems(items) {
   if (!Array.isArray(items)) throw new Error('Expected an "items" array');
   if (items.length > MAX_BATCH) throw new Error(`Too many records (max ${MAX_BATCH})`);
@@ -331,8 +363,9 @@ const SYNC_TABLES = {
              WHERE excluded.updated_at > menu_items.updated_at OR menu_items.updated_at IS NULL
                 OR (excluded.updated_at = menu_items.updated_at AND excluded.deleted_at IS NOT NULL AND menu_items.deleted_at IS NULL)`,
     params: (i) => [
-      str(i.id), str(i.name, ''), str(i.description, ''), num(i.price, 0), str(i.category, ''),
-      str(i.image, ''), i.available ? 1 : 0, str(i.branchId ?? i.branch_id),
+      str(i.id), capped(str(i.name, ''), MAX_TEXT_BYTES), capped(str(i.description, ''), MAX_TEXT_BYTES),
+      num(i.price, 0), capped(str(i.category, ''), MAX_TEXT_BYTES),
+      capped(str(i.image, ''), MAX_IMAGE_BYTES), i.available ? 1 : 0, str(i.branchId ?? i.branch_id),
       str(i.createdAt ?? i.created_at, nowIso()), str(i.updatedAt ?? i.updated_at, nowIso()),
       str(i.deletedAt ?? i.deleted_at),
     ],
@@ -370,12 +403,14 @@ const SYNC_TABLES = {
              WHERE excluded.updated_at > orders.updated_at OR orders.updated_at IS NULL
                 OR (excluded.updated_at = orders.updated_at AND excluded.deleted_at IS NOT NULL AND orders.deleted_at IS NULL)`,
     params: (o) => [
-      str(o.id), str(o.orderNumber, ''), str(o.tableId, ''), str(o.status, 'New'),
+      str(o.id), capped(str(o.orderNumber, ''), MAX_TEXT_BYTES), capped(str(o.tableId, ''), MAX_TEXT_BYTES),
+      str(o.status, 'New'),
       str(o.paymentStatus, 'Unpaid'), str(o.paymentMethod), num(o.totalAmount, 0),
       num(o.grandTotal), num(o.subtotal), num(o.taxRate), num(o.taxAmount), num(o.paidAmount),
-      typeof o.items === 'string' ? o.items : JSON.stringify(o.items ?? []),
-      str(o.branchId ?? o.branch_id), str(o.customerPhone),
-      num(o.pointsEarned, 0), num(o.pointsRedeemed, 0), str(o.cashierName), str(o.cashierAvatar),
+      orderItemsJson(o.items),
+      str(o.branchId ?? o.branch_id), capped(str(o.customerPhone), MAX_TEXT_BYTES),
+      num(o.pointsEarned, 0), num(o.pointsRedeemed, 0),
+      capped(str(o.cashierName), MAX_TEXT_BYTES), capped(str(o.cashierAvatar), MAX_IMAGE_BYTES),
       str(o.createdAt, nowIso()), str(o.paidAt),
       str(o.updatedAt ?? o.updated_at, nowIso()), str(o.deletedAt ?? o.deleted_at),
     ],
@@ -395,7 +430,8 @@ const SYNC_TABLES = {
                deleted_at = COALESCE(customers.deleted_at, excluded.deleted_at)
              WHERE excluded.updated_at > customers.updated_at OR customers.updated_at IS NULL`,
     params: (c) => [
-      str(c.id), str(c.name, ''), str(c.phone, ''), num(c.points, 0),
+      str(c.id), capped(str(c.name, ''), MAX_TEXT_BYTES), capped(str(c.phone, ''), MAX_TEXT_BYTES),
+      num(c.points, 0),
       str(c.createdAt, nowIso()), str(c.updatedAt ?? c.updated_at, nowIso()),
       str(c.deletedAt ?? c.deleted_at), str(c.branchId ?? c.branch_id),
     ],
@@ -417,7 +453,8 @@ const SYNC_TABLES = {
                deleted_at = COALESCE(inventory.deleted_at, excluded.deleted_at)
              WHERE excluded.updated_at > inventory.updated_at OR inventory.updated_at IS NULL`,
     params: (i) => [
-      str(i.id), str(i.name, ''), str(i.unit, ''), num(i.stock, 0), num(i.minStock, 0),
+      str(i.id), capped(str(i.name, ''), MAX_TEXT_BYTES), capped(str(i.unit, ''), MAX_TEXT_BYTES),
+      num(i.stock, 0), num(i.minStock, 0),
       num(i.costPerUnit, 0), str(i.branchId ?? i.branch_id),
       str(i.createdAt ?? i.created_at, nowIso()), str(i.updatedAt ?? i.updated_at, nowIso()),
       str(i.deletedAt ?? i.deleted_at),
@@ -437,7 +474,8 @@ const SYNC_TABLES = {
                deleted_at = COALESCE(cashiers.deleted_at, excluded.deleted_at)
              WHERE excluded.updated_at > cashiers.updated_at OR cashiers.updated_at IS NULL`,
     params: (c) => [
-      str(c.id), str(c.name, ''), str(c.avatar), str(c.branchId ?? c.branch_id),
+      str(c.id), capped(str(c.name, ''), MAX_TEXT_BYTES), capped(str(c.avatar), MAX_IMAGE_BYTES),
+      str(c.branchId ?? c.branch_id),
       str(c.createdAt ?? c.created_at, nowIso()), str(c.updatedAt ?? c.updated_at, nowIso()),
       str(c.deletedAt ?? c.deleted_at),
     ],
@@ -450,7 +488,8 @@ const SYNC_TABLES = {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     params: (tx) => [
       str(tx.id), str(tx.itemId, ''), str(tx.type, ''), num(tx.quantity, 0),
-      str(tx.referenceId), str(tx.createdAt, nowIso()), str(tx.branchId ?? tx.branch_id), str(tx.notes),
+      capped(str(tx.referenceId), MAX_TEXT_BYTES), str(tx.createdAt, nowIso()),
+      str(tx.branchId ?? tx.branch_id), capped(str(tx.notes), MAX_TEXT_BYTES),
     ],
   },
 
@@ -460,7 +499,8 @@ const SYNC_TABLES = {
              (id, customerId, orderId, type, points, balance, createdAt, branch_id)
              VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     params: (e) => [
-      str(e.id), str(e.customerId, ''), str(e.orderId), str(e.type, ''), num(e.points, 0),
+      str(e.id), str(e.customerId, ''), capped(str(e.orderId), MAX_TEXT_BYTES), str(e.type, ''),
+      num(e.points, 0),
       num(e.balanceAfter ?? e.balance), str(e.createdAt, nowIso()), str(e.branchId ?? e.branch_id),
     ],
   },
@@ -934,6 +974,10 @@ export const __testing = {
   readPublicMenu,
   savePublicMenuConfig,
   MAX_MENU_CONFIG_CHARS,
+  MAX_TEXT_BYTES,
+  MAX_IMAGE_BYTES,
+  MAX_JSON_BYTES,
+  MAX_BODY_BYTES,
   readBranches,
   saveBranch,
   deleteBranch,

@@ -21,6 +21,9 @@ const {
   readPublicMenu,
   savePublicMenuConfig,
   MAX_MENU_CONFIG_CHARS,
+  MAX_TEXT_BYTES,
+  MAX_IMAGE_BYTES,
+  MAX_JSON_BYTES,
   readBranches,
   saveBranch,
   deleteBranch,
@@ -81,6 +84,49 @@ describe('assertItems', () => {
   it('rejects a non-array payload and an oversized batch', () => {
     expect(() => assertItems('orders')).toThrow(/items/);
     expect(() => assertItems(new Array(MAX_BATCH + 1).fill({ id: 'x' }))).toThrow(/max/);
+  });
+});
+
+describe('mirror field bounds', () => {
+  // The mirror has to bound fields the same way the POS worker does. If it does not, the two
+  // databases drift apart and the manager portal shows a different record from the till that
+  // took the order, with nothing to say which one is right.
+  const paramsFor = (target: string, record: Record<string, unknown>) =>
+    SYNC_TABLES[target as keyof typeof SYNC_TABLES].params(record) as unknown[];
+
+  it('trims an oversized text field instead of storing it whole', () => {
+    const [id, name] = paramsFor('menu-items', { id: 'm1', name: 'ن'.repeat(MAX_TEXT_BYTES + 500) });
+    expect(id).toBe('m1');
+    expect(name).toHaveLength(MAX_TEXT_BYTES);
+  });
+
+  it('trims an oversized image rather than dropping the record', () => {
+    const image = paramsFor('menu-items', { id: 'm1', image: 'x'.repeat(MAX_IMAGE_BYTES + 10) })[5];
+    expect(image).toHaveLength(MAX_IMAGE_BYTES);
+  });
+
+  it('matches the bounds the POS worker applies', () => {
+    // Deliberate: these three numbers are copied from d1-proxy-worker.js on purpose. If one
+    // side is tightened, this fails rather than letting the mirror drift silently.
+    expect([MAX_TEXT_BYTES, MAX_IMAGE_BYTES, MAX_JSON_BYTES]).toEqual([4_000, 400_000, 64_000]);
+  });
+
+  it('refuses an order whose line items are too large rather than storing a truncated one', () => {
+    // Cutting JSON at an arbitrary byte leaves an unparseable order, which is worse for the
+    // manager reading it than an order that simply has not arrived yet.
+    const oversized = [{ id: 'i1', name: 'x'.repeat(MAX_JSON_BYTES) }];
+    expect(() => paramsFor('orders', { id: 'o1', items: oversized })).toThrow(/exceed/i);
+  });
+
+  it('still accepts an order whose line items fit', () => {
+    const items = paramsFor('orders', { id: 'o1', items: [{ id: 'i1', name: 'شاي' }] });
+    expect(items[0]).toBe('o1');
+    expect(JSON.parse(items[12] as string)).toEqual([{ id: 'i1', name: 'شاي' }]);
+  });
+
+  it('leaves a record with no oversized fields untouched', () => {
+    const [id, name, phone] = paramsFor('customers', { id: 'c1', name: 'أحمد', phone: '010' });
+    expect([id, name, phone]).toEqual(['c1', 'أحمد', '010']);
   });
 });
 
