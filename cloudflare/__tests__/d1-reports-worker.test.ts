@@ -190,13 +190,16 @@ describe('readSnapshot', () => {
     };
   }
 
-  const EMPTY = [[], [], [], [], [], []];
+  // Seven statements: five business collections, then the branch registry pair — live rows
+  // and the ids of entries a manager hid. The registry pair is why this is not six.
+  const EMPTY = [[], [], [], [], [], [], []];
 
   it('returns every collection the portal reads, including the stock ledger', async () => {
     const snapshot = await readSnapshot(fakeDb(EMPTY));
     expect(Object.keys(snapshot).sort()).toEqual([
       'branches',
       'customers',
+      'deletedBranchIds',
       'inventory',
       'menuItems',
       'movements',
@@ -215,6 +218,7 @@ describe('readSnapshot', () => {
         [{ id: 'm1' }],
         [{ id: 'tx1' }],
         [{ id: 'main' }],
+        [{ id: 'old-till' }],
       ])
     );
 
@@ -226,6 +230,7 @@ describe('readSnapshot', () => {
     expect(snapshot.menuItems).toEqual([{ id: 'm1' }]);
     expect(snapshot.movements).toEqual([{ id: 'tx1' }]);
     expect(snapshot.branches).toEqual([{ id: 'main' }]);
+    expect(snapshot.deletedBranchIds).toEqual(['old-till']);
   });
 
   it('stamps the server time so the portal can show data age', async () => {
@@ -245,7 +250,7 @@ describe('readSnapshot', () => {
     const snapshot = await readSnapshot(fakeDb([
       full(1000),          // orders: exactly at the cap, no probe row, so not truncated
       full(1001),          // customers: probe row present
-      [], [], [], [],
+      [], [], [], [], [],
     ]));
 
     expect(snapshot.truncated).toEqual({ customers: true });
@@ -256,7 +261,7 @@ describe('readSnapshot', () => {
 
   it('flags the movement ledger against its own larger cap', async () => {
     const full = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `r${i}` }));
-    const snapshot = await readSnapshot(fakeDb([[], [], [], [], full(MOVEMENT_LIMIT + 1), []]));
+    const snapshot = await readSnapshot(fakeDb([[], [], [], [], full(MOVEMENT_LIMIT + 1), [], []]));
     expect(snapshot.truncated).toEqual({ movements: true });
     expect(snapshot.movements).toHaveLength(MOVEMENT_LIMIT);
   });
@@ -275,7 +280,7 @@ describe('readSnapshot', () => {
   it('reads only, and never reaches the SQLite catalogue', async () => {
     const db = fakeDb(EMPTY);
     await readSnapshot(db);
-    expect(db.seen).toHaveLength(6);
+    expect(db.seen).toHaveLength(7);
     for (const { sql } of db.seen) {
       expect(sql.trim().toUpperCase().startsWith('SELECT')).toBe(true);
       expect(sql.toUpperCase()).not.toContain('SQLITE_MASTER');
@@ -541,16 +546,21 @@ describe('parseBranch', () => {
 });
 
 describe('branch registry statements', () => {
-  /** Records what was prepared and bound, so the SQL itself can be asserted. */
-  function recordingDb(rows = []) {
-    const seen = [];
+  /**
+   * Records what was prepared and bound, so the SQL itself can be asserted.
+   *
+   * `returning` is what the `RETURNING id` clause yields: a row when the write landed,
+   * `null` when the id is already reserved by a tombstone.
+   */
+  function recordingDb({ rows = [], deletedRows = [], returning = { id: 'main' } } = {}) {
+    const seen: { sql: string; bindings: unknown[] }[] = [];
     return {
       seen,
-      prepare(sql) {
-        const statement = { sql, bindings: [] };
+      prepare(sql: string) {
+        const statement: { sql: string; bindings: unknown[] } = { sql, bindings: [] };
         seen.push(statement);
         const chain = {
-          bind(...args) {
+          bind(...args: unknown[]) {
             statement.bindings = args;
             return chain;
           },
@@ -560,17 +570,48 @@ describe('branch registry statements', () => {
           async run() {
             return { success: true };
           },
+          async first() {
+            return returning;
+          },
         };
         return chain;
+      },
+      /** Replays the registry pair in the order `branchRegistryStatements` issues it. */
+      async batch(statements: unknown[]) {
+        return statements.map((_, index) => ({ results: index === 0 ? rows : deletedRows }));
       },
     };
   }
 
-  it('reads only live branches, newest cap applied', async () => {
-    const db = recordingDb([{ id: 'main', name: 'الفرع الرئيسي' }]);
-    expect(await readBranches(db)).toEqual([{ id: 'main', name: 'الفرع الرئيسي' }]);
+  it('reads live branches and the ids a manager hid, in one batch', async () => {
+    const db = recordingDb({
+      rows: [{ id: 'main', name: 'الفرع الرئيسي' }],
+      deletedRows: [{ id: 'old-till' }],
+    });
+
+    expect(await readBranches(db)).toEqual({
+      branches: [{ id: 'main', name: 'الفرع الرئيسي' }],
+      deletedBranchIds: ['old-till'],
+    });
+
+    expect(db.seen).toHaveLength(2);
     expect(db.seen[0].sql).toContain('deleted_at IS NULL');
     expect(db.seen[0].sql.trim().toUpperCase().startsWith('SELECT')).toBe(true);
+    expect(db.seen[1].sql).toContain('deleted_at IS NOT NULL');
+    // One row past the cap: the probe is how a full registry is told from a complete one.
+    expect(db.seen[0].bindings).toEqual([1001]);
+  });
+
+  it('fails loudly rather than reporting an incomplete registry as a complete one', async () => {
+    // A registry missing its tombstone set is indistinguishable from "nothing was ever
+    // hidden", and the portal would then present a hidden till as an unregistered one.
+    const db = {
+      prepare: () => ({ bind: () => ({}) }),
+      async batch() {
+        return [{ results: [] }];
+      },
+    };
+    await expect(readBranches(db as never)).rejects.toThrow(/could not be read completely/i);
   });
 
   it('updates an existing branch in place rather than duplicating it', async () => {
@@ -582,6 +623,15 @@ describe('branch registry statements', () => {
     expect(sql).toContain('ON CONFLICT(id) DO UPDATE');
     expect(sql).not.toMatch(/\bDELETE\b/i);
     expect(bindings.slice(0, 2)).toEqual(['main', 'اسم جديد']);
+  });
+
+  it('refuses to resurrect a hidden id, so a delete cannot be undone by a rename', async () => {
+    // The `WHERE branches.deleted_at IS NULL ... RETURNING id` pair makes the reserve check
+    // atomic: a separate existence check could be passed by a delete landing straight after.
+    const db = recordingDb({ returning: null });
+    await expect(
+      saveBranch(db, { id: 'old-till', name: 'فرع قديم', phone: '', address: '', active: 1 })
+    ).rejects.toThrow(/deleted and is reserved/i);
   });
 });
 
