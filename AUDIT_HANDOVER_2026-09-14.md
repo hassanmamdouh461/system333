@@ -195,10 +195,54 @@ till-facing portal and it cannot be verified here without loading the page.
 **Decide what `outputs/` is.** Generated diagnostics, currently untracked and unignored. It
 no longer breaks lint either way, but one `git add .` commits it.
 
-**End-to-end sync is still unverified.** The last confirmed state was an authenticated
-`/pull/orders` returning HTTP 400 `Missing sql or batch` against the brewmaster service, with
-44 rows parked in the local database. None of the work on this branch changes that; it needs
-a desktop run against staging before any production claim is made.
+**Rotate `VITE_CF_WORKER_API_KEY`.** The value in `.env` is `brewmaster-pos-2026` — a
+low-entropy literal that is now the live production key for `engaz-d1-proxy`. It is readable
+from disk, has appeared in tool output, and is inlined into any browser bundle built from
+this checkout. Rotating it is the only way to invalidate it, and it requires updating the
+key on every till.
+
+---
+
+## 7. POS sync: wired, and end-to-end verified
+
+The last open item from section 6 is now closed. What it took:
+
+| Step | Result |
+|---|---|
+| Created D1 `engaz-pos-db` | `6e8450b3-2b08-46f2-8b80-a85ccce6b21f` |
+| Deployed `engaz-d1-proxy` (workers.dev) | `https://engaz-d1-proxy.hassanmamdouh461.workers.dev` |
+| Worker could not bootstrap a fresh D1 | fixed: `CREATE TABLE IF NOT EXISTS` at the head of `runMigration`, label `0004_self_bootstrap` |
+| Pointed the POS at it | `.env` and the live `settings` table both hold the new URL; key unchanged |
+| 44 rows still not moving | they had exhausted `MAX_SYNC_ATTEMPTS` and were excluded from every batch — released, and now released automatically when the URL changes |
+
+**Verified in both directions:** the till pushed 41 menu items, 2 cashiers and 1 order; the
+next cycle pulled 1 order and 2 cashiers back. Cloud and device now agree — cloud holds 1
+order, 2 cashiers and 1 live menu item, which matches the device once its 40 tombstones are
+accounted for. Incremental pulls are succeeding and pending work is zero.
+
+### The trap that made this look fixed when it was not
+
+`getSyncStats()` excludes rows at `MAX_SYNC_ATTEMPTS`, so once every row parked, the engine
+reported `Found 0 pending records before push` and `Sync cycle completed successfully` on
+every cycle — with the branch's data still on the device and nothing on screen saying so.
+The `sync:retry-parked-rows` IPC and `database.resetSyncAttempts` both existed; nothing in
+`src/` called them. A parked row was parked permanently.
+
+`releaseParkedSyncRows()` now runs when the resolved worker URL actually changes, because a
+wrong URL is the most common reason a whole branch parks at once. It is scoped to rows at
+the budget rather than to every unsynced row: a row that has failed once carries a real
+count, and clearing it would hand out five fresh attempts to work that is still failing for
+a reason nobody has looked at.
+
+### One caveat, deliberately not changed
+
+`buildSyncStatements` turns a deleted record into `UPDATE ... SET deleted_at WHERE id = ?`
+rather than an upsert, so a tombstone for a row the cloud never had is a no-op. That is why
+the 40 locally-deleted seeded items correctly left no rows in the fresh database. The gap:
+a sibling branch that later pushes that id with an older `updated_at` would resurrect it,
+because no tombstone exists to stop it. Changing this alters the tombstone data model and
+table growth, so it needs a decision rather than a patch. Relatedly, `/sync` reports
+`written: statements.length`, which claims success for statements that matched nothing.
 
 **Raise the rate budget deliberately if branches still report 429s.** Both budgets are now
 settable via `RATE_MAX_REQUESTS` and `SYNC_RATE_MAX_REQUESTS` without a code change.
