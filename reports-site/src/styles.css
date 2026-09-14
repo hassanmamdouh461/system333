@@ -412,6 +412,13 @@ select.control {
   border: 1px solid var(--rose-line);
 }
 
+/* A warning, not an error: the figures below it are real, just not complete. */
+.banner.is-warning {
+  background: var(--amber-soft);
+  color: var(--amber);
+  border: 1px solid var(--amber-line);
+}
+
 /* ─── Metric cards ─────────────────────────────────────────────────────────── */
 
 .stat-grid {

@@ -1,7 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { checkRateLimit, timingSafeEqual, __testing } from '../d1-proxy-worker.js';
 
-const { SYNC_TABLES, buildSyncStatements, assertItems, MAX_BATCH } = __testing;
+const {
+  SYNC_TABLES, buildSyncStatements, assertItems, MAX_BATCH,
+  MAX_TEXT_BYTES, MAX_IMAGE_BYTES, MAX_JSON_BYTES, BRANCH_ID_MAX,
+} = __testing;
 
 /**
  * Minimal stand-in for the D1 binding. Records what each statement was and what it was
@@ -81,6 +84,36 @@ describe('buildSyncStatements', () => {
     expect(db.prepared[0].sql).not.toContain('DELETE');
   });
 
+  it('guards a soft delete with the same last-writer-wins predicate as an upsert', () => {
+    // A tombstone that ignores timestamps lets a stale delete from an offline branch
+    // erase a row another branch edited more recently.
+    const db = fakeDb();
+    buildSyncStatements(db, SYNC_TABLES.orders, [
+      { id: 'o1', deletedAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z' },
+    ]);
+
+    const { sql, params } = db.prepared[0];
+    expect(sql).toContain('SET deleted_at = ?');
+    expect(sql).toMatch(/AND \(updated_at IS NULL OR \? > updated_at\)/);
+
+    // The guard is compared against the incoming timestamp, not against NULL.
+    expect(params[0]).toBe('2026-01-01T00:00:00.000Z');
+    expect(params[2]).toBe('o1');
+    expect(params[3]).toBe('2026-01-01T00:00:00.000Z');
+  });
+
+  it('falls back to deletedAt when a delete carries no updatedAt', () => {
+    // The tombstone still needs a comparable timestamp, otherwise the guard would compare
+    // against NULL and silently drop every delete that omits one.
+    const db = fakeDb();
+    buildSyncStatements(db, SYNC_TABLES.orders, [
+      { id: 'o1', deletedAt: '2026-01-01T00:00:00.000Z' },
+    ]);
+
+    expect(db.prepared[0].params[1]).toBe('2026-01-01T00:00:00.000Z');
+    expect(db.prepared[0].params[3]).toBe('2026-01-01T00:00:00.000Z');
+  });
+
   it('guards every upsert with a last-writer-wins predicate', () => {
     // Without this an older local row can overwrite newer cloud data, and a resurrected
     // row reappears on branches that deleted it.
@@ -126,6 +159,94 @@ describe('buildSyncStatements', () => {
     const itemsParam = db.prepared[0].params[3];
     expect(typeof itemsParam).toBe('string');
     expect(JSON.parse(itemsParam as string)).toHaveLength(1);
+  });
+});
+
+describe('sync field size limits', () => {
+  /**
+   * Every one of these is about the same failure: one authenticated call carries up to
+   * MAX_BATCH records, so an unbounded field multiplies into tens of megabytes in a single
+   * request, and one oversized record fails the batch for everyone in it.
+   */
+  it('truncates an oversized menu text field instead of failing the batch', () => {
+    const db = fakeDb();
+    buildSyncStatements(db, SYNC_TABLES['menu-items'], [
+      { id: 'm1', name: 'x'.repeat(MAX_TEXT_BYTES + 500), description: 'ي'.repeat(MAX_TEXT_BYTES + 1) },
+    ]);
+    const params = db.prepared[0].params;
+    expect(params[1]).toHaveLength(MAX_TEXT_BYTES);
+    expect(params[2]).toHaveLength(MAX_TEXT_BYTES);
+  });
+
+  it('truncates a menu image to its own larger cap', () => {
+    // A base64 photo is legitimately bigger than a name, so it has a separate limit.
+    const db = fakeDb();
+    buildSyncStatements(db, SYNC_TABLES['menu-items'], [
+      { id: 'm1', image: 'A'.repeat(MAX_IMAGE_BYTES + 10) },
+    ]);
+    expect(db.prepared[0].params[5]).toHaveLength(MAX_IMAGE_BYTES);
+  });
+
+  it('leaves a field under the cap untouched', () => {
+    const db = fakeDb();
+    buildSyncStatements(db, SYNC_TABLES['menu-items'], [{ id: 'm1', name: 'Latte' }]);
+    expect(db.prepared[0].params[1]).toBe('Latte');
+  });
+
+  it('refuses order items too large to store rather than writing corrupt JSON', () => {
+    // Truncating JSON produces an unparseable column, which breaks the order on every
+    // screen that reads it. Refusing leaves the row unsynced and readable.
+    const db = fakeDb();
+    const huge = [{ name: 'x'.repeat(MAX_JSON_BYTES), quantity: 1 }];
+    expect(() => buildSyncStatements(db, SYNC_TABLES.orders, [{ id: 'o1', items: huge }]))
+      .toThrow(/items/i);
+    // The statement was prepared but never bound, so nothing reaches D1 for this record.
+    expect(db.prepared[0].params).toHaveLength(0);
+  });
+
+  it('accepts order items within the cap', () => {
+    const db = fakeDb();
+    buildSyncStatements(db, SYNC_TABLES.orders, [
+      { id: 'o1', items: [{ name: 'x'.repeat(100), quantity: 1 }] },
+    ]);
+    expect(db.prepared).toHaveLength(1);
+  });
+
+  it('rejects a branch id too long to be a real branch', () => {
+    // The id is copied onto every row the branch writes, so an oversized one is not just a
+    // bad value — it is stored thousands of times and matched by nothing.
+    const db = fakeDb();
+    expect(() => buildSyncStatements(db, SYNC_TABLES.orders, [
+      { id: 'o1', branchId: 'b'.repeat(BRANCH_ID_MAX + 1) },
+    ])).toThrow(/branchId/i);
+  });
+
+  it('still accepts a short branch id and a missing one', () => {
+    // A row written before the branch feature existed has no branch; NULL means shared and
+    // must keep syncing, otherwise every legacy row would be stranded.
+    const db = fakeDb();
+    buildSyncStatements(db, SYNC_TABLES.orders, [{ id: 'o1', branchId: 'maadi-2' }]);
+    expect(db.prepared[0].params[18]).toBe('maadi-2');
+
+    const db2 = fakeDb();
+    buildSyncStatements(db2, SYNC_TABLES.orders, [{ id: 'o2' }]);
+    expect(db2.prepared[0].params[18]).toBeNull();
+  });
+
+  it('bounds the free-text fields of every table that has one', () => {
+    const cases: Array<[keyof typeof SYNC_TABLES, Record<string, unknown>, number]> = [
+      ['orders', { id: 'o1', customerPhone: 'p'.repeat(9999), orderNumber: 'n'.repeat(9999) }, MAX_TEXT_BYTES],
+      ['customers', { id: 'c1', name: 'n'.repeat(9999), phone: 'p'.repeat(9999) }, MAX_TEXT_BYTES],
+      ['inventory', { id: 'i1', name: 'n'.repeat(9999), unit: 'u'.repeat(9999) }, MAX_TEXT_BYTES],
+      ['inventory-transactions', { id: 't1', notes: 'n'.repeat(9999) }, MAX_TEXT_BYTES],
+    ];
+    for (const [target, record, cap] of cases) {
+      const db = fakeDb();
+      buildSyncStatements(db, SYNC_TABLES[target], [record]);
+      for (const param of db.prepared[0].params) {
+        if (typeof param === 'string') expect(param.length).toBeLessThanOrEqual(cap);
+      }
+    }
   });
 });
 

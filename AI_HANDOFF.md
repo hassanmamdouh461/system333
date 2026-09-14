@@ -95,8 +95,8 @@ React (src/) ──IPC via preload.cjs──► Electron Main (electron/*.cjs)
 ```bash
 npm run lint            # ESLint — max-warnings 0
 npx --no-install tsc --noEmit
-npm test                # Vitest: 217 اختبار (واجهة + عمال Cloudflare)
-npm run test:electron-unit   # 19 اختبار node:test على SQLite معزول (:memory:)
+npm test                # Vitest: 223 اختبار (واجهة + عمال Cloudflare)
+npm run test:electron-unit   # 21 اختبار node:test على SQLite معزول (:memory:)
 npm run test:tooling    # فحص أدوات البناء
 npm run test:native     # فحص Electron حي + better-sqlite3 (يجب يطبع ENGAZ_NATIVE_SMOKE_OK)
 npm run build           # vite build + بصمة freshness
@@ -109,6 +109,25 @@ cd reports-site && npx tsc --noEmit -p tsconfig.json && npm run build
 ```
 
 CI (`.github/workflows/ci.yml`) يشغّل نفس المجموعتين.
+
+### أُصلح في جلسة الفحص الشامل (14 سبتمبر 2026)
+
+التقرير الكامل في `PROJECT_AUDIT_2026-09-14.md`. المُصلَح في هذه الجلسة:
+
+1. **تسريب المخزون عند الإلغاء (حرج)** — `electron/InventoryRepository.cjs`: `restoreInventoryForOrder` كان يخصم «إجمالي المُرتجع» من كل سطر `OUT` على حدة، فطلب فيه سطران لنفس الصنف يردّ نصف الكمية فقط. صار الرصيد المستحق يُحسب لإجمالي سطور الصنف ثم يُوزَّع عليها. اختباران يثبتان ذلك (الصنف المكرر، والإلغاء المتكرر).
+2. **CI كان أحمر دائماً (حرج)** — `npm audit` الكامل يفشل بسبب Electron 29. صار `npm audit --omit=dev` في الوظيفتين، والدين موثّق في README مع سبب بقاء Electron على 29.
+3. **حذف بلا حارس LWW (حرج)** — `cloudflare/d1-proxy-worker.js`: مسار الحذف الناعم كان يوسم الحذف بلا شرط زمني، بعكس كل الـ upserts. أُضيف `(updated_at IS NULL OR ? > updated_at)` مع الرجوع إلى `deletedAt` عند غياب `updatedAt`.
+4. **نطاق الفرع ناقص** — `MenuRepository`/`InventoryRepository`/`OrderRepository`: الكتابة والقراءة والإحصاء اليومي كانت تتجاهل الفرع، و`resolveBranch` كان يقبل `'manager'`/`'default'`. صار الفلتر `(branch_id = ? OR branch_id IS NULL)` في كل مسار، والإحصاء يستثني الملغاة.
+5. **مفتاح API مقروء من الرندرر** — `electron/main.cjs`: `db:get-settings` كان يُرجع `engaz_d1_worker_api_key` و`engaz_admin_creds`. صارا **كتابة فقط** عبر `SETTINGS_WRITE_ONLY`.
+6. **محرك المزامنة يبتلع الأخطاء** — `syncEngine.cjs`: فشل دفع المخزون/النقاط كان يُسجَّل في console فقط فتظهر المزامنة ناجحة. صار يُدفع إلى `phaseErrors`. و`getSyncStats` كان يحسب صفوفاً تجاوزت `MAX_SYNC_ATTEMPTS` فلن تُنقل أبداً.
+7. **حساب المال مكرّر** — `POSView.tsx` كان يحسب الإجمالي يدوياً بصيغة تخالف الخادم؛ صار يستدعي `buildOrderTotals`/`roundMoney`. و`createOrder` صار يمنع `paidAmount` بالسالب.
+8. **حقول بلا حدود للحجم** — `d1-proxy-worker.js`: عند `MAX_BATCH = 200` يمكن لطلب واحد مصادَق عليه أن يحمل عشرات الميغابايت. أُضيف `MAX_TEXT_BYTES`/`MAX_IMAGE_BYTES`/`MAX_JSON_BYTES` وفحص `Content-Length` قبل قراءة الجسم (413). عناصر الطلب تُرفض بدل اقتطاعها لأن قطع JSON يُنتج عموداً غير قابل للقراءة.
+9. **القائمة العامة كانت تفشل مفتوحة (fail-open)** — `d1-reports-worker.js`: عند تعذّر قراءة إعداد القائمة (JSON تالف أو فشل قراءة) كان يُرجع **كل** الأصناف بلا فلتر، فيُنشر ما أخفاه المدير. صار يميّز «لا إعداد منشور» (يعرض الكل — صحيح) عن «إعداد غير مقروء» (يحجب القائمة كلها، 503).
+10. **اقتطاع صامت** — كان العامل يقطع عند 1000 طلب / 5000 حركة بلا إشارة، فتظهر إيرادات ناقصة كأنها نهائية. صار يقرأ صفاً إضافياً (`LIMIT cap + 1`) ويُرجع `truncated`؛ البوابة تعرض شريط تحذير كهرماني.
+11. **البوابة: مؤشّر تحميل يلتصق** — `App.tsx`: `setLoading(false)` كان مشروطاً بـ`!options.silent`، فاستطلاع خلفي يرفع `requestId` يترك المؤشّر معلقاً للأبد. صار يُمسح عند استقرار أحدث طلب. وأُضيفت مهلة 30 ثانية ورسائل خطأ عربية بدل رسائل الـ parser الإنجليزية عند استجابة HTML.
+12. **CSV يعدّ غير المدفوع محصّلاً** — `csv.ts`: `orderRevenue` يرجع إلى `grandTotal` عند `paidAmount = null`، وهو صحيح للطلب المدفوع القديم لكنه يكتب فاتورة غير مدفوعة بالكامل في عمود «المحصل». صار `orderCollected` يطبّق الرجوع على المدفوع فقط.
+13. **`workers_dev = true`** في ثلاثة إعدادات wrangler: كان ينشر كل عامل/موقع أيضاً على `*.workers.dev` — عنوان عام ثانٍ مرتبط بنفس قاعدة البيانات وخارج كل قاعدة WAF/Access مربوطة بالنطاق الرسمي. صار `false` في الأربعة.
+14. **مسارات نسبية في سكربت النشر** — `deploy-reports.ps1` ينسخ الإعداد إلى `%TEMP%`، وwrangler يحلّ `main` و`assets.directory` نسبةً إلى **مجلد الإعداد** لا مجلد العمل، فكانت تشير إلى `%TEMP%\cloudflare\...`. صارت تُعاد كتابتها كمسارات مطلقة قبل النشر.
 
 ## 9) حالة الشجرة الحالية (سبتمبر 2026)
 

@@ -2,6 +2,11 @@ name = "engaz-d1-proxy"
 main = "cloudflare/d1-proxy-worker.js"
 compatibility_date = "2025-01-01"
 
+# Stated explicitly rather than left to the default, which differs between wrangler
+# versions. This worker is bound to the production POS database, so it must be reachable on
+# exactly one hostname: api.engaz.tech.
+workers_dev = false
+
 # Route the worker on the production API subdomain. The zone (engaz.tech) must be on
 # this same Cloudflare account; wrangler resolves the zone_id automatically by name.
 # If the route conflicts with an existing deployment, remove `routes` below and use:

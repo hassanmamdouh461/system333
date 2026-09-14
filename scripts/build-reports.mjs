@@ -6,6 +6,14 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const portal = join(root, 'reports-site');
 const sensitiveName = /(?:KEY|SECRET|PASSWORD|TOKEN|CREDENTIAL)/i;
+
+// A credential shorter than this is not a credential. The distinction matters because the
+// caller sweeps the whole environment, which routinely carries variables whose *name* merely
+// looks sensitive while the value is trivial — for example "..._API_KEY_HELPER_DISABLED=1".
+// Treating "1" as a secret makes the scan match every file, so the build passes or fails
+// depending on which shell happens to run it. Detection by name below still covers those.
+const MIN_SECRET_LENGTH = 8;
+
 export function scanBundle(directory, secrets) {
   let files = 0;
   const visit = (dir) => {
@@ -14,7 +22,7 @@ export function scanBundle(directory, secrets) {
       if (entry.isDirectory()) { visit(path); continue; }
       const text = readFileSync(path, 'utf8');
       files++;
-      if (secrets.some(value => value && text.includes(value))
+      if (secrets.some(value => value && value.length >= MIN_SECRET_LENGTH && text.includes(value))
           || /VITE_[A-Z_]*(?:API_KEY|SECRET|PASSWORD|TOKEN)|X-API-Key/i.test(text)) {
         // Never echo matched values or bundle source; either can contain credentials.
         throw new Error(`Portal secret scan failed in ${entry.name}`);

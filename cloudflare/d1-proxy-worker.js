@@ -145,6 +145,38 @@ function nowIso() {
   return new Date().toISOString();
 }
 
+// Unbounded text is the cheapest way to hurt this worker: at MAX_BATCH 200 records a single
+// authenticated call could otherwise carry tens of megabytes into D1, and one oversized
+// record fails the whole batch.
+const MAX_TEXT_BYTES = 4_000;
+const MAX_IMAGE_BYTES = 400_000;
+const MAX_JSON_BYTES = 64_000;
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
+
+function capped(value, max) {
+  if (value === null || value === undefined) return value;
+  const text = String(value);
+  return text.length > max ? text.slice(0, max) : text;
+}
+
+// The branch id is stamped on every row and compared literally in every filter. Its character
+// rules are enforced where ids are created (the reports worker registry and the desktop
+// identity form) — re-validating them here would strand any branch created before the rule
+// existed, because its rows would fail every batch forever. Length is the part that is safe to
+// check on the sync path: an oversized id can never belong to a real branch, and it would be
+// copied onto every row the branch writes.
+const BRANCH_ID_MAX = 40;
+
+function branchIdOf(record) {
+  const raw = str(record.branchId ?? record.branch_id);
+  if (raw === null) return null;
+  const id = raw.trim();
+  if (id.length > BRANCH_ID_MAX) {
+    throw rejected(`branchId must be at most ${BRANCH_ID_MAX} characters`);
+  }
+  return id;
+}
+
 function rejected(message) {
   const error = new Error(message);
   error.isRejection = true;
@@ -173,6 +205,20 @@ function cashierAvatar(value) {
     throw rejected(`Cashier avatar must be a raster base64 data URI of at most ${MAX_AVATAR_CHARS} characters`);
   }
   return value;
+}
+
+/**
+ * The order's line items, as the JSON text the column stores.
+ *
+ * Already-encoded text is passed through: the desktop stores this column as a string and
+ * re-sends it verbatim, so re-encoding would double-escape it.
+ */
+function orderItemsJson(items) {
+  const text = typeof items === 'string' ? items : JSON.stringify(items ?? []);
+  if (text.length > MAX_JSON_BYTES) {
+    throw rejected(`Order items exceed ${MAX_JSON_BYTES} characters`);
+  }
+  return text;
 }
 
 function recordUpdatedAt(record) {
@@ -208,13 +254,13 @@ const SYNC_TABLES = {
                 OR (excluded.updated_at = menu_items.updated_at AND excluded.deleted_at IS NOT NULL AND menu_items.deleted_at IS NULL)`,
     upsertParams: (i) => [
       str(i.id),
-      str(i.name, ''),
-      str(i.description, ''),
+      capped(str(i.name, ''), MAX_TEXT_BYTES),
+      capped(str(i.description, ''), MAX_TEXT_BYTES),
       num(i.price, 0),
-      str(i.category, ''),
-      str(i.image, ''),
+      capped(str(i.category, ''), MAX_TEXT_BYTES),
+      capped(str(i.image, ''), MAX_IMAGE_BYTES),
       bool01(i.available),
-      str(i.branchId ?? i.branch_id),
+      branchIdOf(i),
       recordUpdatedAt(i),
       str(i.deletedAt ?? i.deleted_at),
     ],
@@ -250,9 +296,12 @@ const SYNC_TABLES = {
                 OR (excluded.updated_at = orders.updated_at AND excluded.deleted_at IS NOT NULL AND orders.deleted_at IS NULL)`,
     upsertParams: (o) => [
       str(o.id),
-      str(o.orderNumber, ''),
-      str(o.tableId, ''),
-      typeof o.items === 'string' ? o.items : JSON.stringify(o.items ?? []),
+      capped(str(o.orderNumber, ''), MAX_TEXT_BYTES),
+      capped(str(o.tableId, ''), MAX_TEXT_BYTES),
+      // The line items are the largest field an order carries and the one most likely to be
+      // pathological. Truncating JSON would corrupt the order, so an oversized payload is
+      // refused instead and the row stays unsynced rather than storing something unreadable.
+      orderItemsJson(o.items),
       str(o.status, 'New'),
       str(o.paymentStatus, 'Unpaid'),
       str(o.paymentMethod),
@@ -264,10 +313,10 @@ const SYNC_TABLES = {
       num(o.paidAmount),
       str(o.createdAt, nowIso()),
       str(o.paidAt),
-      str(o.customerPhone),
+      capped(str(o.customerPhone), MAX_TEXT_BYTES),
       num(o.pointsEarned, 0),
       num(o.pointsRedeemed, 0),
-      str(o.branchId ?? o.branch_id),
+      branchIdOf(o),
       cashierName(o.cashierName),
       cashierAvatar(o.cashierAvatar),
       recordUpdatedAt(o),
@@ -288,11 +337,11 @@ const SYNC_TABLES = {
              WHERE excluded.updated_at > customers.updated_at OR customers.updated_at IS NULL`,
     upsertParams: (c) => [
       str(c.id),
-      str(c.name, ''),
-      str(c.phone, ''),
+      capped(str(c.name, ''), MAX_TEXT_BYTES),
+      capped(str(c.phone, ''), MAX_TEXT_BYTES),
       num(c.points, 0),
       str(c.createdAt, nowIso()),
-      str(c.branchId ?? c.branch_id),
+      branchIdOf(c),
       recordUpdatedAt(c),
       str(c.deletedAt ?? c.deleted_at),
     ],
@@ -313,12 +362,12 @@ const SYNC_TABLES = {
              WHERE excluded.updated_at > inventory.updated_at OR inventory.updated_at IS NULL`,
     upsertParams: (i) => [
       str(i.id),
-      str(i.name, ''),
-      str(i.unit, ''),
+      capped(str(i.name, ''), MAX_TEXT_BYTES),
+      capped(str(i.unit, ''), MAX_TEXT_BYTES),
       num(i.stock, 0),
       num(i.minStock, 0),
       num(i.costPerUnit, 0),
-      str(i.branchId ?? i.branch_id),
+      branchIdOf(i),
       str(i.createdAt ?? i.created_at, nowIso()),
       recordUpdatedAt(i),
       str(i.deletedAt ?? i.deleted_at),
@@ -334,7 +383,7 @@ const SYNC_TABLES = {
                updated_at = excluded.updated_at
              WHERE excluded.updated_at > cashiers.updated_at OR cashiers.updated_at IS NULL`,
     upsertParams: (c) => [
-      str(c.id), cashierName(c.name, true), cashierAvatar(c.avatar), str(c.branchId ?? c.branch_id),
+      str(c.id), cashierName(c.name, true), cashierAvatar(c.avatar), branchIdOf(c),
       str(c.createdAt ?? c.created_at, nowIso()), recordUpdatedAt(c), str(c.deletedAt ?? c.deleted_at),
     ],
   },
@@ -351,10 +400,10 @@ const SYNC_TABLES = {
       str(tx.itemId, ''),
       str(tx.type, ''),
       num(tx.quantity, 0),
-      str(tx.referenceId),
+      capped(str(tx.referenceId), MAX_TEXT_BYTES),
       str(tx.createdAt, nowIso()),
-      str(tx.branchId ?? tx.branch_id),
-      str(tx.notes),
+      branchIdOf(tx),
+      capped(str(tx.notes), MAX_TEXT_BYTES),
     ],
   },
 
@@ -366,12 +415,12 @@ const SYNC_TABLES = {
     upsertParams: (e) => [
       str(e.id),
       str(e.customerId, ''),
-      str(e.orderId),
+      capped(str(e.orderId), MAX_TEXT_BYTES),
       str(e.type, ''),
       num(e.points, 0),
       num(e.balanceAfter),
       str(e.createdAt, nowIso()),
-      str(e.branchId ?? e.branch_id),
+      branchIdOf(e),
     ],
   },
 };
@@ -389,9 +438,14 @@ function buildSyncStatements(db, spec, items) {
 
     if (!spec.appendOnly && isDeleted(record)) {
       const deletedAt = str(record.deletedAt ?? record.deleted_at);
+      // The tombstone must obey the same last-writer-wins rule as every upsert. Without the
+      // timestamp predicate a branch that was offline, or any client with a skewed clock,
+      // re-sending an old delete wipes a row another branch edited more recently.
+      const effectiveAt = str(record.updatedAt ?? record.updated_at, deletedAt);
       statements.push(
-        db.prepare(`UPDATE ${spec.table} SET deleted_at = ?, updated_at = ? WHERE id = ?`)
-          .bind(deletedAt, str(record.updatedAt ?? record.updated_at, deletedAt), str(record.id))
+        db.prepare(
+          `UPDATE ${spec.table} SET deleted_at = ?, updated_at = ? WHERE id = ? AND (updated_at IS NULL OR ? > updated_at)`
+        ).bind(deletedAt, effectiveAt, str(record.id), effectiveAt)
       );
       continue;
     }
@@ -616,10 +670,21 @@ export default {
       }, failed.length === 0 ? 200 : 500, origin, env);
     }
 
+    // Checked before the body is read: an authenticated caller sending a very large body
+    // should be refused on the header, not after it has been buffered into the isolate.
+    const declaredLength = Number(request.headers.get('Content-Length') || '0');
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+      return json({ success: false, error: 'Request body too large' }, 413, origin, env);
+    }
+
+    // Buffered rather than streamed, which is safe only because the limit above already
+    // bounded it. Reading the text first also means a POST with no body — no Content-Length
+    // at all when the client chunks — is an empty payload instead of a parse failure.
+    const body = await request.text();
     let payload = {};
-    if (request.headers.get('Content-Length') !== '0') {
+    if (body.trim()) {
       try {
-        payload = await request.json();
+        payload = JSON.parse(body);
       } catch {
         return json({ success: false, error: 'Invalid JSON body' }, 400, origin, env);
       }
@@ -686,4 +751,8 @@ export default {
 };
 
 // Exported for the test suite; not part of the HTTP surface.
-export const __testing = { SYNC_TABLES, buildSyncStatements, assertItems, MAX_BATCH, RATE_MAX_REQUESTS, PULL_PAGE_SIZE, pullTableWithCursor };
+export const __testing = {
+  SYNC_TABLES, buildSyncStatements, assertItems, MAX_BATCH, RATE_MAX_REQUESTS, PULL_PAGE_SIZE,
+  pullTableWithCursor, MAX_TEXT_BYTES, MAX_IMAGE_BYTES, MAX_JSON_BYTES, MAX_BODY_BYTES,
+  BRANCH_ID_MAX,
+};

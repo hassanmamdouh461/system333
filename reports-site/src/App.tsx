@@ -71,6 +71,7 @@ export default function App() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [truncated, setTruncated] = useState<string[]>([]);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [prefersDark, setPrefersDark] = useState(() => window.matchMedia(DARK_QUERY).matches);
 
@@ -127,8 +128,9 @@ export default function App() {
     setInventory([]);
     setMenuItems([]);
     setMovements([]);
-    setBranchRows([]);
-    setLastUpdated(null);
+        setBranchRows([]);
+        setTruncated([]);
+        setLastUpdated(null);
   }, []);
 
   const loadData = useCallback(
@@ -144,6 +146,7 @@ export default function App() {
         setMenuItems(snapshot.menuItems as unknown as MenuItemRow[]);
         setMovements(snapshot.movements as unknown as StockMovementRow[]);
         setBranchRows(snapshot.branches as unknown as BranchRow[]);
+        setTruncated(Object.keys(snapshot.truncated || {}));
         setLastUpdated(new Date(snapshot.serverTime));
         setError(null);
       } catch (e) {
@@ -155,7 +158,11 @@ export default function App() {
         }
         setError((e as Error).message || 'تعذر تحميل البيانات');
       } finally {
-        if (id === requestId.current && !options.silent) setLoading(false);
+        // Cleared by whichever request is newest when it settles, regardless of whether it
+        // was silent. Clearing only for non-silent requests hangs the spinner: a background
+        // poll bumps the request id, so the request that raised the flag stops being the
+        // newest and never clears it, and the silent one never intended to.
+        if (id === requestId.current) setLoading(false);
       }
     },
     [signOut]
@@ -404,7 +411,16 @@ export default function App() {
 
       {error && (
         <p className="banner is-error" role="alert">
-          تعذر الاتصال بقاعدة البيانات: {error}
+          {error}
+        </p>
+      )}
+
+      {truncated.length > 0 && (
+        <p className="banner is-warning" role="status">
+          هذه الأرقام أقل من الحقيقي: لم تُحمّل كل الصفوف
+          {truncated.includes('orders') ? ' (الطلبات)' : ''}
+          {truncated.includes('movements') ? ' (حركات المخزون)' : ''}.
+          {' '}استخدم نطاقًا زمنيًا أضيق أو فلتر فرع للحصول على إجمالي دقيق.
         </p>
       )}
 

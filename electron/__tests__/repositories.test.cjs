@@ -363,6 +363,149 @@ describe('Repositories & Outbox Unit Tests (Isolated SQLite)', () => {
       assert.equal(inventoryRepository.getInventoryItem(item.id).stock, 7);
     });
 
+    test('getSyncStats can reach zero when work is parked or belongs to another branch', () => {
+      // A count that can never reach zero pins the cycle to 'syncing', which keeps
+      // consecutiveFailures at 0 — no backoff, polling forever with nothing to show for it.
+      // Stock 0 on purpose: a non-zero opening balance also writes a ledger row, which
+      // would keep the inventory total above zero for an unrelated reason.
+      const item = inventoryRepository.createInventoryItem({ name: 'Beans', unit: 'kg', stock: 0, minStock: 2, costPerUnit: 100 });
+      assert.ok(database.getSyncStats().pendingInventory >= 1, 'a fresh row counts as pending work');
+
+      for (let attempt = 0; attempt < 5; attempt += 1) {
+        database.markSyncFailure('inventory', [item.id], 'worker rejected the row');
+      }
+      assert.equal(database.getSyncStats().pendingInventory, 0, 'a parked row is no longer pending work');
+
+      const now = new Date().toISOString();
+      database.getDb().prepare(`
+        INSERT INTO inventory (id, name, unit, stock, minStock, costPerUnit, branch_id, is_synced, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+      `).run('inv-other-branch', 'Other Bean', 'kg', 5, 0, 10, 'other-branch', now, now);
+
+      assert.equal(
+        database.getSyncStats().totalPending,
+        0,
+        'another branch row is never pushed by this till, so it must not block convergence'
+      );
+    });
+
+    test('inventory: a "manager" scope from the renderer does not widen to the whole chain', () => {
+      inventoryRepository.createInventoryItem({ name: 'Beans', unit: 'kg', stock: 10, minStock: 2, costPerUnit: 100 });
+
+      // Simulate a row pulled from the cloud that belongs to another branch.
+      inventoryRepository.upsertPulledInventory([
+        { id: 'inv-foreign', name: 'Foreign Beans', unit: 'kg', stock: 99, minStock: 1, costPerUnit: 10, branch_id: 'other-branch', created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z', deleted_at: null },
+      ]);
+
+      // 'manager' and 'default' used to be accepted and returned every branch's stock.
+      assert.throws(() => inventoryRepository.getInventory('manager'), /another branch/i);
+      assert.throws(() => inventoryRepository.getInventory('default'), /another branch/i);
+
+      const names = inventoryRepository.getInventory().map(i => i.name);
+      assert.ok(names.includes('Beans'));
+      assert.ok(!names.includes('Foreign Beans'), 'another branch stock must never reach this till');
+    });
+
+    test('menu: a foreign branchId on create cannot file an item under another branch', () => {
+      const item = menuRepository.createMenuItem({
+        name: 'Smuggled Item', price: 10, category: 'Hot Coffee|Bar', branchId: 'other-branch',
+      });
+      assert.equal(item.branchId, 'branch-1', 'an untrusted branchId must not be honoured');
+      assert.ok(menuRepository.getMenu().some(m => m.id === item.id), 'and the row stays readable here');
+    });
+
+    test('menu: update and delete cannot reach another branch row', () => {
+      menuRepository.upsertPulledMenuItems([
+        { id: 'menu-foreign', name: 'Foreign Cake', price: 50, category: 'Desserts|Kitchen', branch_id: 'other-branch', created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z' },
+      ]);
+
+      // The row is only reachable through the pull path, never through the IPC mutations.
+      assert.equal(menuRepository.getMenuItem('menu-foreign'), null);
+
+      const updated = menuRepository.updateMenuItem('menu-foreign', { name: 'Renamed By Stranger' });
+      assert.equal(updated, null, 'another branch item must not be editable by id alone');
+
+      menuRepository.deleteMenuItem('menu-foreign');
+
+      const sqlite = database.getDb();
+      const row = sqlite.prepare('SELECT deleted_at FROM menu_items WHERE id = ?').get('menu-foreign');
+      assert.equal(row.deleted_at, null, 'another branch item must not be tombstoned by id alone');
+    });
+
+    test('getDailyReportStats counts only this branch and skips cancelled orders', () => {
+      const now = new Date().toISOString();
+      orderRepository.createOrder({
+        tableId: 'T1', orderNumber: 'D-1', items: [{ id: 'i1', name: 'Coffee', price: 30, quantity: 1 }],
+        totalAmount: 30, subtotal: 30, taxAmount: 0, grandTotal: 30, paymentStatus: 'Paid', branchId: 'branch-1',
+      });
+      orderRepository.createOrder({
+        tableId: 'T2', orderNumber: 'D-2', items: [{ id: 'i1', name: 'Coffee', price: 30, quantity: 1 }],
+        totalAmount: 30, subtotal: 30, taxAmount: 0, grandTotal: 30, paymentStatus: 'Paid', branchId: 'branch-1',
+        status: 'Cancelled',
+      });
+      orderRepository.upsertPulledOrders([
+        {
+          $id: 'ord-foreign-paid', $createdAt: now, $updatedAt: now,
+          orderNumber: 'F-1', tableId: 'T3', status: 'Completed', paymentStatus: 'Paid',
+          total_amount: 500, items: '[]', branch_id: 'other-branch',
+        },
+      ]);
+
+      const stats = orderRepository.getDailyReportStats();
+      assert.equal(stats.totalOrders, 1, 'another branch order and a cancelled order must not be counted');
+      assert.equal(stats.totalRevenue, 30, 'revenue is this branch only');
+    });
+
+    test('an over-redemption never stores a negative paidAmount', () => {
+      const order = orderRepository.createOrder({
+        tableId: 'T9', orderNumber: 'P-1', items: [{ id: 'i1', name: 'Tea', price: 20, quantity: 1 }],
+        totalAmount: 20, subtotal: 20, taxAmount: 0, grandTotal: 20,
+        paymentStatus: 'Paid', pointsRedeemed: 1000,
+      });
+      assert.equal(order.paidAmount, 0, 'collected cash cannot be negative: it would subtract from revenue');
+    });
+
+    test('restoring a cancelled order credits every OUT row, including a repeated item line', () => {
+      const beans = inventoryRepository.createInventoryItem({ name: 'Beans', unit: 'kg', stock: 20, minStock: 2, costPerUnit: 100 });
+      inventoryRepository.saveMenuRecipe('latte', [{ inventoryItemId: beans.id, quantity: 2 }]);
+
+      // One order carrying the same menu item on two separate lines: deduction writes one
+      // OUT row per line, so the ledger holds two OUT rows of 2 for the same ingredient.
+      inventoryRepository.deductInventoryForOrder('order-1', [
+        { menuItemId: 'latte', name: 'Latte', quantity: 1 },
+        { menuItemId: 'latte', name: 'Latte', quantity: 1 },
+      ]);
+      assert.equal(inventoryRepository.getInventoryItem(beans.id).stock, 16, 'two lines of 2 units each consume 4');
+
+      inventoryRepository.restoreInventoryForOrder('order-1');
+      assert.equal(
+        inventoryRepository.getInventoryItem(beans.id).stock,
+        20,
+        'cancelling must restore the full 4, not only the first OUT row'
+      );
+
+      const ledger = inventoryRepository.getInventoryTransactions(beans.id, 'branch-1');
+      const returned = ledger.filter(tx => tx.type === 'IN' && tx.referenceId === 'order-1');
+      assert.equal(
+        returned.reduce((sum, tx) => sum + (Number(tx.quantity) || 0), 0),
+        4,
+        'the ledger must record the whole credit, so a later reversal can read it back'
+      );
+    });
+
+    test('restoring a cancelled order twice does not credit the stock twice', () => {
+      const beans = inventoryRepository.createInventoryItem({ name: 'Beans', unit: 'kg', stock: 20, minStock: 2, costPerUnit: 100 });
+      inventoryRepository.saveMenuRecipe('latte', [{ inventoryItemId: beans.id, quantity: 2 }]);
+
+      inventoryRepository.deductInventoryForOrder('order-2', [{ menuItemId: 'latte', name: 'Latte', quantity: 1 }]);
+      assert.equal(inventoryRepository.getInventoryItem(beans.id).stock, 18);
+
+      inventoryRepository.restoreInventoryForOrder('order-2');
+      inventoryRepository.restoreInventoryForOrder('order-2');
+
+      assert.equal(inventoryRepository.getInventoryItem(beans.id).stock, 20, 'a repeated reversal is a no-op');
+    });
+
     test('upsertPulledOrders keeps a branchless cloud row shared (NULL), not owned by default', () => {
       orderRepository.upsertPulledOrders([
         {

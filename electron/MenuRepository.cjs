@@ -94,7 +94,11 @@ class MenuRepository {
     const sqlite = this.getDb();
     const id = item.id || `menu-${randomUUID()}`;
     const now = new Date().toISOString();
-    const branchId = item.branchId || this.getBranchId();
+    // A branchId from the caller only sticks when it names this branch. The IPC surface is
+    // untrusted: accepting any value let the renderer file an item under another branch, or
+    // under a shared (NULL) scope this till has no business writing to.
+    const activeBranch = this.getBranchId();
+    const branchId = (item.branchId && item.branchId === activeBranch) ? item.branchId : activeBranch;
 
     sqlite.prepare(`
       INSERT INTO menu_items (id, name, description, price, category, image, available, branch_id, is_synced, created_at, updated_at)
@@ -138,9 +142,13 @@ class MenuRepository {
     fields.push('sync_attempts = 0');
     fields.push('last_error = NULL');
 
+    // Scope the write to this branch: an id alone is not authority to edit another
+    // branch's row.
     values.push(id);
+    values.push(this.getBranchId());
     sqlite.prepare(`
-      UPDATE menu_items SET ${fields.join(', ')} WHERE id = ?
+      UPDATE menu_items SET ${fields.join(', ')}
+      WHERE id = ? AND deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
     `).run(...values);
 
     return this.getMenuItem(id);
@@ -148,7 +156,10 @@ class MenuRepository {
 
   getMenuItem(id) {
     const sqlite = this.getDb();
-    const row = sqlite.prepare('SELECT * FROM menu_items WHERE id = ? AND deleted_at IS NULL').get(id);
+    const row = sqlite.prepare(
+      `SELECT * FROM menu_items
+       WHERE id = ? AND deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)`
+    ).get(id, this.getBranchId());
     if (!row) return null;
     return this.mapRow(row);
   }
@@ -158,7 +169,10 @@ class MenuRepository {
     // Soft delete: keep the tombstone locally so the sync engine can push the
     // deletion to the cloud, even while offline (Issue 20)
     const now = new Date().toISOString();
-    sqlite.prepare('UPDATE menu_items SET deleted_at = ?, updated_at = ?, is_synced = 0 WHERE id = ?').run(now, now, id);
+    sqlite.prepare(`
+      UPDATE menu_items SET deleted_at = ?, updated_at = ?, is_synced = 0
+      WHERE id = ? AND deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
+    `).run(now, now, id, this.getBranchId());
   }
 
   resetMenu(defaults) {

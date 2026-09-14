@@ -21,6 +21,22 @@ test('build freshness changes with source/config/env content, not timestamps', (
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test('bundle scan ignores a value too short to be a credential', () => {
+  // The environment routinely carries a variable whose name merely looks sensitive while the
+  // value is trivial ("..._API_KEY_HELPER_DISABLED=1"). Treating "1" as a secret makes the
+  // scan match every file, so the build would pass or fail depending on the shell running it.
+  const dir = mkdtempSync(join(tmpdir(), 'engaz-scan-short-'));
+  try {
+    writeFileSync(join(dir, 'index.html'), '<html></html>');
+    writeFileSync(join(dir, 'app.css'), '.a{width:1px}');
+    assert.equal(scanBundle(dir, ['1', 'on']), 2);
+
+    // A value of plausible length is still caught in the very same file.
+    writeFileSync(join(dir, 'app.css'), 'ENGAZ_PORTAL_SENTINEL_0123456789');
+    assert.throws(() => scanBundle(dir, ['ENGAZ_PORTAL_SENTINEL_0123456789']), /secret scan failed/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('bundle scan rejects sentinel values and key headers, accepts public URL', () => {
   const dir = mkdtempSync(join(tmpdir(), 'engaz-scan-'));
   try {

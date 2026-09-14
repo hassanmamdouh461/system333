@@ -155,6 +155,37 @@ describe('buildCsv', () => {
     expect(csv).toContain('غير مدفوع');
   });
 
+  it('does not credit an unpaid order with its full bill as money collected', () => {
+    // paidAmount is null on a row written before that column existed. Falling back to the
+    // grand total there is right for a paid order, but on an unpaid one it reports the whole
+    // bill as collected — the same column a manager totals for the day's cash.
+    const csv = buildCsv(
+      'orders',
+      scope({ orders: [order({ paymentStatus: 'Unpaid', paidAmount: null, grandTotal: 100 })] })
+    );
+    const row = lines(csv)[1].split(',');
+    expect(row.slice(-2)).toEqual(['100.00', '0.00']);
+  });
+
+  it('does not show a settled legacy order as still outstanding', () => {
+    // Mirror of the case above: a paid order with no paidAmount is settled in full, so its
+    // "due" column is zero rather than the whole bill.
+    const csv = buildCsv(
+      'orders',
+      scope({ orders: [order({ paymentStatus: 'Paid', paidAmount: null, grandTotal: 100 })] })
+    );
+    const row = lines(csv)[1].split(',');
+    expect(row.slice(-2)).toEqual(['0.00', '100.00']);
+  });
+
+  it('counts a partial payment on an unpaid order as itself', () => {
+    const csv = buildCsv(
+      'orders',
+      scope({ orders: [order({ paymentStatus: 'Unpaid', paidAmount: 25, grandTotal: 100 })] })
+    );
+    expect(lines(csv)[1].split(',').slice(-2)).toEqual(['75.00', '25.00']);
+  });
+
   it('exports the menu with the quantity sold in scope', () => {
     const csv = buildCsv(
       'menu',

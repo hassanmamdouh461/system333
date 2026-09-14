@@ -7,7 +7,7 @@
 
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://reactjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Electron](https://img.shields.io/badge/Electron-44-47848F?style=for-the-badge&logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![Electron](https://img.shields.io/badge/Electron-29-47848F?style=for-the-badge&logo=electron&logoColor=white)](https://www.electronjs.org/)
 [![Vite](https://img.shields.io/badge/Vite-7-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers/D1-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
@@ -149,6 +149,18 @@ npm run test:native   # تشغيل Electron فعلياً + better-sqlite3
 ```
 
 CI (`.github/workflows/ci.yml`) يشغل نفس المجموعات، إضافة إلى فحص منفصل للبوابة في `reports-site/` (بإصدار TypeScript أصرم).
+
+### لماذا Electron 29 ولماذا `npm audit --omit=dev`
+
+الإصدار مقفول على **29.4.6** عن قصد: `better-sqlite3` لا ينشر prebuild متوافقاً مع Electron 44 (ABI 149) على Windows، ولا تتوفر أدوات بناء أصيلة على أجهزة التشغيل، فالترقية تكسر الوحدة الأصلية لقاعدة البيانات وبالتالي كل التطبيق.
+
+النتيجة أن `npm audit` **الكامل** يُبلغ عن إشعارات في Electron وأدوات تغليفه، وهي أدوات تطوير لا تصل إلى الحزمة المُشغَّلة. لذلك تفحص الـ CI تبعيات التشغيل وحدها:
+
+```bash
+npm audit --omit=dev   # ما تستخدمه CI — صفر ثغرات
+```
+
+هذا دين تقني مقبول لا يُخفي مشكلة في الكود: الحزمة المبنية لا تحمل هذه التبعيات. الإغلاق الصحيح له هو ترقية Electron بعد توفر prebuild متوافق لـ `better-sqlite3`.
 
 ---
 

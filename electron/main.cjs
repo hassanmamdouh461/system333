@@ -200,13 +200,25 @@ function registerIpcHandlers() {
     /^branch_id$/,
   ];
 
+  // Credentials the renderer may still save, but must never read back. The renderer is an
+  // untrusted caller: it is the same bundle published publicly at menu.engaz.tech, and it
+  // mirrors every value returned here into localStorage on startup. Handing it the worker
+  // key (or the admin digest) defeats the whole "the key lives in the main process only"
+  // rule, and together with the writable worker URL it would let injected renderer code
+  // point the sync — key included — at any host.
+  const SETTINGS_WRITE_ONLY = [
+    /^engaz_d1_worker_api_key$/,
+    /^engaz_admin_creds$/,
+  ];
+
   const isAllowedSettingKey = (key) => typeof key === 'string' && SETTINGS_WHITELIST.some(re => re.test(key));
+  const isWriteOnlySettingKey = (key) => typeof key === 'string' && SETTINGS_WRITE_ONLY.some(re => re.test(key));
 
   handle('db:get-settings', () => {
     const all = db.getSettings();
     const filtered = {};
     for (const [key, value] of Object.entries(all)) {
-      if (isAllowedSettingKey(key)) filtered[key] = value;
+      if (isAllowedSettingKey(key) && !isWriteOnlySettingKey(key)) filtered[key] = value;
     }
     return filtered;
   });

@@ -49,6 +49,15 @@ const MOVEMENT_LIMIT = 5000;
  * images and is returned on every menu view, so its size is paid by every customer.
  */
 const MAX_MENU_CONFIG_CHARS = 900_000;
+/**
+ * Bodies are buffered into the isolate before they are authenticated, so an unauthenticated
+ * caller can make the worker pay for a large upload just by sending one. The header check is
+ * the only defence that costs nothing — it runs before a single byte is read.
+ *
+ * Writes here are orders and their line items. A generous order is a few kilobytes, so 2 MB
+ * leaves a wide margin while still bounding the isolate.
+ */
+const MAX_BODY_BYTES = 2 * 1024 * 1024;
 /** Viewer sessions are short: the portal re-authenticates rather than holding a long token. */
 const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
 
@@ -434,50 +443,95 @@ const SYNC_TABLES = {
   },
 };
 
+/**
+ * One page of rows, and whether the table held more than the page.
+ *
+ * Every query asks for one row past its cap. That extra row is the cheapest possible
+ * truncation signal: it needs no COUNT to keep in step with the WHERE clause, and no second
+ * round trip. Without it a full restaurant's dashboard shows a revenue total computed over a
+ * thousand orders, presented with the same confidence as a complete one.
+ */
+function paged(result, limit) {
+  const rows = (result && result.results) || [];
+  if (rows.length <= limit) return { rows, truncated: false };
+  return { rows: rows.slice(0, limit), truncated: true };
+}
+
 async function readSnapshot(db) {
+  // `limit + 1` is deliberate: the extra row is a probe, never shown.
   const [orders, customers, inventory, menuItems, movements, branches] = await db.batch([
-    db.prepare(`SELECT * FROM orders WHERE deleted_at IS NULL ORDER BY createdAt DESC LIMIT ?`).bind(READ_LIMIT),
-    db.prepare(`SELECT * FROM customers WHERE deleted_at IS NULL ORDER BY points DESC LIMIT ?`).bind(READ_LIMIT),
-    db.prepare(`SELECT * FROM inventory WHERE deleted_at IS NULL ORDER BY name ASC LIMIT ?`).bind(READ_LIMIT),
-    db.prepare(`SELECT * FROM menu_items WHERE deleted_at IS NULL ORDER BY category, name LIMIT ?`).bind(READ_LIMIT),
+    db.prepare(`SELECT * FROM orders WHERE deleted_at IS NULL ORDER BY createdAt DESC LIMIT ?`).bind(READ_LIMIT + 1),
+    db.prepare(`SELECT * FROM customers WHERE deleted_at IS NULL ORDER BY points DESC LIMIT ?`).bind(READ_LIMIT + 1),
+    db.prepare(`SELECT * FROM inventory WHERE deleted_at IS NULL ORDER BY name ASC LIMIT ?`).bind(READ_LIMIT + 1),
+    db.prepare(`SELECT * FROM menu_items WHERE deleted_at IS NULL ORDER BY category, name LIMIT ?`).bind(READ_LIMIT + 1),
     // Cost of goods comes from this ledger rather than from recipes, so the portal reports
     // what each sale actually consumed even after its recipe is edited.
-    db.prepare(`SELECT * FROM inventory_transactions ORDER BY createdAt DESC LIMIT ?`).bind(MOVEMENT_LIMIT),
+    db.prepare(`SELECT * FROM inventory_transactions ORDER BY createdAt DESC LIMIT ?`).bind(MOVEMENT_LIMIT + 1),
     // The registry, so the portal can show a branch by name rather than by the id stamped
     // on its rows.
-    db.prepare(`SELECT * FROM branches WHERE deleted_at IS NULL ORDER BY name ASC LIMIT ?`).bind(READ_LIMIT),
+    db.prepare(`SELECT * FROM branches WHERE deleted_at IS NULL ORDER BY name ASC LIMIT ?`).bind(READ_LIMIT + 1),
   ]);
 
+  const page = {
+    orders: paged(orders, READ_LIMIT),
+    customers: paged(customers, READ_LIMIT),
+    inventory: paged(inventory, READ_LIMIT),
+    menuItems: paged(menuItems, READ_LIMIT),
+    movements: paged(movements, MOVEMENT_LIMIT),
+    branches: paged(branches, READ_LIMIT),
+  };
+
   return {
-    orders: orders.results || [],
-    customers: customers.results || [],
-    inventory: inventory.results || [],
-    menuItems: menuItems.results || [],
-    movements: movements.results || [],
-    branches: branches.results || [],
+    orders: page.orders.rows,
+    customers: page.customers.rows,
+    inventory: page.inventory.rows,
+    menuItems: page.menuItems.rows,
+    movements: page.movements.rows,
+    branches: page.branches.rows,
+    /** Collections that hit their cap, so the portal never presents a partial total as final. */
+    truncated: Object.fromEntries(
+      Object.entries(page).filter(([, p]) => p.truncated).map(([key]) => [key, true])
+    ),
     // Lets the portal show the age of what it is displaying rather than the age of its poll.
     serverTime: nowIso(),
   };
 }
 
 /**
- * The stored menu configuration, or null when nothing has been published yet.
+ * The stored menu configuration, and whether it is safe to rely on.
  *
- * A row that will not parse is treated as absent rather than thrown on: the menu is a
- * customer-facing page, and serving it with default wording beats serving an error because
- * one JSON blob is corrupt.
+ * Three outcomes, and the difference between them is the whole reason this is not a plain
+ * `null`:
+ *
+ * - `empty` — nothing has ever been published, so nothing is hidden and every item may show.
+ * - `ok` — the configuration was read and its hidden-item rules can be applied.
+ * - `unreadable` — a configuration exists but could not be understood. The hidden set is
+ *   unknown, which is *not* the same as empty.
+ *
+ * Collapsing `unreadable` into `empty` publishes whatever the manager was hiding: a corrupt
+ * blob or one failed database read would silently un-hide every hidden item and every hidden
+ * category on a page anyone can open.
  */
 async function readMenuConfig(db) {
+  let row;
   try {
     const statement = db.prepare(`SELECT data FROM public_menu_config WHERE id = 'current' LIMIT 1`);
-    if (!statement || typeof statement.first !== 'function') return null;
-    const row = await statement.first();
-    if (!row || !row.data) return null;
-    const parsed = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
-    return parsed && typeof parsed === 'object' ? parsed : null;
+    if (!statement || typeof statement.first !== 'function') return { status: 'empty' };
+    row = await statement.first();
   } catch (e) {
-    console.warn('[reports] Could not read the menu config:', String(e.message || e));
-    return null;
+    console.warn('[reports] Could not read the menu config row:', String(e.message || e));
+    return { status: 'unreadable' };
+  }
+
+  if (!row || !row.data) return { status: 'empty' };
+
+  try {
+    const parsed = typeof row.data === 'string' ? JSON.parse(row.data) : row.data;
+    if (!parsed || typeof parsed !== 'object') return { status: 'unreadable' };
+    return { status: 'ok', config: parsed };
+  } catch (e) {
+    console.warn('[reports] Stored menu config is not valid JSON:', String(e.message || e));
+    return { status: 'unreadable' };
   }
 }
 
@@ -499,7 +553,14 @@ function menuItemCategory(row) {
  * the panel promises when it says an item is hidden from customers.
  */
 async function readPublicMenu(db) {
-  const config = await readMenuConfig(db);
+  const stored = await readMenuConfig(db);
+
+  // Fails closed. If the hidden set cannot be read there is no safe subset to serve: showing
+  // everything would publish what the manager hid, and there is no way to tell which rows
+  // those were. An empty menu is a visible, recoverable outage; a leaked one is silent.
+  if (stored.status === 'unreadable') {
+    return { menuItems: [], config: null, unavailable: true };
+  }
 
   const statement = db.prepare(
     `SELECT id, name, description, price, category, image, available
@@ -510,8 +571,10 @@ async function readPublicMenu(db) {
   const { results } = await statement.all();
   const rows = results || [];
 
-  if (!config) return { menuItems: rows, config: null };
+  // No published configuration at all: nothing is hidden yet, so every available item shows.
+  if (stored.status === 'empty') return { menuItems: rows, config: null };
 
+  const config = stored.config;
   const hiddenItems = new Set(stringList(config.hiddenItemIds));
   const hiddenCategories = new Set(
     (Array.isArray(config.categories) ? config.categories : [])
@@ -676,6 +739,14 @@ export default {
       }
       try {
         const data = await readPublicMenu(env.DB);
+        // 503, not 200 with an empty list: the menu is momentarily withheld on purpose, and a
+        // caller that caches a 200 would keep showing an empty menu after it recovers.
+        if (data.unavailable) {
+          return json(
+            { success: false, error: 'Menu configuration is unavailable', menuItems: [] },
+            503, origin, true
+          );
+        }
         return json({ success: true, ...data }, 200, origin, true);
       } catch (err) {
         return json({ success: false, error: String(err.message || err) }, 500, origin, true);
@@ -686,10 +757,21 @@ export default {
       return json({ success: false, error: 'Method not allowed' }, 405, origin);
     }
 
+    // Deliberately before authentication: the size of a body is decided by the sender, not by
+    // who they claim to be, and refusing on the header costs nothing.
+    const declaredLength = Number(request.headers.get('Content-Length') || '0');
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+      return json({ success: false, error: 'Request body too large' }, 413, origin);
+    }
+
+    // Buffered rather than streamed, safe only because the limit above already bounded it.
+    // Reading the text first also means a POST with no body — no Content-Length at all when
+    // the client chunks — is an empty payload instead of a parse failure.
+    const body = await request.text();
     let payload = {};
-    if (request.headers.get('Content-Length') !== '0') {
+    if (body.trim()) {
       try {
-        payload = await request.json();
+        payload = JSON.parse(body);
       } catch {
         return json({ success: false, error: 'Invalid JSON body' }, 400, origin);
       }

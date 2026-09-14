@@ -323,12 +323,22 @@ class SyncEngine {
 
         // Loyalty points ledger (Issue 26)
         const sqlite = this.db.getDb();
-        const unsyncedPtx = sqlite.prepare('SELECT * FROM points_transactions WHERE is_synced = 0').all();
+        // Same two filters as every other push query: a row parked after repeated failures
+        // or belonging to another branch must not be retried on every cycle.
+        const { MAX_SYNC_ATTEMPTS } = require('./database.cjs');
+        const unsyncedPtx = sqlite.prepare(`
+          SELECT * FROM points_transactions
+          WHERE is_synced = 0
+            AND sync_attempts < ?
+            AND (branch_id = ? OR branch_id IS NULL)
+        `).all(MAX_SYNC_ATTEMPTS, this.db.getBranchId());
         if (unsyncedPtx.length > 0) {
           const ptxIds = unsyncedPtx.map(p => p.id);
           try {
             await mockApi.pushPointsTransactions(unsyncedPtx);
-            const stmt = sqlite.prepare('UPDATE points_transactions SET is_synced = 1 WHERE id = ?');
+            // Clearing sync_attempts re-arms a row that failed before and has since been
+            // queued again; without it a recovered row stays parked for the session.
+            const stmt = sqlite.prepare('UPDATE points_transactions SET is_synced = 1, sync_attempts = 0 WHERE id = ?');
             sqlite.transaction(() => { for (const id of ptxIds) stmt.run(id); })();
             console.log(`[syncEngine] Marked ${ptxIds.length} points transactions as synced in local DB.`);
           } catch (e) {
@@ -338,7 +348,11 @@ class SyncEngine {
           }
         }
       } catch (invError) {
-        console.warn('[syncEngine] Inventory/points sync bypassed:', invError.message);
+        // Reported, not bypassed. Swallowing this left the cycle finishing with
+        // state 'synced' and lastError null while stock and loyalty points had silently
+        // stopped reaching the cloud — the one failure mode a POS most needs to surface.
+        console.warn('[syncEngine] Inventory/points sync failed:', invError.message);
+        phaseErrors.push(`Inventory/points sync failed: ${invError.message}`);
       }
 
       // 5. Update final status based on errors and pending count

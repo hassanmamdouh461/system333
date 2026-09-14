@@ -91,9 +91,14 @@ class OrderRepository {
     const taxRate = order.taxRate != null ? Number(order.taxRate) : DEFAULT_TAX_RATE;
     const taxAmount = order.taxAmount != null ? Number(order.taxAmount) : roundMoney(subtotal * taxRate);
     const grandTotal = order.grandTotal != null ? Number(order.grandTotal) : roundMoney(subtotal + taxAmount);
-    const paidAmount = order.paidAmount != null
+    // Collected cash can never be negative. Redeeming more points than the bill is worth is
+    // rejected at the till, but an order arriving with an over-redemption (older client,
+    // edited payload, restored backup) used to store a negative paidAmount, which the daily
+    // report then summed straight into revenue.
+    const rawPaid = order.paidAmount != null
       ? roundMoney(Number(order.paidAmount))
       : (order.paymentStatus === 'Paid' ? roundMoney(grandTotal - (Number(order.pointsRedeemed) || 0)) : null);
+    const paidAmount = rawPaid == null ? null : Math.max(0, rawPaid);
 
     // Atomic daily counter inside the same transaction as the INSERT (Issue 23).
     // Counter is keyed by LOCAL date so it aligns with the local-time daily report (Issue 24).
@@ -537,11 +542,16 @@ class OrderRepository {
 
   getDailyReportStats() {
     const sqlite = this.getDb();
+    const branchId = this.getBranchId();
 
     // Daily summary in LOCAL timezone (Issue 24). Revenue reads paidAmount so a bill settled
     // partly with loyalty points is not reported at its full value, and paid orders are dated
     // by paidAt to match the cashier screens — dating them by createdAt put a bill created
     // before midnight and settled after it in the wrong day's report.
+    //
+    // Scoped to this branch (own rows plus rows shared by every branch) and excluding
+    // cancelled orders: this figure reaches the daily Telegram report, and an unscoped count
+    // there reported the whole chain's day as if it were one till's.
     const summary = sqlite.prepare(`
       SELECT
         COUNT(*) as totalOrders,
@@ -552,15 +562,19 @@ class OrderRepository {
       FROM orders
       WHERE date(COALESCE(paidAt, createdAt), 'localtime') = date('now', 'localtime')
         AND deleted_at IS NULL
-    `).get();
+        AND status != 'Cancelled'
+        AND (branch_id = ? OR branch_id IS NULL)
+    `).get(branchId);
 
     // Query items sold in local timezone
     const rows = sqlite.prepare(`
       SELECT items FROM orders
       WHERE date(COALESCE(paidAt, createdAt), 'localtime') = date('now', 'localtime')
         AND paymentStatus = 'Paid'
+        AND status != 'Cancelled'
         AND deleted_at IS NULL
-    `).all();
+        AND (branch_id = ? OR branch_id IS NULL)
+    `).all(branchId);
 
     const itemsMap = {};
     for (const row of rows) {

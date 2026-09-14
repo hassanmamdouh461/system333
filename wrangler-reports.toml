@@ -12,7 +12,13 @@
 name = "engaz-reports-proxy"
 main = "cloudflare/d1-reports-worker.js"
 compatibility_date = "2025-01-01"
-workers_dev = true
+
+# Off, and deliberately so. With workers_dev on, this worker is also published at
+# engaz-reports-proxy.<subdomain>.workers.dev — a second public URL bound to the same D1
+# database, outside every rule scoped to api-reports.engaz.tech (Access policies, WAF and
+# rate-limit rules) and outside anything watching that hostname. One hostname means one
+# place to secure and one place to look.
+workers_dev = false
 
 # The reports worker lives on its own API subdomain so it is fully isolated from the
 # production POS worker (api.engaz.tech). If the route conflicts, remove `routes` and use:

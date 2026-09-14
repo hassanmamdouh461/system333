@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { getTaxRate } from '../../utils/settingsConfig';
+import { buildOrderTotals, roundMoney } from '../../utils/orderTotals';
 import { MenuItem } from '../../types/menu';
 import { OrderItem, Order } from '../../types/order';
 import { useLanguage } from '../../context/LanguageContext';
@@ -355,14 +356,15 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     });
   }, [menuItems, selectedCategory, searchQuery, t]);
 
-  // Total invoice amount
-  const totalAmount = useMemo(() => {
-    return invoiceItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  }, [invoiceItems]);
-
+  // Invoice money. This must go through the same helper that writes the snapshot stored
+  // with the order, not a second floating-point pipeline: the two used to disagree by a
+  // cent, and the stray cent then printed a phantom loyalty-discount line on a bill that
+  // was paid in full.
   const taxRate = getTaxRate();
-  const taxAmount = useMemo(() => totalAmount * taxRate, [totalAmount, taxRate]);
-  const grandTotal = useMemo(() => totalAmount + taxAmount, [totalAmount, taxAmount]);
+  const { grandTotal } = useMemo(
+    () => buildOrderTotals(invoiceItems, taxRate),
+    [invoiceItems, taxRate]
+  );
 
   // Items count
   const itemsCount = useMemo(() => {
@@ -373,7 +375,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
   const changeAmount = useMemo(() => {
     const received = parseFloat(receivedAmount);
     if (isNaN(received) || received <= grandTotal) return 0;
-    return received - grandTotal;
+    return roundMoney(received - grandTotal);
   }, [receivedAmount, grandTotal]);
 
   // Map of item quantities already added to invoice

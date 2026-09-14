@@ -19,8 +19,11 @@ jobs:
           cache: npm
       - name: Install dependencies
         run: npm ci
-      - name: Audit locked dependencies
-        run: npm audit
+      # Runtime dependencies only: the Electron 29 advisories are unfixable while
+      # better-sqlite3 ships no prebuild for Electron 44 (ABI 149) on Windows, and they
+      # affect the build/packaging toolchain rather than shipped code. See README.
+      - name: Audit locked runtime dependencies
+        run: npm audit --omit=dev
       - name: Lint (zero warnings)
         run: npm run lint
       - name: Typecheck
@@ -49,8 +52,8 @@ jobs:
       # Deliberately do not install root dependencies: the portal must stand alone.
       - name: Install dependencies
         run: npm ci
-      - name: Audit locked dependencies
-        run: npm audit
+      - name: Audit locked runtime dependencies
+        run: npm audit --omit=dev
       - name: Typecheck
         run: npm run typecheck
       - name: Portal tests

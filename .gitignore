@@ -116,3 +116,8 @@ reports-site/.env
 # Host deploy scratch directories (login state, project links — never commit)
 .netlify/
 .vercel/
+
+# Assistant session state. Never commit: the workspace copy holds a production database
+# export under .workbuddy-ai/backups/, alongside transcripts that mention live endpoints.
+.workbuddy-ai/
+.zcode/

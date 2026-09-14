@@ -6,7 +6,11 @@
 
 name = "engaz-menu-portal"
 compatibility_date = "2025-01-01"
-workers_dev = true
+
+# Off: the public menu would otherwise also be served from
+# engaz-menu-portal.<subdomain>.workers.dev, a second URL that no cache or WAF rule for
+# menu.engaz.tech covers.
+workers_dev = false
 
 main = "reports-site/empty-worker.js"
 

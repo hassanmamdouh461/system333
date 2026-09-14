@@ -555,13 +555,28 @@ function getSyncStats() {
     // Tombstones (deleted_at IS NOT NULL, is_synced = 0) are exactly what still needs
     // pushing. Excluding them made totalPending 0 whenever the only pending change was
     // a deletion, and syncEngine returns early on 0 — so deletions never left the device.
-    const menuCount = sqlite.prepare('SELECT COUNT(*) as count FROM menu_items WHERE is_synced = 0').get().count;
-    const ordersCount = sqlite.prepare('SELECT COUNT(*) as count FROM orders WHERE is_synced = 0').get().count;
-    const customersCount = sqlite.prepare('SELECT COUNT(*) as count FROM customers WHERE is_synced = 0').get().count;
-    const inventoryCount = sqlite.prepare('SELECT COUNT(*) as count FROM inventory WHERE is_synced = 0').get().count;
-    const invTxCount = sqlite.prepare('SELECT COUNT(*) as count FROM inventory_transactions WHERE is_synced = 0').get().count;
-    const cashiersCount = sqlite.prepare('SELECT COUNT(*) as count FROM cashiers WHERE is_synced = 0').get().count;
-    const pointsCount = sqlite.prepare('SELECT COUNT(*) as count FROM points_transactions WHERE is_synced = 0').get().count;
+    //
+    // Two filters matter for the count to mean "work this device will actually do":
+    //   • rows parked after MAX_SYNC_ATTEMPTS are excluded from every push batch, so
+    //     counting them kept totalPending above zero forever, which pinned the status to
+    //     'syncing' and reset consecutiveFailures — no backoff, polling every 30s with no
+    //     progress and nothing in the UI saying why;
+    //   • rows belonging to another branch are never pushed by this till either, and they
+    //     arrive here through the pull path, so they had the same effect.
+    const pendingIn = (table) => sqlite.prepare(`
+      SELECT COUNT(*) as count FROM ${table}
+      WHERE is_synced = 0
+        AND sync_attempts < ?
+        AND (branch_id = ? OR branch_id IS NULL)
+    `).get(MAX_SYNC_ATTEMPTS, getBranchId()).count;
+
+    const menuCount = pendingIn('menu_items');
+    const ordersCount = pendingIn('orders');
+    const customersCount = pendingIn('customers');
+    const inventoryCount = pendingIn('inventory');
+    const invTxCount = pendingIn('inventory_transactions');
+    const cashiersCount = pendingIn('cashiers');
+    const pointsCount = pendingIn('points_transactions');
     const reportsCount = sqlite.prepare('SELECT COUNT(*) as count FROM reports_outbox').get().count;
     return {
       pendingMenu: menuCount,

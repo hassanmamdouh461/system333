@@ -202,6 +202,7 @@ describe('readSnapshot', () => {
       'movements',
       'orders',
       'serverTime',
+      'truncated',
     ]);
   });
 
@@ -232,13 +233,42 @@ describe('readSnapshot', () => {
     expect(Number.isNaN(new Date(snapshot.serverTime).getTime())).toBe(false);
   });
 
+  it('reports nothing truncated while every table fits its page', async () => {
+    const snapshot = await readSnapshot(fakeDb(EMPTY));
+    expect(snapshot.truncated).toEqual({});
+  });
+
+  it('flags a collection that hit its cap instead of returning a quiet partial page', async () => {
+    // The portal sums revenue over these rows. A page that stopped at the cap without saying
+    // so understates every figure on screen and looks exactly like a complete one.
+    const full = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `r${i}` }));
+    const snapshot = await readSnapshot(fakeDb([
+      full(1000),          // orders: exactly at the cap, no probe row, so not truncated
+      full(1001),          // customers: probe row present
+      [], [], [], [],
+    ]));
+
+    expect(snapshot.truncated).toEqual({ customers: true });
+    expect(snapshot.orders).toHaveLength(1000);
+    // The probe row is never shown.
+    expect(snapshot.customers).toHaveLength(1000);
+  });
+
+  it('flags the movement ledger against its own larger cap', async () => {
+    const full = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `r${i}` }));
+    const snapshot = await readSnapshot(fakeDb([[], [], [], [], full(MOVEMENT_LIMIT + 1), []]));
+    expect(snapshot.truncated).toEqual({ movements: true });
+    expect(snapshot.movements).toHaveLength(MOVEMENT_LIMIT);
+  });
+
   it('gives the movement ledger a larger cap than the row tables', async () => {
     // One order writes one movement per ingredient, so sharing READ_LIMIT would drop the
     // older sales from the cost of goods while their orders were still listed.
     const db = fakeDb(EMPTY);
     await readSnapshot(db);
     const ledger = db.seen.find((s) => s.sql.includes('inventory_transactions'));
-    expect(ledger.bindings).toEqual([MOVEMENT_LIMIT]);
+    // One past the cap: the probe row is how truncation is detected without a COUNT.
+    expect(ledger.bindings).toEqual([MOVEMENT_LIMIT + 1]);
     expect(MOVEMENT_LIMIT).toBeGreaterThan(1000);
   });
 
@@ -325,13 +355,22 @@ describe('readPublicMenu', () => {
     expect(res.menuItems.map((row: { id: string }) => row.id)).toEqual(['m1']);
   });
 
-  it('serves the menu with default wording when the stored config will not parse', async () => {
+  /**
+   * These two used to be the same code path. A config that is missing and a config that
+   * cannot be read both produced `null`, and `null` was treated as "nothing is hidden" — so
+   * one corrupt blob published every item the manager had hidden, silently, on a public page.
+   */
+  it('withholds the whole menu when the stored config will not parse', async () => {
+    const rows = [
+      { id: 'm1', category: 'Hot Coffee' },
+      { id: 'm2', category: 'Hot Coffee' },
+    ];
     const db = {
       prepare() {
         const chain = {
           bind: () => chain,
           async all() {
-            return { results: [{ id: 'm1', category: 'Hot Coffee' }] };
+            return { results: rows };
           },
           async first() {
             return { data: '{not json' };
@@ -342,7 +381,55 @@ describe('readPublicMenu', () => {
     };
 
     const res = await readPublicMenu(db as any);
+    // The hidden set is unknown, so there is no safe subset to serve.
+    expect(res.menuItems).toEqual([]);
     expect(res.config).toBeNull();
+    expect(res.unavailable).toBe(true);
+  });
+
+  it('withholds the whole menu when a config row exists but is not an object', async () => {
+    // `JSON.parse('"just a string"')` succeeds and yields a non-object, which is just as
+    // unreadable as a parse error.
+    const res = await readPublicMenu(menuDb({ config: 'a string', items: [{ id: 'm1' }] }) as any);
+    expect(res.unavailable).toBe(true);
+    expect(res.menuItems).toEqual([]);
+  });
+
+  it('withholds the whole menu when reading the config row throws', async () => {
+    // A failing database read is not the same as an absent config: the hidden set is unknown.
+    const db = {
+      prepare() {
+        const chain = {
+          bind: () => chain,
+          async all() {
+            return { results: [{ id: 'm1' }] };
+          },
+          async first() {
+            throw new Error('no such table: public_menu_config');
+          },
+        };
+        return chain;
+      },
+    };
+    const res = await readPublicMenu(db as any);
+    expect(res.unavailable).toBe(true);
+    expect(res.menuItems).toEqual([]);
+  });
+
+  it('still serves every item when nothing has ever been published', async () => {
+    // Genuinely distinct from the cases above: no configuration means nothing is hidden,
+    // and blanking the menu here would be an outage with no cause.
+    const rows = [{ id: 'm1', category: 'Hot Coffee' }];
+    const res = await readPublicMenu(menuDb({ items: rows }) as any);
+    expect(res.menuItems).toEqual(rows);
+    expect(res.unavailable).toBeUndefined();
+  });
+
+  it('does not mark a readable config as unavailable', async () => {
+    const res = await readPublicMenu(
+      menuDb({ config: { hiddenItemIds: [] }, items: [{ id: 'm1', category: 'Hot Coffee' }] }) as any
+    );
+    expect(res.unavailable).toBeUndefined();
     expect(res.menuItems).toHaveLength(1);
   });
 });

@@ -12,6 +12,7 @@
 
 import {
   formatMoney,
+  isPaid,
   orderBilled,
   orderLines,
   orderRevenue,
@@ -70,22 +71,39 @@ function localDateTime(value: string | null): string {
   return Number.isNaN(date.getTime()) ? '' : date.toLocaleString('en-GB', { hour12: false });
 }
 
+/**
+ * Cash actually received for one order.
+ *
+ * `orderRevenue` falls back to the grand total when `paidAmount` is null, which is the right
+ * reading for a paid order written before that column existed. Applying it to an unpaid order
+ * reports the whole bill as money collected — so an unpaid order only ever counts what was
+ * recorded against it, and a partial payment counts as itself.
+ */
+function orderCollected(order: OrderRow): number {
+  return isPaid(order) ? orderRevenue(order) : toNum(order.paidAmount);
+}
+
 function ordersCsv(orders: OrderRow[], names: Map<string, string>): string {
   return toCsv(
     ['رقم الطلب', 'التاريخ', 'الفرع', 'حالة الدفع', 'طريقة الدفع', 'الأصناف', 'الضريبة', 'المستحق', 'المحصل'],
-    orders.map((order) => [
-      order.orderNumber || order.id,
-      localDateTime(order.createdAt),
-      branchCell(order.branch_id, names),
-      order.paymentStatus === 'Paid' ? 'مدفوع' : 'غير مدفوع',
-      order.paymentMethod || '',
-      orderLines(order)
-        .map((line) => `${line.name} ×${line.quantity}`)
-        .join(' | '),
-      formatMoney(toNum(order.taxAmount)),
-      formatMoney(Math.max(orderBilled(order) - toNum(order.paidAmount), 0)),
-      formatMoney(orderRevenue(order)),
-    ])
+    orders.map((order) => {
+      const collected = orderCollected(order);
+      return [
+        order.orderNumber || order.id,
+        localDateTime(order.createdAt),
+        branchCell(order.branch_id, names),
+        order.paymentStatus === 'Paid' ? 'مدفوع' : 'غير مدفوع',
+        order.paymentMethod || '',
+        orderLines(order)
+          .map((line) => `${line.name} ×${line.quantity}`)
+          .join(' | '),
+        formatMoney(toNum(order.taxAmount)),
+        // Billed less what was received. Using the billed total as "due" on a settled order
+        // would show a paid order as still outstanding whenever paidAmount was never written.
+        formatMoney(Math.max(orderBilled(order) - collected, 0)),
+        formatMoney(collected),
+      ];
+    })
   );
 }
 

@@ -44,6 +44,32 @@ Copy-Item -LiteralPath (Join-Path $root 'wrangler-reports-site.toml') -Destinati
 
 function Step([string]$msg) { Write-Host "`n=== $msg ===" -ForegroundColor Cyan }
 
+# Wrangler resolves `main` and `assets.directory` against the directory of the config that
+# declares them, not against the working directory. Both configs are copied into %TEMP% so
+# the resolved database id can be stamped in without editing the tracked file — which leaves
+# `main = "cloudflare/d1-reports-worker.js"` pointing at %TEMP%\cloudflare\... and
+# `directory = "reports-site/dist"` at %TEMP%\reports-site\dist. Neither exists, so the
+# deploy either fails or, worse, uploads an empty site.
+#
+# Rewriting them to absolute paths is what makes the temp copy usable. A TOML *literal*
+# string (single quotes) is used so a Windows path needs no escape doubling.
+function Resolve-ConfigPath([string]$toml, [string]$key) {
+  $pattern = "(?m)^(\s*$key\s*=\s*)""([^""]*)"""
+  $match = [regex]::Match($toml, $pattern)
+  if (-not $match.Success) { return $toml }
+  $absolute = Join-Path $root $match.Groups[2].Value
+  if (-not (Test-Path -LiteralPath $absolute)) {
+    Write-Host "Config points at '$absolute', which does not exist." -ForegroundColor Yellow
+  }
+  return [regex]::Replace($toml, $pattern, "`$1'$absolute'")
+}
+
+function Use-AbsolutePaths([string]$path, [string[]]$keys) {
+  $toml = Get-Content -LiteralPath $path -Raw
+  foreach ($key in $keys) { $toml = Resolve-ConfigPath $toml $key }
+  Set-Content -LiteralPath $path -Value $toml -NoNewline
+}
+
 # $ErrorActionPreference does not apply to native commands: wrangler, npm and curl signal
 # failure through $LASTEXITCODE only, so piping their output to Write-Host let a failed
 # build carry on and deploy the previous dist/ under a "Deploy complete" banner.
@@ -171,6 +197,8 @@ if (-not $ViewerPassword -or -not $TokenSecret) {
 
 # ── 3. Deploy the reports worker (isolated DB) ────────────────────────────
 Step '3/5 Deploying reports worker to api-reports.engaz.tech'
+# After the database id is stamped in, so the rewrite is not overwritten by it.
+Use-AbsolutePaths $ReportsConfigPath @('main')
 Invoke-Native 'Reports worker deploy' { npx --yes wrangler@$WranglerVersion deploy -c $ReportsConfigPath }
 
 # ── 4. Build + deploy the reports portal to reporting.engaz.tech ──────────
@@ -182,6 +210,8 @@ Invoke-Native 'Reports portal build' { npm run build }
 Set-Location $root
 
 Step 'Deploying reports portal to reporting.engaz.tech'
+# After the build, because this is the config whose assets directory is the built dist.
+Use-AbsolutePaths $PortalConfigPath @('main', 'directory')
 Invoke-Native 'Reports portal deploy' { npx --yes wrangler@$WranglerVersion deploy -c $PortalConfigPath }
 
 # ── 5. Schema migration on the new database ───────────────────────────────

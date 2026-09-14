@@ -21,26 +21,28 @@ class InventoryRepository {
   /**
    * Resolves the branch scope for a request: the caller may pass its own branch id (used
    * by the renderer, which knows it), but an id that is not this till's own never widens
-   * the scope. 'manager' and 'default' see everything (shared/global stock).
+   * the scope.
+   *
+   * There is deliberately no "see everything" value. 'manager' and 'default' used to be
+   * accepted here, and since the renderer supplies this value straight through
+   * `db:get-inventory`, passing one returned the whole chain's stock from an untrusted
+   * caller. A till reads its own branch plus the rows shared by every branch (NULL).
    */
   resolveBranch(branchId) {
     const active = this.getBranchId();
     if (branchId === undefined || branchId === null || branchId === '') return active;
-    if (branchId === active || branchId === 'manager' || branchId === 'default') return branchId;
+    if (branchId === active) return branchId;
     throw new Error('Cannot access another branch');
   }
 
   getInventory(branchId) {
     const sqlite = this.getDb();
     const activeBranch = this.resolveBranch(branchId);
-    // Filter by branch in SQL when a concrete branch is known (Issue 22 + 41).
-    // 'manager' and 'default' see all (shared/global stock).
-    let rows;
-    if (activeBranch && activeBranch !== 'manager' && activeBranch !== 'default') {
-      rows = sqlite.prepare('SELECT * FROM inventory WHERE deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)').all(activeBranch);
-    } else {
-      rows = sqlite.prepare('SELECT * FROM inventory WHERE deleted_at IS NULL').all();
-    }
+    // Branch isolation in SQL (Issue 22 + 41): this branch's own stock plus rows shared by
+    // every branch (branch_id IS NULL).
+    const rows = sqlite.prepare(
+      'SELECT * FROM inventory WHERE deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)'
+    ).all(activeBranch);
     return rows.map(row => ({
       id: row.id,
       name: row.name,
@@ -211,8 +213,8 @@ class InventoryRepository {
       conditions.push('t.itemId = ?');
       params.push(itemId);
     }
-    // Branch isolation in SQL (Issue 22/42) unless manager/default view
-    if (activeBranch && activeBranch !== 'manager' && activeBranch !== 'default') {
+    // Branch isolation in SQL (Issue 22/42).
+    if (activeBranch) {
       conditions.push('t.branch_id = ?');
       params.push(activeBranch);
     }
@@ -429,6 +431,10 @@ class InventoryRepository {
    * after the sale cannot restore a different quantity than was taken. Movements already
    * reversed are skipped, which makes a repeated cancellation a no-op instead of crediting
    * the stock twice.
+   *
+   * The outstanding amount is computed per item across all of the order's OUT rows, then
+   * credited across them: an item ordered on two lines produces two OUT rows, and treating
+   * each row independently would restore only the first and leave the second deducted.
    */
   restoreInventoryForOrder(orderId, branchId) {
     const sqlite = this.getDb();
@@ -449,6 +455,16 @@ class InventoryRepository {
 
       const returnedByItem = new Map(alreadyReturned.map(r => [r.itemId, r.total || 0]));
 
+      // One OUT row is written per order line, so an item that appears on two lines of the
+      // same order has two rows here. The credit is therefore tracked against the item's
+      // *combined* OUT total, not per row: subtracting the already-returned amount from
+      // each row individually would credit only the first row and silently leak the rest.
+      const takenByItem = new Map();
+      for (const movement of taken) {
+        if (!takenByItem.has(movement.itemId)) takenByItem.set(movement.itemId, []);
+        takenByItem.get(movement.itemId).push(movement);
+      }
+
       const restore = sqlite.prepare(`
         UPDATE inventory
         SET stock = stock + ?, updated_at = ?, is_synced = 0
@@ -459,23 +475,28 @@ class InventoryRepository {
         VALUES (?, ?, 'IN', ?, ?, ?, ?, 0, ?)
       `);
 
-      for (const movement of taken) {
-        const outstanding = movement.quantity - (returnedByItem.get(movement.itemId) || 0);
-        if (outstanding <= 0) continue;
+      for (const [itemId, movements] of takenByItem) {
+        const totalTaken = movements.reduce((sum, m) => sum + (Number(m.quantity) || 0), 0);
+        const totalReturned = returnedByItem.get(itemId) || 0;
+        let remaining = totalTaken - totalReturned;
+        if (remaining <= 0) continue;
 
-        restore.run(outstanding, now, movement.itemId);
-        logMovement.run(
-          `tx-${randomUUID()}`,
-          movement.itemId,
-          outstanding,
-          orderId,
-          now,
-          activeBranch,
-          'Reverted cancelled order'
-        );
-        // Account for what this pass returned, so two OUT rows for the same item do not
-        // each credit the full already-returned amount.
-        returnedByItem.set(movement.itemId, (returnedByItem.get(movement.itemId) || 0) + outstanding);
+        for (const movement of movements) {
+          const take = Math.min(Number(movement.quantity) || 0, remaining);
+          if (take <= 0) break;
+          remaining -= take;
+
+          restore.run(take, now, itemId);
+          logMovement.run(
+            `tx-${randomUUID()}`,
+            itemId,
+            take,
+            orderId,
+            now,
+            activeBranch,
+            'Reverted cancelled order'
+          );
+        }
       }
     });
 

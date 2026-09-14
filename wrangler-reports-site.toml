@@ -9,7 +9,11 @@
 
 name = "engaz-reports-portal"
 compatibility_date = "2025-01-01"
-workers_dev = true
+
+# Off: with workers_dev on, the whole manager portal is also served from
+# engaz-reports-portal.<subdomain>.workers.dev, a URL nobody is monitoring, outside the
+# access rules attached to reporting.engaz.tech.
+workers_dev = false
 
 main = "reports-site/empty-worker.js"
 

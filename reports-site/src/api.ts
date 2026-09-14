@@ -42,21 +42,65 @@ export function clearSession() {
 
 export class AuthError extends Error {}
 
+/**
+ * How long a request may hang before the viewer is told.
+ *
+ * Without it a request that never settles leaves the dashboard on its loading state with no
+ * error and no way to recover short of reloading the page. The snapshot is the largest
+ * response the portal asks for, so the budget is set for it and shared by everything.
+ */
+const REQUEST_TIMEOUT_MS = 30_000;
+
+/**
+ * A message the viewer can act on, in Arabic, for whatever went wrong.
+ *
+ * The raw text is deliberately not shown. A proxy or a CDN error page answers with HTML, and
+ * `res.json()` would then fail with an English parser message — which is what a manager would
+ * otherwise be left reading on an Arabic interface.
+ */
+function friendlyError(res: Response): string {
+  if (res.status === 401) return 'انتهت الجلسة، يرجى تسجيل الدخول مرة أخرى';
+  if (res.status === 429) return 'محاولات كثيرة، انتظر قليلاً ثم أعد المحاولة';
+  if (res.status === 503) return 'الخدمة غير متاحة مؤقتًا، أعد المحاولة بعد قليل';
+  if (res.status >= 500) return 'حدث خطأ في الخادم، أعد المحاولة بعد قليل';
+  if (res.status === 413) return 'البيانات المرسلة أكبر من المسموح';
+  if (res.status >= 400) return 'تعذر تنفيذ الطلب';
+  return `تعذر الاتصال بالخادم (${res.status})`;
+}
+
 async function post<T>(endpoint: string, body: unknown, token?: string): Promise<T> {
-  const res = await fetch(`${WORKER_URL.replace(/\/+$/, '')}${endpoint}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body: JSON.stringify(body ?? {}),
+  const timeout = new AbortController();
+  const timer = setTimeout(() => timeout.abort(), REQUEST_TIMEOUT_MS);
+
+  let res: Response;
+  try {
+    res = await fetch(`${WORKER_URL.replace(/\/+$/, '')}${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify(body ?? {}),
+      signal: timeout.signal,
+    });
+  } catch {
+    clearTimeout(timer);
+    // An abort is this client's own timeout, not a network failure the viewer caused.
+    if (timeout.signal.aborted) {
+      throw new Error('استغرق الخادم وقتًا أطول من المتوقع، أعد المحاولة');
+    }
+    throw new Error('تعذر الوصول إلى الخادم، تحقق من الاتصال');
+  }
+  clearTimeout(timer);
+
+  if (!res.ok) {
+    if (res.status === 401) throw new AuthError(friendlyError(res));
+    throw new Error(friendlyError(res));
+  }
+
+  const data = await res.json().catch(() => {
+    throw new Error(friendlyError(res));
   });
-
-  if (res.status === 401) throw new AuthError('انتهت الجلسة، يرجى تسجيل الدخول مرة أخرى');
-  if (res.status === 429) throw new Error('محاولات كثيرة، انتظر قليلاً ثم أعد المحاولة');
-  if (!res.ok) throw new Error(`HTTP ${res.status}`);
-
-  const data = await res.json();
   if (data && data.success === false) throw new Error(data.error || 'تعذر تنفيذ الطلب');
   return data as T;
 }
@@ -83,6 +127,12 @@ export interface Snapshot {
   branches: SnapshotRow[];
   /** Cashiers list if provided by the reports worker. */
   cashiers?: SnapshotRow[];
+  /**
+   * Collections the worker stopped short of, because they hit its page cap.
+   *
+   * Any figure computed over a truncated collection is a lower bound, not a total.
+   */
+  truncated: Partial<Record<'orders' | 'customers' | 'inventory' | 'menuItems' | 'movements' | 'branches', true>>;
   /** When the worker read these rows, so the portal can show the age of what it displays. */
   serverTime: string;
 }
@@ -98,6 +148,8 @@ export async function fetchSnapshot(token: string): Promise<Snapshot> {
     movements: data.movements || [],
     branches: data.branches || [],
     cashiers: data.cashiers || [],
+    // Absent on an older worker; the portal treats that as "nothing was reported short".
+    truncated: data.truncated || {},
     serverTime: data.serverTime || new Date().toISOString(),
   };
 }
