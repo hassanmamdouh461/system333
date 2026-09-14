@@ -64,6 +64,7 @@ function friendlyError(res: Response): string {
   if (res.status === 503) return 'الخدمة غير متاحة مؤقتًا، أعد المحاولة بعد قليل';
   if (res.status >= 500) return 'حدث خطأ في الخادم، أعد المحاولة بعد قليل';
   if (res.status === 413) return 'البيانات المرسلة أكبر من المسموح';
+  if (res.status === 409) return 'This branch id was deleted and is reserved; choose a new id';
   if (res.status >= 400) return 'تعذر تنفيذ الطلب';
   return `تعذر الاتصال بالخادم (${res.status})`;
 }
@@ -116,15 +117,30 @@ export interface SnapshotRow {
   [key: string]: unknown;
 }
 
-export interface Snapshot {
+export interface BranchRegistry {
+  /** Live registry rows; the worker keeps the existing array shape. */
+  branches: SnapshotRow[];
+  /** Reserved, hidden registry ids, not business-row tombstones. */
+  deletedBranchIds: string[];
+}
+
+/** Older or partial replies cannot distinguish unknown tills from deleted branches. */
+function readBranchRegistry(data: Partial<BranchRegistry> & { truncated?: Record<string, unknown> }): BranchRegistry {
+  if (!Array.isArray(data.branches) || !Array.isArray(data.deletedBranchIds)
+    || data.deletedBranchIds.some((id) => typeof id !== 'string' || !id)
+    || data.truncated?.branches || data.truncated?.deletedBranchIds) {
+    throw new Error('A complete branch registry with deletion metadata is required; refresh after the worker is updated');
+  }
+  return { branches: data.branches, deletedBranchIds: data.deletedBranchIds };
+}
+
+export interface Snapshot extends BranchRegistry {
   orders: SnapshotRow[];
   customers: SnapshotRow[];
   inventory: SnapshotRow[];
   menuItems: SnapshotRow[];
   /** Stock ledger, which is where cost of goods sold is derived from. */
   movements: SnapshotRow[];
-  /** Branch registry, so a branch can be shown by name instead of by its id. */
-  branches: SnapshotRow[];
   /** Cashiers list if provided by the reports worker. */
   cashiers?: SnapshotRow[];
   /**
@@ -132,7 +148,7 @@ export interface Snapshot {
    *
    * Any figure computed over a truncated collection is a lower bound, not a total.
    */
-  truncated: Partial<Record<'orders' | 'customers' | 'inventory' | 'menuItems' | 'movements' | 'branches', true>>;
+  truncated: Partial<Record<'orders' | 'customers' | 'inventory' | 'menuItems' | 'movements' | 'branches' | 'deletedBranchIds', true>>;
   /** When the worker read these rows, so the portal can show the age of what it displays. */
   serverTime: string;
 }
@@ -146,7 +162,7 @@ export async function fetchSnapshot(token: string): Promise<Snapshot> {
     inventory: data.inventory || [],
     menuItems: data.menuItems || [],
     movements: data.movements || [],
-    branches: data.branches || [],
+    ...readBranchRegistry(data),
     cashiers: data.cashiers || [],
     // Absent on an older worker; the portal treats that as "nothing was reported short".
     truncated: data.truncated || {},
@@ -164,9 +180,9 @@ export async function fetchSnapshot(token: string): Promise<Snapshot> {
 export async function saveBranch(
   token: string,
   branch: { id: string; name: string; phone: string; address: string; active: boolean }
-): Promise<SnapshotRow[]> {
-  const data = await post<{ branches?: SnapshotRow[] }>('/branches/save', { branch }, token);
-  return data.branches || [];
+): Promise<BranchRegistry> {
+  const data = await post<BranchRegistry>('/branches/save', { branch }, token);
+  return readBranchRegistry(data);
 }
 
 /**
