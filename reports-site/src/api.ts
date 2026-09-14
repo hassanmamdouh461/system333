@@ -124,7 +124,14 @@ export interface BranchRegistry {
   deletedBranchIds: string[];
 }
 
-/** Older or partial replies cannot distinguish unknown tills from deleted branches. */
+/**
+ * Older or partial replies cannot distinguish unknown tills from deleted branches.
+ *
+ * The truncation check is deliberately wider than what the worker can currently report: the
+ * registry is never paged, because `completeBranchRegistry` fails rather than returning a
+ * short page. It stays here so that a worker which starts paging the registry again is
+ * refused at the portal instead of quietly losing tombstones.
+ */
 function readBranchRegistry(data: Partial<BranchRegistry> & { truncated?: Record<string, unknown> }): BranchRegistry {
   if (!Array.isArray(data.branches) || !Array.isArray(data.deletedBranchIds)
     || data.deletedBranchIds.some((id) => typeof id !== 'string' || !id)
@@ -147,8 +154,11 @@ export interface Snapshot extends BranchRegistry {
    * Collections the worker stopped short of, because they hit its page cap.
    *
    * Any figure computed over a truncated collection is a lower bound, not a total.
+   *
+   * The branch registry is not listed here: the worker refuses an incomplete registry
+   * outright rather than reporting it short, so there is no partial page to warn about.
    */
-  truncated: Partial<Record<'orders' | 'customers' | 'inventory' | 'menuItems' | 'movements' | 'branches' | 'deletedBranchIds', true>>;
+  truncated: Partial<Record<'orders' | 'customers' | 'inventory' | 'menuItems' | 'movements', true>>;
   /** When the worker read these rows, so the portal can show the age of what it displays. */
   serverTime: string;
 }
