@@ -23,8 +23,15 @@ function printReceiptHtml(html) {
 
     let printWindow = null;
     let finished = false;
+    let timeoutId = null;
 
     const cleanup = () => {
+      // Without this the 30s guard below stays armed for every receipt ever printed,
+      // keeping a timer and a window reference alive long after the job finished.
+      if (timeoutId) {
+        clearTimeout(timeoutId);
+        timeoutId = null;
+      }
       if (printWindow && !printWindow.isDestroyed()) {
         try {
           printWindow.destroy();
@@ -85,8 +92,12 @@ function printReceiptHtml(html) {
           if (success) {
             resolve();
           } else {
-            // Cancelled by user is treated as successful interaction completion
-            if (failureReason === 'cancelled' || failureReason === 'Print job cancelled') {
+            // Cancelling the dialog is a normal outcome, not a failure. Electron reports it
+            // as "Print job canceled" — one 'l', American spelling — which the two literals
+            // this used to compare against never matched, so every cancelled receipt came
+            // back as a rejected promise and surfaced as an error on the till.
+            const reason = String(failureReason || '').toLowerCase();
+            if (reason.includes('cancel')) {
               resolve();
             } else {
               reject(new Error(failureReason || 'Printing failed'));
@@ -102,7 +113,7 @@ function printReceiptHtml(html) {
       reject(new Error(`Failed to load receipt HTML: ${errorDescription} (${errorCode})`));
     });
 
-    setTimeout(() => {
+    timeoutId = setTimeout(() => {
       if (!finished) {
         cleanup();
         reject(new Error('Print operation timed out'));

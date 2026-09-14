@@ -1,5 +1,6 @@
 const database = require('./database.cjs');
 const { randomUUID } = require('crypto');
+const { MAX_SYNC_ATTEMPTS } = database;
 
 // A second edit in the same millisecond must still have a different push version.
 function nextUpdatedAt(previous) {
@@ -87,9 +88,9 @@ class CashierRepository {
 
   getUnsyncedCashiers() {
     return this.getDb().prepare(`
-      SELECT * FROM cashiers WHERE is_synced = 0 AND sync_attempts < 5
+      SELECT * FROM cashiers WHERE is_synced = 0 AND sync_attempts < ?
         AND (branch_id = ? OR branch_id IS NULL)
-    `).all(this.getBranchId()).map(row => ({
+    `).all(MAX_SYNC_ATTEMPTS, this.getBranchId()).map(row => ({
       id: row.id,
       name: row.name,
       branch_id: row.branch_id,

@@ -27,7 +27,10 @@ export function TopNav() {
   const [isOnline, setIsOnline] = useState(navigator.onLine);
 
   useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    // A clock that shows hours and minutes does not need a 1s tick: at 1000ms this is
+    // 86,400 re-renders a day on a till that is never rebooted. 30s keeps the minute
+    // boundary within half a minute and costs a fortieth of the work.
+    const timer = setInterval(() => setCurrentTime(new Date()), 30000);
     const handleOnline = () => setIsOnline(true);
     const handleOffline = () => setIsOnline(false);
 

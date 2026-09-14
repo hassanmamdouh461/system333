@@ -22,6 +22,16 @@ const MAX_MONEY = 1_000_000;
 /** Upper bound on a stock quantity or line quantity. */
 const MAX_QUANTITY = 100_000;
 
+/**
+ * Longest branch id this layer accepts.
+ *
+ * This MUST stay equal to BRANCH_ID_MAX in cloudflare/d1-proxy-worker.js. A local limit
+ * above the worker's meant a longer id was stored happily and then refused by every sync
+ * batch: the row failed five times, was parked at MAX_SYNC_ATTEMPTS, and dropped out of
+ * every subsequent push while still looking present on the till.
+ */
+const BRANCH_ID_MAX = 40;
+
 class ValidationError extends Error {
   constructor(message) {
     super(message);
@@ -207,7 +217,7 @@ function validateNewOrder(order) {
     customerName: optionalString(order.customerName, 'customerName'),
     pointsEarned: optionalNumber(order.pointsEarned, 'pointsEarned', { min: 0, max: MAX_MONEY }) ?? 0,
     pointsRedeemed: optionalNumber(order.pointsRedeemed, 'pointsRedeemed', { min: 0, max: MAX_MONEY }) ?? 0,
-    branchId: optionalString(order.branchId ?? order.branch_id, 'branchId', { max: 60 }),
+    branchId: optionalString(order.branchId ?? order.branch_id, 'branchId', { max: BRANCH_ID_MAX }),
     cashierName: optionalString(order.cashierName, 'cashierName', { max: 60 }),
     cashierAvatar: optionalString(order.cashierAvatar, 'cashierAvatar', { max: 400000 }),
   };
@@ -248,7 +258,7 @@ function validateOrderUpdate(data) {
   if ('customerPhone' in data) out.customerPhone = optionalPhone(data.customerPhone, 'customerPhone');
   if ('pointsEarned' in data) out.pointsEarned = optionalNumber(data.pointsEarned, 'pointsEarned', { min: 0, max: MAX_MONEY });
   if ('pointsRedeemed' in data) out.pointsRedeemed = optionalNumber(data.pointsRedeemed, 'pointsRedeemed', { min: 0, max: MAX_MONEY });
-  if ('branchId' in data) out.branchId = optionalString(data.branchId, 'branchId', { max: 60 });
+  if ('branchId' in data) out.branchId = optionalString(data.branchId, 'branchId', { max: BRANCH_ID_MAX });
   if ('cashierName' in data) out.cashierName = optionalString(data.cashierName, 'cashierName', { max: 60 });
 
   if (Object.keys(out).length === 0) fail('update payload contains no known fields');
@@ -273,7 +283,7 @@ function validateMenuItem(item) {
     category: requireString(item.category, 'category'),
     image: optionalString(item.image, 'image', { max: MAX_TEXT_LENGTH }) ?? '',
     available: item.available === undefined ? true : Boolean(item.available),
-    branchId: optionalString(item.branchId, 'branchId', { max: 60 }),
+    branchId: optionalString(item.branchId, 'branchId', { max: BRANCH_ID_MAX }),
   };
 }
 
@@ -287,7 +297,7 @@ function validateMenuItemUpdate(data) {
   if ('category' in data) out.category = requireString(data.category, 'category');
   if ('image' in data) out.image = optionalString(data.image, 'image', { max: MAX_TEXT_LENGTH }) ?? '';
   if ('available' in data) out.available = Boolean(data.available);
-  if ('branchId' in data) out.branchId = optionalString(data.branchId, 'branchId', { max: 60 });
+  if ('branchId' in data) out.branchId = optionalString(data.branchId, 'branchId', { max: BRANCH_ID_MAX });
   if (Object.keys(out).length === 0) fail('update payload contains no known fields');
   return out;
 }
@@ -300,7 +310,7 @@ function validateInventoryItem(item) {
     stock: requireNumber(item.stock, 'stock', { min: 0, max: MAX_QUANTITY }),
     minStock: requireNumber(item.minStock, 'minStock', { min: 0, max: MAX_QUANTITY }),
     costPerUnit: requireMoney(item.costPerUnit, 'costPerUnit'),
-    branchId: optionalString(item.branchId, 'branchId', { max: 60 }),
+    branchId: optionalString(item.branchId, 'branchId', { max: BRANCH_ID_MAX }),
   };
 }
 
@@ -313,7 +323,7 @@ function validateInventoryItemUpdate(data) {
   if ('stock' in data) out.stock = requireNumber(data.stock, 'stock', { min: 0, max: MAX_QUANTITY });
   if ('minStock' in data) out.minStock = requireNumber(data.minStock, 'minStock', { min: 0, max: MAX_QUANTITY });
   if ('costPerUnit' in data) out.costPerUnit = requireMoney(data.costPerUnit, 'costPerUnit');
-  if ('branchId' in data) out.branchId = optionalString(data.branchId, 'branchId', { max: 60 });
+  if ('branchId' in data) out.branchId = optionalString(data.branchId, 'branchId', { max: BRANCH_ID_MAX });
   if (Object.keys(out).length === 0) fail('update payload contains no known fields');
   return out;
 }
@@ -332,7 +342,7 @@ function validateStockMovement(tx) {
     quantity: requireNumber(tx.quantity, 'quantity', { min: 0.001, max: MAX_QUANTITY }),
     referenceId: optionalString(tx.referenceId, 'referenceId', { max: 100 }),
     notes: optionalString(tx.notes, 'notes', { max: MAX_TEXT_LENGTH }),
-    branchId: optionalString(tx.branchId ?? tx.branch_id, 'branchId', { max: 60 }),
+    branchId: optionalString(tx.branchId ?? tx.branch_id, 'branchId', { max: BRANCH_ID_MAX }),
   };
 }
 
@@ -343,7 +353,7 @@ function validateCustomer(customer) {
     name: optionalString(customer.name, 'name'),
     // Points are a whole-unit balance; a fractional point cannot be redeemed.
     points: optionalNumber(customer.points, 'points', { min: 0, max: MAX_MONEY }),
-    branchId: optionalString(customer.branchId ?? customer.branch_id, 'branchId', { max: 60 }),
+    branchId: optionalString(customer.branchId ?? customer.branch_id, 'branchId', { max: BRANCH_ID_MAX }),
   };
 }
 
@@ -508,6 +518,7 @@ module.exports = {
   MAX_ORDER_ITEMS,
   MAX_MONEY,
   MAX_QUANTITY,
+  BRANCH_ID_MAX,
   ORDER_STATUSES,
   PAYMENT_STATUSES,
   PAYMENT_METHODS,

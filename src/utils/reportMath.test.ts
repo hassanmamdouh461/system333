@@ -3,6 +3,7 @@ import {
   computeRecipeCosts,
   computeCogs,
   computeNetProfit,
+  formatProfitForDisplay,
   summarizeInvoices,
   summarizePaymentMethods,
   summarizeOrderModes,
@@ -91,12 +92,25 @@ describe('reportMath', () => {
       expect(computeNetProfit(114, 14, 40)).toBe(60);
     });
 
-    it('floors negative profit at zero to prevent confusing negative cards', () => {
-      expect(computeNetProfit(50, 10, 60)).toBe(0);
+    // A loss is reported as a loss. It used to be clamped to 0 here while the manager portal
+    // computed the same period without a clamp, so the two screens disagreed on the number.
+    it('reports a loss as a negative number instead of hiding it behind zero', () => {
+      expect(computeNetProfit(50, 10, 60)).toBe(-20);
     });
 
     it('handles zero tax cleanly', () => {
       expect(computeNetProfit(100, 0, 30)).toBe(70);
+    });
+  });
+
+  describe('formatProfitForDisplay', () => {
+    it('keeps the magnitude positive and carries the sign separately', () => {
+      expect(formatProfitForDisplay(-20)).toEqual({ amount: 20, isLoss: true });
+      expect(formatProfitForDisplay(70)).toEqual({ amount: 70, isLoss: false });
+    });
+
+    it('treats exactly zero as profit, not a loss', () => {
+      expect(formatProfitForDisplay(0)).toEqual({ amount: 0, isLoss: false });
     });
   });
 

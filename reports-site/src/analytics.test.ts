@@ -9,6 +9,7 @@ import {
   inPeriod,
   orderLines,
   orderRevenue,
+  orderTax,
   periodStart,
   revenueByBranch,
   summarizeSales,
@@ -28,6 +29,7 @@ function order(overrides: Partial<OrderRow> = {}): OrderRow {
     totalAmount: 100,
     grandTotal: 100,
     subtotal: 90,
+    taxRate: 0.1,
     taxAmount: 10,
     paidAmount: 100,
     paymentStatus: 'Paid',
@@ -206,6 +208,21 @@ describe('costOfGoodsSold', () => {
   });
 });
 
+describe('orderTax', () => {
+  it('prefers the stored snapshot', () => {
+    expect(orderTax(order({ taxAmount: 12.5 }))).toBe(12.5);
+  });
+
+  it('recovers tax from the billed and net totals when no snapshot was stored', () => {
+    expect(orderTax(order({ taxAmount: null, grandTotal: 114, subtotal: 100 }))).toBe(14);
+  });
+
+  it('reports unknown rather than zero when neither is available', () => {
+    // Zero would claim no tax was charged and inflate net profit; null admits it is missing.
+    expect(orderTax(order({ taxAmount: null, grandTotal: null, subtotal: null }))).toBeNull();
+  });
+});
+
 describe('summarizeSales', () => {
   it('separates revenue, tax and material cost into net profit', () => {
     const totals = summarizeSales(
@@ -253,11 +270,32 @@ describe('summarizeSales', () => {
     expect(totals.netProfit).toBe(300 - 10);
   });
 
+  it('counts orders with no recoverable tax instead of charging them zero tax', () => {
+    const totals = summarizeSales(
+      [order({ paidAmount: 100, taxAmount: null, grandTotal: null, subtotal: null })],
+      [],
+      []
+    );
+    expect(totals.tax).toBe(0);
+    expect(totals.unknownTaxCount).toBe(1);
+  });
+
+  it('reports a loss as negative, matching the desktop definition', () => {
+    // 100 collected, 20 of it tax, 200 of materials: a real loss of 120.
+    const totals = summarizeSales(
+      [order({ paidAmount: 100, taxAmount: 20 })],
+      [movement({ quantity: 2 })],
+      [material({ costPerUnit: 100 })]
+    );
+    expect(totals.netProfit).toBe(-120);
+  });
+
   it('returns zeroes, not NaN, with nothing sold', () => {
     const totals = summarizeSales([], [], []);
     expect(totals.averageOrder).toBe(0);
     expect(totals.marginPercent).toBe(0);
     expect(totals.netProfit).toBe(0);
+    expect(totals.unknownTaxCount).toBe(0);
   });
 });
 

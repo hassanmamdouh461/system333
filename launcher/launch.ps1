@@ -44,6 +44,43 @@ if (-not (Test-Path -LiteralPath $LogDir)) {
     New-Item -ItemType Directory -Path $LogDir -Force | Out-Null
 }
 
+# --- Log hygiene ---------------------------------------------------------------------
+# launcher.log is appended to on every run and never rewritten, so on a till that is opened
+# several times a day it grows without bound. The redirected process logs are rewritten per
+# run, but a single long session leaves tens of megabytes behind and nothing ever removes
+# them. Both are capped here, at startup, before anything else writes to them.
+$MaxLogBytes   = 2MB
+$MaxLogAgeDays = 14
+
+function Limit-LogFile {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    $item = Get-Item -LiteralPath $Path -ErrorAction SilentlyContinue
+    if ($null -eq $item -or $item.Length -lt $MaxLogBytes) { return }
+    # Keep the tail: after a crash the newest lines are the ones that explain it.
+    $kept = @(Get-Content -LiteralPath $Path -Tail 400 -ErrorAction SilentlyContinue)
+    $stamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
+    $header = "[log trimmed at $stamp - exceeded $([math]::Round($MaxLogBytes / 1MB, 1)) MB, newest 400 lines kept]"
+    try {
+        Set-Content -LiteralPath $Path -Value (@($header) + $kept) -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        # A locked log is not worth failing a startup over; the cap applies again next run.
+    }
+}
+
+function Remove-StaleLogs {
+    param([string]$Directory)
+    $cutoff = (Get-Date).AddDays(-$MaxLogAgeDays)
+    Get-ChildItem -LiteralPath $Directory -File -ErrorAction SilentlyContinue |
+        Where-Object { $_.Extension -in '.log', '.err' -and $_.LastWriteTime -lt $cutoff } |
+        ForEach-Object { Remove-Item -LiteralPath $_.FullName -Force -ErrorAction SilentlyContinue }
+}
+
+foreach ($logToCap in @($LogFile, $ViteOutLog, $ViteErrLog, $ElecOutLog, $ElecErrLog, $InstallLog, "$InstallLog.err")) {
+    Limit-LogFile $logToCap
+}
+Remove-StaleLogs $LogDir
+
 function Write-Log {
     param([string]$Message, [string]$Level = 'INFO')
     $line = '{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message

@@ -1,6 +1,5 @@
 // Keys for localStorage
 const LS_TAX_RATE_KEY = 'engaz_tax_rate';
-const LS_ADMIN_CREDS_KEY = 'engaz_admin_creds';
 const LS_BRANCH_CONFIG_KEY = 'engaz_branch_config';
 const LS_TELEGRAM_CONFIG_KEY = 'engaz_telegram_config';
 const LS_STORE_CONFIG_KEY = 'engaz_store_config';
@@ -44,50 +43,6 @@ export function getTaxRate(): number {
 
 export function setTaxRate(rate: number): void {
   persistSetting(LS_TAX_RATE_KEY, rate.toString());
-}
-
-// ─── Admin credentials ───────────────────────────────────────────────────────
-
-export interface AdminCredentials {
-  username: string;
-  /** PBKDF2 digest, or null when no password has been set on this device yet. */
-  password: string | null;
-}
-
-const DEFAULT_ADMIN_USERNAME = 'admin';
-
-/**
- * The stored admin credential, or a username with no password when the device has never
- * had one set. There is deliberately no default password: a shipped default is a password
- * every install shares, and the one every attacker tries first.
- */
-export async function getAdminCredentials(): Promise<AdminCredentials> {
-  const saved = localStorage.getItem(LS_ADMIN_CREDS_KEY);
-  if (saved) {
-    try {
-      const parsed = JSON.parse(saved);
-      if (parsed.username && isHashed(parsed.password)) {
-        return { username: parsed.username, password: parsed.password };
-      }
-    } catch {
-      // Unparseable: fall through to the unset state rather than trusting a partial record.
-    }
-  }
-  return { username: DEFAULT_ADMIN_USERNAME, password: null };
-}
-
-export async function setAdminCredentials(username: string, password?: string): Promise<void> {
-  // Omitted password means "keep the existing credential". This is the only way a caller
-  // can update just the username without re-hashing an already-stored digest.
-  if (password === undefined) {
-    const existing = await getAdminCredentials();
-    persistSetting(LS_ADMIN_CREDS_KEY, JSON.stringify({ username, password: existing.password }));
-    return;
-  }
-  persistSetting(
-    LS_ADMIN_CREDS_KEY,
-    JSON.stringify({ username, password: await hashPassword(password) })
-  );
 }
 
 // ─── Branch config ───────────────────────────────────────────────────────────

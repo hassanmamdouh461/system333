@@ -19,6 +19,7 @@ function order(overrides: Partial<OrderRow> = {}): OrderRow {
     totalAmount: 100,
     grandTotal: 100,
     subtotal: 90,
+    taxRate: 0.1,
     taxAmount: 10,
     paidAmount: 100,
     paymentStatus: 'Paid',

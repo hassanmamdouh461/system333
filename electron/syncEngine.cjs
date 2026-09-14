@@ -10,6 +10,66 @@ async function checkInternet() {
   return mockApi.checkWorkerHealth();
 }
 
+/**
+ * Marks a pushed batch as synced — but only the rows the worker actually took.
+ *
+ * The engine used to mark every id synced whenever the request did not throw. The worker
+ * returns `written` as the number of rows it *sent*, so an upsert that lost on `updated_at`,
+ * a tombstone older than its target and a ledger row dropped by `INSERT OR IGNORE` all
+ * counted as written. A row marked synced is never selected again, so the device and the
+ * cloud parted ways permanently and nothing on screen said so.
+ *
+ * Two different outcomes are handled differently on purpose:
+ *
+ *  - a record the worker **named** in `failed` never reached the database. It stays unsynced
+ *    and takes a failure, so it is retried and the reason is recorded on the row.
+ *  - a plain shortfall (`skipped`) means a statement matched nothing. That is usually
+ *    correct — the cloud already holds a newer row — so the rows are still marked synced,
+ *    but the shortfall is reported instead of being invisible. Holding them back would park
+ *    a tombstone-heavy branch on the first cycle and stop it syncing at all.
+ *
+ * Returns the ids that were held back.
+ */
+function reconcilePush({ table, ids, records, result, markSynced, markFailure, phaseErrors, label }) {
+  const named = new Set(
+    ((result && result.failed) || [])
+      .map((entry) => entry && entry.id)
+      .filter(Boolean)
+  );
+
+  const heldBack = ids.filter((id) => named.has(id));
+  const accepted = ids.filter((id) => !named.has(id));
+
+  if (accepted.length > 0) {
+    const acceptedSet = new Set(accepted);
+    // mark*Synced is version-guarded and skips any id it has no snapshot for, so the rows
+    // handed to it have to be the same ones the ids name.
+    markSynced(accepted, (records || []).filter((row) => acceptedSet.has(row.id)));
+  }
+
+  if (heldBack.length > 0) {
+    const detail = (result.failed || [])
+      .filter((entry) => entry && entry.id)
+      .slice(0, 5)
+      .map((entry) => `${entry.id}: ${entry.error}`)
+      .join('; ');
+    const message = `${label}: ${heldBack.length} record(s) rejected by the worker (${detail})`;
+    phaseErrors.push(message);
+    markFailure(table, heldBack, message);
+  }
+
+  // Reported, not suppressed. A shortfall that is never mentioned is how a till comes to
+  // disagree with the cloud while reporting a clean sync.
+  const skipped = result && typeof result.skipped === 'number' ? result.skipped : 0;
+  if (skipped > 0 && typeof result.written === 'number' && typeof result.expected === 'number') {
+    phaseErrors.push(
+      `${label}: worker wrote ${result.written} of ${result.expected} row(s) (${skipped} matched nothing)`
+    );
+  }
+
+  return heldBack;
+}
+
 class SyncEngine {
   constructor(db, onStatusUpdate) {
     this.db = db;
@@ -238,13 +298,18 @@ class SyncEngine {
       if (unsyncedMenu.length > 0) {
         const ids = unsyncedMenu.map(item => item.id);
         try {
-          await mockApi.pushMenuItems(unsyncedMenu);
-          menuRepository.markMenuSynced(ids, unsyncedMenu);
-          console.log(`[syncEngine] Marked ${ids.length} menu items as synced in local DB.`);
+          const result = await mockApi.pushMenuItems(unsyncedMenu);
+          const held = reconcilePush({
+            table: 'menu_items', ids, records: unsyncedMenu, result,
+            markSynced: (okIds, rows) => menuRepository.markMenuSynced(okIds, rows),
+            markFailure: (t, bad, msg) => this.db.markSyncFailure(t, bad, msg, unsyncedMenu),
+            phaseErrors, label: 'Menu push',
+          });
+          console.log(`[syncEngine] Marked ${ids.length - held.length} menu items as synced in local DB.`);
         } catch (e) {
           console.error('[syncEngine] Menu push failed:', e.message);
           phaseErrors.push(`Menu push failed: ${e.message}`);
-          this.db.markSyncFailure('menu_items', ids, e.message);
+          this.db.markSyncFailure('menu_items', ids, e.message, unsyncedMenu);
         }
       }
 
@@ -252,9 +317,14 @@ class SyncEngine {
       if (unsyncedCashiers.length > 0) {
         const ids = unsyncedCashiers.map(c => c.id);
         try {
-          await mockApi.pushCashiers(unsyncedCashiers);
-          cashierRepository.markCashiersSynced(ids, unsyncedCashiers);
-          console.log(`[syncEngine] Marked ${ids.length} cashiers as synced in local DB.`);
+          const result = await mockApi.pushCashiers(unsyncedCashiers);
+          const held = reconcilePush({
+            table: 'cashiers', ids, records: unsyncedCashiers, result,
+            markSynced: (okIds, rows) => cashierRepository.markCashiersSynced(okIds, rows),
+            markFailure: (t, bad, msg) => this.db.markSyncFailure(t, bad, msg, unsyncedCashiers),
+            phaseErrors, label: 'Cashiers push',
+          });
+          console.log(`[syncEngine] Marked ${ids.length - held.length} cashiers as synced in local DB.`);
         } catch (e) {
           console.error('[syncEngine] Cashiers push failed:', e.message);
           phaseErrors.push(`Cashiers push failed: ${e.message}`);
@@ -266,13 +336,18 @@ class SyncEngine {
       if (unsyncedCustomers.length > 0) {
         const ids = unsyncedCustomers.map(c => c.id);
         try {
-          await mockApi.pushCustomers(unsyncedCustomers);
-          customerRepository.markCustomersSynced(ids, unsyncedCustomers);
-          console.log(`[syncEngine] Marked ${ids.length} customers as synced in local DB.`);
+          const result = await mockApi.pushCustomers(unsyncedCustomers);
+          const held = reconcilePush({
+            table: 'customers', ids, records: unsyncedCustomers, result,
+            markSynced: (okIds, rows) => customerRepository.markCustomersSynced(okIds, rows),
+            markFailure: (t, bad, msg) => this.db.markSyncFailure(t, bad, msg, unsyncedCustomers),
+            phaseErrors, label: 'Customers push',
+          });
+          console.log(`[syncEngine] Marked ${ids.length - held.length} customers as synced in local DB.`);
         } catch (e) {
           console.error('[syncEngine] Customers push failed:', e.message);
           phaseErrors.push(`Customers push failed: ${e.message}`);
-          this.db.markSyncFailure('customers', ids, e.message);
+          this.db.markSyncFailure('customers', ids, e.message, unsyncedCustomers);
         }
       }
 
@@ -280,13 +355,18 @@ class SyncEngine {
       if (unsyncedOrders.length > 0) {
         const ids = unsyncedOrders.map(o => o.id);
         try {
-          await mockApi.pushOrders(unsyncedOrders);
-          orderRepository.markOrdersSynced(ids, unsyncedOrders);
-          console.log(`[syncEngine] Marked ${ids.length} orders as synced in local DB.`);
+          const result = await mockApi.pushOrders(unsyncedOrders);
+          const held = reconcilePush({
+            table: 'orders', ids, records: unsyncedOrders, result,
+            markSynced: (okIds, rows) => orderRepository.markOrdersSynced(okIds, rows),
+            markFailure: (t, bad, msg) => this.db.markSyncFailure(t, bad, msg, unsyncedOrders),
+            phaseErrors, label: 'Orders push',
+          });
+          console.log(`[syncEngine] Marked ${ids.length - held.length} orders as synced in local DB.`);
         } catch (e) {
           console.error('[syncEngine] Orders push failed:', e.message);
           phaseErrors.push(`Orders push failed: ${e.message}`);
-          this.db.markSyncFailure('orders', ids, e.message);
+          this.db.markSyncFailure('orders', ids, e.message, unsyncedOrders);
         }
       }
 
@@ -297,13 +377,18 @@ class SyncEngine {
         if (unsyncedInventory.length > 0) {
           const ids = unsyncedInventory.map(inv => inv.id);
           try {
-            await mockApi.pushInventory(unsyncedInventory);
-            inventoryRepository.markInventorySynced(ids, unsyncedInventory);
-            console.log(`[syncEngine] Marked ${ids.length} inventory items as synced in local DB.`);
+            const result = await mockApi.pushInventory(unsyncedInventory);
+            const held = reconcilePush({
+              table: 'inventory', ids, records: unsyncedInventory, result,
+              markSynced: (okIds, rows) => inventoryRepository.markInventorySynced(okIds, rows),
+              markFailure: (t, bad, msg) => this.db.markSyncFailure(t, bad, msg, unsyncedInventory),
+              phaseErrors, label: 'Inventory push',
+            });
+            console.log(`[syncEngine] Marked ${ids.length - held.length} inventory items as synced in local DB.`);
           } catch (e) {
             console.error('[syncEngine] Inventory push failed:', e.message);
             phaseErrors.push(`Inventory push failed: ${e.message}`);
-            this.db.markSyncFailure('inventory', ids, e.message);
+            this.db.markSyncFailure('inventory', ids, e.message, unsyncedInventory);
           }
         }
 
@@ -311,9 +396,16 @@ class SyncEngine {
         if (unsyncedTx.length > 0) {
           const txIds = unsyncedTx.map(t => t.id);
           try {
-            await mockApi.pushInventoryTransactions(unsyncedTx);
-            inventoryRepository.markTransactionsSynced(txIds);
-            console.log(`[syncEngine] Marked ${txIds.length} inventory transactions as synced in local DB.`);
+            const result = await mockApi.pushInventoryTransactions(unsyncedTx);
+            const held = reconcilePush({
+              table: 'inventory_transactions', ids: txIds, records: unsyncedTx, result,
+              // The ledger is append-only, so there is no version to guard: a movement is
+              // never edited after the fact.
+              markSynced: (okIds) => inventoryRepository.markTransactionsSynced(okIds),
+              markFailure: (t, bad, msg) => this.db.markSyncFailure(t, bad, msg),
+              phaseErrors, label: 'Inventory transactions push',
+            });
+            console.log(`[syncEngine] Marked ${txIds.length - held.length} inventory transactions as synced in local DB.`);
           } catch (e) {
             console.error('[syncEngine] Inventory transactions push failed:', e.message);
             phaseErrors.push(`Inventory transactions push failed: ${e.message}`);
@@ -321,7 +413,13 @@ class SyncEngine {
           }
         }
 
-        // Loyalty points ledger (Issue 26)
+        // Loyalty points ledger (Issue 26).
+        //
+        // No snapshots are passed for either ledger table. markSyncFailure builds its
+        // version guard from `updated_at`, and neither inventory_transactions nor
+        // points_transactions has that column — passing records would make every failure
+        // update throw "no such column" and silently park nothing at all. Both are
+        // append-only, so a row is never edited after the fact and there is nothing to guard.
         const sqlite = this.db.getDb();
         // Same two filters as every other push query: a row parked after repeated failures
         // or belonging to another branch must not be retried on every cycle.
@@ -335,12 +433,19 @@ class SyncEngine {
         if (unsyncedPtx.length > 0) {
           const ptxIds = unsyncedPtx.map(p => p.id);
           try {
-            await mockApi.pushPointsTransactions(unsyncedPtx);
+            const result = await mockApi.pushPointsTransactions(unsyncedPtx);
+            const named = new Set(((result && result.failed) || []).map((f) => f && f.id).filter(Boolean));
+            const okIds = ptxIds.filter((id) => !named.has(id));
             // Clearing sync_attempts re-arms a row that failed before and has since been
             // queued again; without it a recovered row stays parked for the session.
             const stmt = sqlite.prepare('UPDATE points_transactions SET is_synced = 1, sync_attempts = 0 WHERE id = ?');
-            sqlite.transaction(() => { for (const id of ptxIds) stmt.run(id); })();
-            console.log(`[syncEngine] Marked ${ptxIds.length} points transactions as synced in local DB.`);
+            sqlite.transaction(() => { for (const id of okIds) stmt.run(id); })();
+            console.log(`[syncEngine] Marked ${okIds.length} points transactions as synced in local DB.`);
+            if (named.size > 0) {
+              const message = `Points transactions push: ${named.size} record(s) rejected by the worker`;
+              phaseErrors.push(message);
+              this.db.markSyncFailure('points_transactions', [...named], message);
+            }
           } catch (e) {
             console.error('[syncEngine] Points transactions push failed:', e.message);
             phaseErrors.push(`Points transactions push failed: ${e.message}`);
@@ -360,7 +465,15 @@ class SyncEngine {
       if (phaseErrors.length > 0) {
         this.status.state = 'error';
         this.status.lastError = phaseErrors.join('; ');
-        this.consecutiveFailures += 1;
+
+        // Only a failed *push* earns a longer wait. A pull that keeps failing is a server
+        // contract mismatch (a deployed worker that does not implement /pull/*), and the
+        // exponential backoff then hides it: the till drifts to a 30-minute cadence and
+        // stops noticing when the server is fixed. Local writes still reach the cloud on
+        // every cycle, so there is nothing to back away from.
+        const pushFailed = phaseErrors.some((message) => /push failed|transactions push failed/i.test(message));
+        if (pushFailed) this.consecutiveFailures += 1;
+
         console.warn(`[syncEngine] Sync cycle completed with ${phaseErrors.length} error(s):`, this.status.lastError);
       } else if (finalStats.totalPending > 0) {
         this.status.state = 'syncing';

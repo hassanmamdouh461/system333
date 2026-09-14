@@ -1,5 +1,6 @@
 const database = require('./database.cjs');
 const { randomUUID } = require('crypto');
+const { MAX_SYNC_ATTEMPTS } = database;
 
 // Monotonic per-row version: a second edit in the same millisecond still gets a newer
 // updated_at, which the sync version guards compare on.
@@ -170,7 +171,7 @@ class MenuRepository {
     // deletion to the cloud, even while offline (Issue 20)
     const now = new Date().toISOString();
     sqlite.prepare(`
-      UPDATE menu_items SET deleted_at = ?, updated_at = ?, is_synced = 0
+      UPDATE menu_items SET deleted_at = ?, updated_at = ?, is_synced = 0, sync_attempts = 0
       WHERE id = ? AND deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
     `).run(now, now, id, this.getBranchId());
   }
@@ -229,8 +230,8 @@ class MenuRepository {
     // sync state, adopting another branch's data.
     const rows = sqlite.prepare(`
       SELECT * FROM menu_items
-      WHERE is_synced = 0 AND sync_attempts < 5 AND (branch_id = ? OR branch_id IS NULL)
-    `).all(branchId);
+      WHERE is_synced = 0 AND sync_attempts < ? AND (branch_id = ? OR branch_id IS NULL)
+    `).all(MAX_SYNC_ATTEMPTS, branchId);
     return rows.map(row => ({
       ...this.mapRow(row),
       deletedAt: row.deleted_at || undefined

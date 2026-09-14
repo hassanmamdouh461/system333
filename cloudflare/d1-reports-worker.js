@@ -48,6 +48,8 @@ import {
   MAX_IMAGE_BYTES,
   MAX_JSON_BYTES,
   MAX_BODY_BYTES,
+  countWritten,
+  summariseBatch,
 } from './shared/common.js';
 
 // Re-exported so the test suite and anything else importing from this module keeps working.
@@ -177,6 +179,36 @@ function assertItems(items) {
   if (!Array.isArray(items)) throw new Error('Expected an "items" array');
   if (items.length > MAX_BATCH) throw new Error(`Too many records (max ${MAX_BATCH})`);
   return items;
+}
+
+/**
+ * Builds a batch, keeping the records that can be written and naming the ones that cannot.
+ *
+ * One malformed record used to abort the whole batch: `db.batch` is a single transaction,
+ * so a single oversized order left every good record behind it unwritten and the caller,
+ * told only that the call failed, resent the identical batch on every cycle.
+ */
+function buildSyncBatch(db, spec, items) {
+  const statements = [];
+  const kinds = [];
+  const failed = [];
+
+  for (const record of items) {
+    try {
+      if (!record || !record.id) throw new Error('Every record needs an id');
+      statements.push(db.prepare(spec.upsert).bind(...spec.params(record)));
+      // Mirrored tombstones and append-only ledgers are deliberately not held to "must have
+      // changed a row" -- see summariseBatch for why.
+      kinds.push(spec.appendOnly ? 'append' : (record.deletedAt || record.deleted_at ? 'tombstone' : 'verify'));
+    } catch (err) {
+      failed.push({
+        id: record && record.id ? str(record.id) : null,
+        error: String((err && err.message) || err),
+      });
+    }
+  }
+
+  return { statements, kinds, failed };
 }
 
 // ─── Branch registry ─────────────────────────────────────────────────────────
@@ -310,7 +342,7 @@ const SYNC_TABLES = {
                available = excluded.available,
                branch_id = excluded.branch_id,
                updated_at = excluded.updated_at,
-               deleted_at = COALESCE(menu_items.deleted_at, excluded.deleted_at)
+               deleted_at = excluded.deleted_at
              WHERE excluded.updated_at > menu_items.updated_at OR menu_items.updated_at IS NULL
                 OR (excluded.updated_at = menu_items.updated_at AND excluded.deleted_at IS NOT NULL AND menu_items.deleted_at IS NULL)`,
     params: (i) => [
@@ -350,7 +382,7 @@ const SYNC_TABLES = {
                cashierAvatar = excluded.cashierAvatar,
                paidAt = excluded.paidAt,
                updated_at = excluded.updated_at,
-               deleted_at = COALESCE(orders.deleted_at, excluded.deleted_at)
+               deleted_at = excluded.deleted_at
              WHERE excluded.updated_at > orders.updated_at OR orders.updated_at IS NULL
                 OR (excluded.updated_at = orders.updated_at AND excluded.deleted_at IS NOT NULL AND orders.deleted_at IS NULL)`,
     params: (o) => [
@@ -378,7 +410,7 @@ const SYNC_TABLES = {
                points = excluded.points,
                branch_id = excluded.branch_id,
                updated_at = excluded.updated_at,
-               deleted_at = COALESCE(customers.deleted_at, excluded.deleted_at)
+               deleted_at = excluded.deleted_at
              WHERE excluded.updated_at > customers.updated_at OR customers.updated_at IS NULL`,
     params: (c) => [
       str(c.id), capped(str(c.name, ''), MAX_TEXT_BYTES), capped(str(c.phone, ''), MAX_TEXT_BYTES),
@@ -401,7 +433,7 @@ const SYNC_TABLES = {
                costPerUnit = excluded.costPerUnit,
                branch_id = excluded.branch_id,
                updated_at = excluded.updated_at,
-               deleted_at = COALESCE(inventory.deleted_at, excluded.deleted_at)
+               deleted_at = excluded.deleted_at
              WHERE excluded.updated_at > inventory.updated_at OR inventory.updated_at IS NULL`,
     params: (i) => [
       str(i.id), capped(str(i.name, ''), MAX_TEXT_BYTES), capped(str(i.unit, ''), MAX_TEXT_BYTES),
@@ -422,7 +454,7 @@ const SYNC_TABLES = {
                avatar = excluded.avatar,
                branch_id = excluded.branch_id,
                updated_at = excluded.updated_at,
-               deleted_at = COALESCE(cashiers.deleted_at, excluded.deleted_at)
+               deleted_at = excluded.deleted_at
              WHERE excluded.updated_at > cashiers.updated_at OR cashiers.updated_at IS NULL`,
     params: (c) => [
       str(c.id), capped(str(c.name, ''), MAX_TEXT_BYTES), capped(str(c.avatar), MAX_IMAGE_BYTES),
@@ -904,17 +936,21 @@ export default {
         const items = assertItems(payload.items);
         if (items.length === 0) return json({ success: true, written: 0 }, 200, origin);
 
-        const statements = items.map((record) => {
-          if (!record || !record.id) throw new Error('Every record needs an id');
-          return env.DB.prepare(spec.upsert).bind(...spec.params(record));
-        });
-        await env.DB.batch(statements);
-        return json({ success: true, written: statements.length }, 200, origin);
+        const { statements, kinds, failed } = buildSyncBatch(env.DB, spec, items);
+        const results = await env.DB.batch(statements);
+        const { written, expected, skipped } = summariseBatch(results, kinds);
+
+        // Same contract as the POS worker: `written` counts rows changed, so the caller can
+        // tell a write that landed from a statement that matched nothing.
+        return json({ success: true, written, expected, skipped, failed }, 200, origin);
       }
 
       return json({ success: false, error: `Unknown endpoint: ${url.pathname}` }, 404, origin);
     } catch (err) {
-      return json({ success: false, error: String(err.message || err) }, 500, origin);
+      // Bad input is the caller's fault, not the server's: answering 500 for it puts
+      // ordinary rejections in the same bucket as real outages.
+      const status = err && err.isRejection ? 400 : 500;
+      return json({ success: false, error: String(err.message || err) }, status, origin);
     }
   },
 };
@@ -922,6 +958,9 @@ export default {
 // Exported for the test suite; not part of the HTTP surface.
 export const __testing = {
   SYNC_TABLES,
+  buildSyncBatch,
+  countWritten,
+  summariseBatch,
   assertItems,
   MAX_BATCH,
   MOVEMENT_LIMIT,

@@ -139,6 +139,79 @@ export function orderItemsJson(items) {
   return text;
 }
 
+// ─── Write accounting ────────────────────────────────────────────────────────
+// A batch result says how many rows each statement actually changed. Reporting the number
+// of statements instead is what made a till believe a write had landed when it had not:
+// an upsert whose last-writer-wins predicate failed, a tombstone older than the row it
+// targeted, and a ledger duplicate dropped by INSERT OR IGNORE all change zero rows while
+// still being one statement that was sent.
+
+/**
+ * Counts the rows a D1 batch actually wrote.
+ *
+ * D1 reports `rows_written`, while the older interface and most test doubles report
+ * `changes`; both are accepted so the answer does not depend on which is present. A result
+ * set that is missing entirely counts as zero rather than as one per statement, because
+ * "we cannot tell" must never be reported as "written".
+ */
+export function countWritten(batchResults) {
+  if (!Array.isArray(batchResults)) return 0;
+
+  let written = 0;
+  for (const result of batchResults) {
+    const meta = result && result.meta;
+    if (!meta) continue;
+    const rows = meta.rows_written ?? meta.changes ?? 0;
+    if (Number.isFinite(rows)) written += rows;
+  }
+  return written;
+}
+
+/**
+ * Summarises a batch result against what each statement was expected to do.
+ *
+ * Only statements marked `verify` are held to "must have changed a row", because two kinds
+ * of no-op are correct and constant:
+ *
+ *  - a tombstone for a row the cloud never had. A branch that deleted an item it created
+ *    locally sends an UPDATE that matches nothing, and that is the desired outcome.
+ *  - an append-only ledger row that is already present. `INSERT OR IGNORE` matching zero
+ *    rows means the movement was recorded earlier, which is a success.
+ *
+ * Counting either as a failure would produce a shortfall on almost every sync and bury the
+ * shortfalls that matter.
+ *
+ * @param {Array} results the value D1's `batch` resolved to
+ * @param {string[]} kinds one entry per statement: 'verify', 'tombstone' or 'append'
+ */
+export function summariseBatch(results, kinds) {
+  const list = Array.isArray(results) ? results : [];
+  const kindList = Array.isArray(kinds) ? kinds : [];
+
+  let written = 0;
+  let expected = 0;
+  let verifiedWritten = 0;
+
+  // Driven by whichever list is longer, not by the results alone: a result set that is
+  // shorter than the statements sent means some rows are unaccounted for, and reporting
+  // "nothing needed verifying" for them would be the same optimistic guess as before.
+  const length = Math.max(list.length, kindList.length);
+
+  for (let i = 0; i < length; i++) {
+    const meta = list[i] && list[i].meta;
+    const raw = meta ? (meta.rows_written ?? meta.changes ?? 0) : 0;
+    const rows = Number.isFinite(raw) ? raw : 0;
+
+    written += rows;
+    if (kindList[i] === 'verify') {
+      expected += 1;
+      verifiedWritten += rows;
+    }
+  }
+
+  return { written, expected, skipped: Math.max(0, expected - verifiedWritten) };
+}
+
 // ─── Rejections ──────────────────────────────────────────────────────────────
 
 /**

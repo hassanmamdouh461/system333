@@ -34,11 +34,31 @@ export function computeCogs(
 
 /**
  * Revenue is collected tax-inclusive, so the tax amount is removed before subtracting
- * ingredient cost. Floored at zero: a negative figure on a profit card reads as a data
- * problem rather than a loss.
+ * ingredient cost.
+ *
+ * The result is signed and is NOT floored at zero. It used to be, and that made the cashier
+ * screen show 0 for a loss-making period while the manager portal (analytics.ts, which has
+ * no floor) showed the real negative number for the same day — two different profits from
+ * one set of orders, with nothing on screen explaining the difference. Money maths belongs
+ * in one place; deciding how a loss *looks* is the view's job.
+ *
+ * Callers that display this in a card should render `Math.max(0, value)` and surface a loss
+ * indicator when the value is negative — see `formatProfitForDisplay`.
  */
 export function computeNetProfit(revenue: number, taxAmount: number, cogs: number): number {
-  return Math.max(0, roundMoney(revenue - taxAmount - cogs));
+  return roundMoney(revenue - taxAmount - cogs);
+}
+
+/**
+ * How a profit figure is shown: the magnitude is always positive, and the sign is carried
+ * separately so a UI can label a loss instead of hiding it behind a zero.
+ */
+export function formatProfitForDisplay(netProfit: number): {
+  amount: number;
+  isLoss: boolean;
+} {
+  const value = roundMoney(netProfit);
+  return { amount: Math.abs(value), isLoss: value < 0 };
 }
 
 export interface InvoiceStats {
@@ -94,12 +114,16 @@ export function summarizePaymentMethods(paidOrders: Order[]): PaymentMethodStats
   }
 
   const totalAmount = cashAmount + cardAmount;
+  // Card is derived by subtraction, not by rounding the same ratio twice. Two independent
+  // Math.round calls can both round up — 50.5 + 49.5 became 51% + 50% = 101% — and a split
+  // that does not add to 100 is read as a bug in the totals, not as rounding.
+  const cashPercentage = totalAmount > 0 ? Math.round((cashAmount / totalAmount) * 100) : 0;
   return {
     cashAmount: roundMoney(cashAmount),
     cardAmount: roundMoney(cardAmount),
     totalAmount: roundMoney(totalAmount),
-    cashPercentage: totalAmount > 0 ? Math.round((cashAmount / totalAmount) * 100) : 0,
-    cardPercentage: totalAmount > 0 ? Math.round((cardAmount / totalAmount) * 100) : 0,
+    cashPercentage,
+    cardPercentage: totalAmount > 0 ? 100 - cashPercentage : 0,
   };
 }
 

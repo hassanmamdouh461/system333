@@ -1,5 +1,6 @@
 const database = require('./database.cjs');
 const { randomUUID } = require('crypto');
+const { MAX_SYNC_ATTEMPTS } = database;
 
 // Monotonic per-row version: a second edit in the same millisecond still gets a newer
 // updated_at, which the sync version guards compare on.
@@ -46,6 +47,13 @@ class CustomerRepository {
    * Applies rows pulled from the cloud, including their deleted_at so a deletion made on
    * another branch disappears here too. Only overwrites a local row that is synced or older.
    */
+  /**
+   * `points` is deliberately NOT overwritten on conflict, for the same reason stock is not:
+   * it is a running balance this till maintains from its own points_transactions ledger, and
+   * the cloud value is whichever branch pushed last. Adopting it let a redemption made here
+   * be undone by a sibling's older balance — the customer then spent the same points twice.
+   * A newly discovered customer still takes points from the INSERT.
+   */
   upsertPulledCustomers(rows) {
     if (!rows || rows.length === 0) return;
     const sqlite = this.getDb();
@@ -55,7 +63,6 @@ class CustomerRepository {
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         phone = excluded.phone,
-        points = excluded.points,
         branch_id = excluded.branch_id,
         updated_at = excluded.updated_at,
         deleted_at = excluded.deleted_at,
@@ -159,7 +166,9 @@ class CustomerRepository {
     const balanceAfterRedeem = currentBalance - redeemed;
     const newBalance = balanceAfterRedeem + earned;
 
-    sqlite.prepare('UPDATE customers SET points = ?, updated_at = ?, is_synced = 0 WHERE id = ?')
+    // sync_attempts is cleared for the same reason as the other mutation paths: a row
+    // parked at the budget stays parked unless an edit gives it its attempts back.
+    sqlite.prepare('UPDATE customers SET points = ?, updated_at = ?, is_synced = 0, sync_attempts = 0 WHERE id = ?')
       .run(newBalance, now, customer.id);
 
     const insertLedger = sqlite.prepare(`
@@ -197,8 +206,8 @@ class CustomerRepository {
     const branchId = this.getBranchId();
     const rows = sqlite.prepare(`
       SELECT * FROM customers
-      WHERE is_synced = 0 AND sync_attempts < 5 AND (branch_id = ? OR branch_id IS NULL)
-    `).all(branchId);
+      WHERE is_synced = 0 AND sync_attempts < ? AND (branch_id = ? OR branch_id IS NULL)
+    `).all(MAX_SYNC_ATTEMPTS, branchId);
     return rows.map(row => ({
       ...this.mapRow(row),
       deletedAt: row.deleted_at || undefined

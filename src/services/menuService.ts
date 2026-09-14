@@ -71,7 +71,12 @@ export const menuService = {
     throw new Error('فشل قراءة أصناف القائمة');
   },
 
-  async getPublicMenuData(): Promise<{ menuItems: MenuItem[]; config: PublicMenuConfig | null }> {
+  async getPublicMenuData(): Promise<{
+    menuItems: MenuItem[];
+    config: PublicMenuConfig | null;
+    /** True when the endpoint could not be reached: callers must surface a real message. */
+    unavailable?: boolean;
+  }> {
     try {
       const reportsUrl = (import.meta.env.VITE_REPORTS_WORKER_URL as string) || 'https://api-reports.engaz.tech';
       const res = await fetch(`${reportsUrl.replace(/\/+$/, '')}/read/public-menu`, {
@@ -88,11 +93,15 @@ export const menuService = {
         }
       }
     } catch (e) {
-      console.warn('[menuService] Public menu fetch with config failed, falling back:', e);
+      console.warn('[menuService] Public menu fetch with config failed:', e);
     }
 
-    const fallbackItems = await this.getAll();
-    return { menuItems: fallbackItems, config: null };
+    // No retry through getAll(): that method re-requests the very same /read/public-menu
+    // endpoint, so a failure here is a failure there. Retrying would double the browser's
+    // requests against an endpoint that just proved it is unreachable, and on the desktop
+    // build it would silently return the branch's local menu instead of the published one —
+    // which looks like success while showing stale data. Report unavailability instead.
+    return { menuItems: [], config: null, unavailable: true };
   },
 
   async create(item: Omit<MenuItem, 'id'>): Promise<MenuItem> {

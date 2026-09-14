@@ -2,11 +2,30 @@ name = "engaz-d1-proxy"
 main = "cloudflare/d1-proxy-worker.js"
 compatibility_date = "2025-01-01"
 
-# Reachable on exactly one hostname. The natural production hostname (api.engaz.tech) is
-# already serving another service, so until that cutover is decided this worker answers on
-# its canonical workers.dev URL only. Switching the URL is then a config change here plus a
-# settings update in the POS, not a DNS or route migration.
-workers_dev = true
+# ── CUTOVER: read this before deploying ───────────────────────────────────────────────
+# This worker holds every order, customer, stock level and loyalty balance in the business.
+# It used to be published on its Cloudflare-provided *.workers.dev URL, which anyone on the
+# internet can reach by name and which sits outside every Access policy, WAF rule and rate
+# limit scoped to engaz.tech — while both less sensitive workers (the reports API and the
+# reporting portal) had workers_dev deliberately switched off for exactly that reason.
+#
+# It now answers on api-pos.engaz.tech only. api.engaz.tech is deliberately NOT used: that
+# hostname is already serving another service, and claiming its route would take it down.
+#
+# Order of operations — doing these out of order is an outage:
+#   1. Point every POS device at https://api-pos.engaz.tech (settings → worker URL).
+#      electron/workerHostPolicy.cjs already allows this host, so no desktop rebuild is
+#      needed and a device can be moved one at a time.
+#   2. Deploy. The worker stops answering on *.workers.dev the moment this config lands.
+#   3. Verify https://api-pos.engaz.tech/health and a real sync from one device.
+#
+# A device still carrying the old *.workers.dev URL after step 2 stops syncing entirely.
+# The host allowlist cannot rescue it, because the hostname itself ceases to exist.
+workers_dev = false
+
+routes = [
+  { pattern = "api-pos.engaz.tech/*", zone_name = "engaz.tech" },
+]
 
 # Cloudflare D1 database used by the desktop POS (writes) and the manager portal (reads).
 # The binding name must stay `DB` -- the worker reads env.DB.

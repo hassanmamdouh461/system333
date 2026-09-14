@@ -11,6 +11,7 @@
 const fs = require('fs');
 const path = require('path');
 const https = require('https');
+const http = require('http');
 const database = require('./database.cjs');
 const {
   DEFAULT_WORKER_URL,
@@ -46,6 +47,10 @@ function readEnvFileConfig() {
     if (urlMatch) result.url = urlMatch[1].trim();
     const keyMatch = envContent.match(/^\s*VITE_CF_WORKER_API_KEY\s*=\s*([^#\r\n]*)/m);
     if (keyMatch) result.key = keyMatch[1].trim();
+    // VITE_REPORTS_API_KEY is read here only as a fallback for the desktop process.
+    // The name is unfortunate: the portal build treats this exact variable as a sentinel
+    // secret and fails if it reaches a bundle (scripts/build-reports.mjs). Prefer
+    // ENGAZ_REPORTS_API_KEY, which is not a Vite-visible name and cannot collide.
     const reportsKeyMatch = envContent.match(/^\s*VITE_REPORTS_API_KEY\s*=\s*([^#\r\n]*)/m);
     if (reportsKeyMatch) result.reportsKey = reportsKeyMatch[1].trim();
   } catch (e) {
@@ -78,6 +83,16 @@ function loadConfig(force = false) {
   // Removing the credential must also clear the cached value after the TTL.
   REPORTS_WORKER_KEY = process.env.ENGAZ_REPORTS_API_KEY || fromEnv.reportsKey || '';
   configLoadedAt = now;
+
+  // Without this key every write is silently dropped: mirrorToReports returns at its first
+  // line and flushReportsOutbox reports success having sent nothing — so the manager portal
+  // shows an empty day while this till reports "synced". Say so once per config load.
+  if (!REPORTS_WORKER_KEY) {
+    console.warn(
+      '[D1 Sync API] No reports write key configured (ENGAZ_REPORTS_API_KEY or VITE_REPORTS_API_KEY). '
+      + 'The manager portal will not receive this device\'s orders, customers or stock.'
+    );
+  }
 
   if (WORKER_URL !== previousUrl) {
     console.log('[D1 Sync API] Configured Worker URL:', WORKER_URL);
@@ -126,9 +141,15 @@ function postJson({ baseUrl, endpoint, body, apiKey, timeout }) {
     }
 
     const bodyStr = JSON.stringify(body || {});
-    const req = https.request({
+    // The transport follows the URL. workerHostPolicy deliberately allows http for
+    // explicitly dev-mode local origins, so hard-coding https here made every local
+    // worker unreachable: the port was honoured while the protocol was not, and a TLS
+    // handshake was attempted against a plaintext port.
+    const transport = parsed.protocol === 'http:' ? http : https;
+    const defaultPort = parsed.protocol === 'http:' ? 80 : 443;
+    const req = transport.request({
       hostname: parsed.hostname,
-      port: parsed.port || 443,
+      port: parsed.port || defaultPort,
       path: endpointPath(parsed, endpoint),
       method: 'POST',
       headers: {
@@ -178,9 +199,16 @@ async function callWorker(endpoint, body) {
   if (!WORKER_API_KEY && REPORTS_WORKER_KEY) {
     if (endpoint.startsWith('/sync/')) {
       const res = await mirrorToReports(endpoint, body, true);
-      return res || { success: true, written: body?.items?.length || 0 };
+      // No invented count: if the worker did not answer, nothing is known to have been
+      // written, and claiming otherwise is how a row stops being retried without ever
+      // having been stored.
+      return res || { success: true, written: 0, expected: (body && body.items ? body.items.length : 0), failed: [] };
     }
-    return { success: true, orders: [] };
+    // Reports-only mode has no POS database to read from. Returning an empty page made a
+    // pull indistinguishable from "no remote changes", so the device looked fully synced
+    // while never learning anything another branch did. Refuse instead, so the cycle
+    // records a phase error and the operator can see why.
+    throw new Error(`Cannot ${endpoint} in reports-only mode: no central POS worker is configured`);
   }
 
   if (!WORKER_URL || WORKER_URL.includes('your-username')) {
@@ -209,7 +237,10 @@ async function callWorker(endpoint, body) {
       if (Array.isArray(body?.items)) {
         for (const item of body.items) {
           if (item && item.id) {
-            const version = item.updated_at || item.updatedAt || item.createdAt || new Date().toISOString();
+            // Never fall back to createdAt: it never changes, so the outbox version guard
+            // (`version >= existing`) would reject every later edit and keep re-sending the
+            // original payload forever. A missing timestamp means "now".
+            const version = item.updated_at || item.updatedAt || new Date().toISOString();
             database.enqueueReportOutbox(target, item.id, item, version);
           }
         }
@@ -226,7 +257,10 @@ async function callWorker(endpoint, body) {
 let outboxFlushInProgress = false;
 async function flushReportsOutbox(limit = 100) {
   loadConfig();
-  if (!REPORTS_WORKER_KEY || outboxFlushInProgress) return { success: true, sent: 0 };
+  // Reporting success for a flush that never ran is what hid the missing key for so long:
+  // the caller has no way to tell "nothing to send" from "cannot send".
+  if (!REPORTS_WORKER_KEY) return { success: false, sent: 0, error: 'reports key not configured' };
+  if (outboxFlushInProgress) return { success: true, sent: 0, skipped: 'in-progress' };
   outboxFlushInProgress = true;
   let sentCount = 0;
 
@@ -275,7 +309,9 @@ async function flushReportsOutbox(limit = 100) {
  * worker, but throwing when operating in reports-only mode so the caller retries.
  */
 async function mirrorToReports(endpoint, body, shouldThrow = false) {
-  if (!REPORTS_WORKER_KEY) return;
+  // Never a silent undefined: the caller has to be able to tell "mirrored" from
+  // "skipped because this device holds no reports key".
+  if (!REPORTS_WORKER_KEY) return { skipped: true, reason: 'no-reports-key' };
   try {
     const res = await postJson({
       baseUrl: REPORTS_WORKER_URL,
@@ -297,15 +333,24 @@ async function mirrorToReports(endpoint, body, shouldThrow = false) {
 
 /** Splits a push into worker-sized chunks so a large backlog is not rejected wholesale. */
 async function syncRecords(target, records) {
-  if (!records || records.length === 0) return { success: true, written: 0 };
+  if (!records || records.length === 0) return { success: true, written: 0, expected: 0, failed: [] };
 
+  // The counts the caller gets back have to mean something. `written` used to be thrown
+  // away and `success` was a constant, so a till marked every row synced whether the worker
+  // stored it or silently skipped it — and a row marked synced is never looked at again.
   let written = 0;
+  let expected = 0;
+  const failed = [];
+
   for (let i = 0; i < records.length; i += MAX_BATCH) {
     const chunk = records.slice(i, i + MAX_BATCH);
     const res = await callWorker(`/sync/${target}`, { items: chunk });
     written += (res && res.written) || 0;
+    expected += (res && typeof res.expected === 'number') ? res.expected : chunk.length;
+    if (res && Array.isArray(res.failed) && res.failed.length > 0) failed.push(...res.failed);
   }
-  return { success: true, written };
+
+  return { success: true, written, expected, failed };
 }
 
 /**
@@ -527,10 +572,13 @@ async function checkWorkerHealth() {
   const targetUrl = (!WORKER_API_KEY && REPORTS_WORKER_KEY) ? REPORTS_WORKER_URL : WORKER_URL;
   try {
     const parsedUrl = new URL(targetUrl);
+    // Same transport rule as postJson: an http worker must be dialled over http.
+    const transport = parsedUrl.protocol === 'http:' ? http : https;
+    const defaultPort = parsedUrl.protocol === 'http:' ? 80 : 443;
     await new Promise((resolve, reject) => {
-      const req = https.request({
+      const req = transport.request({
         hostname: parsedUrl.hostname,
-        port: parsedUrl.port || 443,
+        port: parsedUrl.port || defaultPort,
         path: endpointPath(parsedUrl, '/health'),
         method: 'GET',
         timeout: 5000,

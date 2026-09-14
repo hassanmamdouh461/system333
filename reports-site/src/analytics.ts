@@ -18,6 +18,7 @@ export interface OrderRow {
   totalAmount: number | null;
   grandTotal: number | null;
   subtotal: number | null;
+  taxRate: number | null;
   taxAmount: number | null;
   paidAmount: number | null;
   paymentStatus: string | null;
@@ -103,6 +104,34 @@ export function orderBilled(order: OrderRow): number {
   return toNum(order.totalAmount);
 }
 
+/**
+ * Tax carried by one order, or `null` when the row genuinely does not know it.
+ *
+ * Reading `taxAmount` straight through `toNum` turned a missing value into 0, which silently
+ * inflated net profit for every order written before the snapshot columns existed: revenue
+ * kept its full tax-inclusive value while the tax it contains was subtracted as nothing.
+ *
+ * The stored snapshot is authoritative. When it is absent the tax is recovered from
+ * `grandTotal - subtotal` — the two figures that define it — and only when that is impossible
+ * is the row reported as unknown rather than as zero. `null` is the honest answer; 0 is a
+ * claim that no tax was charged.
+ */
+export function orderTax(order: OrderRow): number | null {
+  // Number(null) is 0, not NaN, so the null check has to come before the cast: skipping it
+  // would read a missing column as "no tax charged", which is the bug this replaces.
+  const optional = (value: unknown): number =>
+    value === null || value === undefined ? Number.NaN : Number(value);
+
+  const stored = optional(order.taxAmount);
+  if (Number.isFinite(stored)) return stored;
+
+  const gross = optional(order.grandTotal);
+  const net = optional(order.subtotal);
+  if (Number.isFinite(gross) && Number.isFinite(net)) return gross - net;
+
+  return null;
+}
+
 export function isPaid(order: OrderRow): boolean {
   return order.paymentStatus === 'Paid';
 }
@@ -159,8 +188,16 @@ export function orderLines(order: OrderRow): OrderLine[] {
 export interface SalesTotals {
   /** Collected from paid orders, tax included. */
   revenue: number;
-  /** Tax contained in that revenue. */
+  /** Tax contained in that revenue. Excludes orders whose tax is unknown. */
   tax: number;
+  /**
+   * Paid orders whose tax could not be determined from the stored row.
+   *
+   * They still count toward revenue and net profit, so a non-zero value means those two
+   * figures carry a known upward bias. Surfaces it instead of letting a missing column
+   * masquerade as "no tax charged".
+   */
+  unknownTaxCount: number;
   /** Raw material cost of what those orders consumed. */
   cogs: number;
   /** Revenue minus tax minus material cost. */
@@ -211,17 +248,30 @@ export function summarizeSales(
   const unpaid = orders.filter((order) => !isPaid(order));
 
   const revenue = paid.reduce((sum, order) => sum + orderRevenue(order), 0);
-  const tax = paid.reduce((sum, order) => sum + toNum(order.taxAmount), 0);
   const cogs = costOfGoodsSold(movements, inventory, new Set(paid.map((order) => order.id)));
   const outstanding = unpaid.reduce(
     (sum, order) => sum + Math.max(orderBilled(order) - toNum(order.paidAmount), 0),
     0
   );
 
+  // Unknown tax is counted, not silently coerced to zero: a row with no tax snapshot keeps
+  // its full tax-inclusive revenue, and charging it 0 tax would overstate the profit.
+  let tax = 0;
+  let unknownTaxCount = 0;
+  for (const order of paid) {
+    const orderTaxAmount = orderTax(order);
+    if (orderTaxAmount === null) unknownTaxCount += 1;
+    else tax += orderTaxAmount;
+  }
+
+  // Signed, and identical in definition to computeNetProfit on the desktop: revenue minus
+  // tax minus material cost. No floor — the portal must not show a different profit than
+  // the POS for the same period.
   const netProfit = revenue - tax - cogs;
   return {
     revenue,
     tax,
+    unknownTaxCount,
     cogs,
     netProfit,
     outstanding,

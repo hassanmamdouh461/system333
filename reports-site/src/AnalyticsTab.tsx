@@ -140,7 +140,18 @@ export function AnalyticsTab({
             </li>
             <li>
               <span>الضريبة المحصلة</span>
-              <strong>{formatMoney(sales.tax)} ج.م</strong>
+              <strong>
+                {formatMoney(sales.tax)} ج.م
+                {sales.unknownTaxCount > 0 && (
+                  <span
+                    className="is-negative"
+                    title="طلبات مدفوعة بلا قيمة ضريبة محفوظة؛ أرباحها مبالغ في تقديرها"
+                  >
+                    {' '}
+                    ({formatCount(sales.unknownTaxCount)} بلا ضريبة)
+                  </span>
+                )}
+              </strong>
             </li>
             <li>
               <span>هامش الربح</span>

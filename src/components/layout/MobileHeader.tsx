@@ -12,7 +12,8 @@ export function MobileHeader({ onMenuClick }: MobileHeaderProps) {
   const [currentTime, setCurrentTime] = useState(new Date());
 
   useEffect(() => {
-    const timer = setInterval(() => setCurrentTime(new Date()), 1000);
+    // Same reasoning as TopNav: a minute-level clock does not justify a 1s render loop.
+    const timer = setInterval(() => setCurrentTime(new Date()), 30000);
     return () => clearInterval(timer);
   }, []);
 

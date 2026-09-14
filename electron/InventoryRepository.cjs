@@ -1,5 +1,6 @@
 const database = require('./database.cjs');
 const { randomUUID } = require('crypto');
+const { MAX_SYNC_ATTEMPTS } = database;
 
 // Monotonic per-row version: a second edit in the same millisecond still gets a newer
 // updated_at, which the sync version guards compare on.
@@ -60,6 +61,15 @@ class InventoryRepository {
   /**
    * Applies rows pulled from the cloud, including their deleted_at so a deletion made on
    * another branch disappears here too. Only overwrites a local row that is synced or older.
+   *
+   * `stock` is deliberately NOT overwritten on conflict. It is a running balance, not an
+   * attribute: this till maintains it transactionally from its own inventory_transactions,
+   * and the cloud value is whichever sibling pushed last. Copying it down meant a sale made
+   * here was silently undone whenever another branch's older balance arrived — the ledger
+   * still recorded the issue, so stock and movements then disagreed with no way to tell.
+   *
+   * A newly discovered item still takes its stock from the INSERT, which is the only case
+   * where the cloud figure is all we have.
    */
   upsertPulledInventory(rows) {
     if (!rows || rows.length === 0) return;
@@ -70,7 +80,6 @@ class InventoryRepository {
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         unit = excluded.unit,
-        stock = excluded.stock,
         minStock = excluded.minStock,
         costPerUnit = excluded.costPerUnit,
         branch_id = excluded.branch_id,
@@ -213,9 +222,10 @@ class InventoryRepository {
       conditions.push('t.itemId = ?');
       params.push(itemId);
     }
-    // Branch isolation in SQL (Issue 22/42).
+    // Branch isolation in SQL (Issue 22/42). Shared movements carry a NULL branch, and
+    // belong to every branch: filtering on `= ?` alone hid them from the ledger entirely.
     if (activeBranch) {
-      conditions.push('t.branch_id = ?');
+      conditions.push('(t.branch_id = ? OR t.branch_id IS NULL)');
       params.push(activeBranch);
     }
 
@@ -298,7 +308,7 @@ class InventoryRepository {
       // balance propagates into the valuation as negative money.
       sqlite.prepare(`
         UPDATE inventory
-        SET stock = MAX(0, stock + ?), updated_at = ?, is_synced = 0
+        SET stock = MAX(0, stock + ?), updated_at = ?, is_synced = 0, sync_attempts = 0
         WHERE id = ?
       `).run(stockChange, now, tx.itemId);
     });
@@ -392,7 +402,7 @@ class InventoryRepository {
       const recipeFor = sqlite.prepare('SELECT * FROM menu_recipes WHERE menuItemId = ?');
       const deduct = sqlite.prepare(`
         UPDATE inventory
-        SET stock = MAX(0, stock - ?), updated_at = ?, is_synced = 0
+        SET stock = MAX(0, stock - ?), updated_at = ?, is_synced = 0, sync_attempts = 0
         WHERE id = ?
       `);
       const logMovement = sqlite.prepare(`
@@ -508,8 +518,8 @@ class InventoryRepository {
     const branchId = this.getBranchId();
     const rows = sqlite.prepare(`
       SELECT * FROM inventory
-      WHERE is_synced = 0 AND sync_attempts < 5 AND (branch_id = ? OR branch_id IS NULL)
-    `).all(branchId);
+      WHERE is_synced = 0 AND sync_attempts < ? AND (branch_id = ? OR branch_id IS NULL)
+    `).all(MAX_SYNC_ATTEMPTS, branchId);
     // No silent 'branch_1' fallback (Issue 22): branchless (NULL) rows are shared
     // stock and must stay branchless in the cloud too.
     return rows.map(row => ({
@@ -533,7 +543,14 @@ class InventoryRepository {
 
   getUnsyncedTransactions() {
     const sqlite = this.getDb();
-    const rows = sqlite.prepare('SELECT * FROM inventory_transactions WHERE is_synced = 0 AND sync_attempts < 5').all();
+    const branchId = this.getBranchId();
+    // Scoped like every other push query. This one was the exception: it pushed another
+    // branch's movements, while getSyncStats counted only this branch's — so the pending
+    // figure and the batch being pushed disagreed.
+    const rows = sqlite.prepare(`
+      SELECT * FROM inventory_transactions
+      WHERE is_synced = 0 AND sync_attempts < ? AND (branch_id = ? OR branch_id IS NULL)
+    `).all(MAX_SYNC_ATTEMPTS, branchId);
     return rows.map(row => ({
       id: row.id,
       itemId: row.itemId,

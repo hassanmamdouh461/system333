@@ -17,6 +17,7 @@ import { computeItemYields, isLowStock, summarizeInventory } from '../utils/inve
 import {
   computeCogs,
   computeNetProfit,
+  formatProfitForDisplay,
   computeRecipeCosts,
   summarizeInvoices,
   summarizeOrderModes,
@@ -90,6 +91,9 @@ export default function Reports() {
     () => computeNetProfit(analytics.totalRevenue, periodTax, cogs),
     [analytics.totalRevenue, periodTax, cogs]
   );
+
+  // The number keeps its sign; only the card floors it, and it says so when it does.
+  const profitDisplay = useMemo(() => formatProfitForDisplay(netProfit), [netProfit]);
 
   const lowStockItems = useMemo(
     () => inventory.filter(isLowStock),
@@ -215,11 +219,11 @@ export default function Reports() {
           color="orange"
         />
         <StatCard
-          label={t('Net Profit')}
-          value={`${netProfit.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyStr}`}
+          label={profitDisplay.isLoss ? `${t('Net Profit')} (${t('Loss')})` : t('Net Profit')}
+          value={`${profitDisplay.isLoss ? '-' : ''}${profitDisplay.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyStr}`}
           icon={Coins}
           trend={t('Earnings after COGS & tax')}
-          color="green"
+          color={profitDisplay.isLoss ? 'red' : 'green'}
         />
         <StatCard
           label={t('Total Stock Cost')}

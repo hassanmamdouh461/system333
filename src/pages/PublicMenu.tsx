@@ -62,7 +62,11 @@ export default function PublicMenu() {
     try {
       setLoading(true);
       setError(null);
-      const { menuItems, config: remoteConfig } = await menuService.getPublicMenuData();
+      const { menuItems, config: remoteConfig, unavailable } = await menuService.getPublicMenuData();
+      if (unavailable) {
+        // An empty list with no message reads as "the restaurant has no items".
+        throw new Error('public-menu endpoint unavailable');
+      }
       setItems(menuItems);
       // The published record wins over the cached one, and is normalised before it can
       // reach a class name or a CSS url().

@@ -255,8 +255,13 @@ class OrderRepository {
     const branchId = currentOrder.branchId || this.getBranchId();
 
     const runTx = sqlite.transaction(() => {
-      sqlite.prepare('UPDATE orders SET status = ?, updated_at = ?, is_synced = 0 WHERE id = ?')
-        .run(status, now, id);
+      // sync_attempts is cleared so a later edit re-arms a row that had parked after
+      // repeated failures; without it the row would never leave this device.
+      sqlite.prepare(`
+        UPDATE orders
+        SET status = ?, updated_at = ?, is_synced = 0, sync_attempts = 0, last_error = NULL
+        WHERE id = ?
+      `).run(status, now, id);
 
       if (status === 'Cancelled') {
         // Cancelling returns the ingredients the order consumed.

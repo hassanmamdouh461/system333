@@ -3,6 +3,8 @@ const assert = require('node:assert/strict');
 
 const {
   DEFAULT_WORKER_URL,
+  POS_WORKER_URL,
+  LEGACY_WORKERS_DEV_URL,
   REPORTS_WORKER_URL,
   allowedWorkerHosts,
   assertWorkerHostAllowed,
@@ -16,11 +18,18 @@ const {
 
 const PRODUCTION = {};
 
-test('permits the two hosts the app is built to talk to', () => {
-  for (const url of [DEFAULT_WORKER_URL, REPORTS_WORKER_URL]) {
+test('permits the hosts the app is built to talk to', () => {
+  for (const url of [DEFAULT_WORKER_URL, POS_WORKER_URL, LEGACY_WORKERS_DEV_URL, REPORTS_WORKER_URL]) {
     const parsed = assertWorkerHostAllowed(url, PRODUCTION);
     assert.equal(parsed.origin, new URL(url).origin);
   }
+});
+
+test('defaults a device with no saved setting to the dedicated hostname', () => {
+  // The workers.dev URL has to stay allowed while devices migrate one at a time, but nothing
+  // may default to it: a fresh install would pick the host that carries no Access, WAF or
+  // rate-limit rules.
+  assert.equal(new URL(DEFAULT_WORKER_URL).hostname, 'api-pos.engaz.tech');
 });
 
 test('refuses to send the credential to a host the renderer chose', () => {
@@ -46,6 +55,7 @@ test('honours the override when an operator sets it', () => {
   assert.deepEqual(
     [...allowedWorkerHosts(env)].sort(),
     [
+      'api-pos.engaz.tech',
       'api-reports.engaz.tech',
       'api.engaz.tech',
       'engaz-d1-proxy.hassanmamdouh461.workers.dev',
@@ -56,9 +66,13 @@ test('honours the override when an operator sets it', () => {
   assert.equal(assertWorkerHostAllowed('https://pos.internal.example', env).hostname, 'pos.internal.example');
 });
 
-test('accepts the hostname the POS worker is actually deployed on', () => {
-  // The worker answers on its canonical workers.dev URL, not api.engaz.tech, so an
-  // allowlist that only knew the vanity hostname would refuse the app its own backend.
+test('accepts the dedicated hostname the POS worker moved to', () => {
+  assert.equal(assertWorkerHostAllowed(POS_WORKER_URL, PRODUCTION).hostname, 'api-pos.engaz.tech');
+});
+
+test('accepts the old workers.dev URL so un-migrated devices keep syncing', () => {
+  // Removing this host before every device has been repointed would cut those devices off
+  // mid-migration. It is a migration window, not a permanent entry.
   assert.equal(
     assertWorkerHostAllowed('https://engaz-d1-proxy.hassanmamdouh461.workers.dev', PRODUCTION).hostname,
     'engaz-d1-proxy.hassanmamdouh461.workers.dev'
@@ -103,6 +117,7 @@ test('reports an unparseable URL rather than throwing a TypeError', () => {
 test('does not leak an override that was never set into the allowlist', () => {
   const hosts = [...allowedWorkerHosts({})].sort();
   assert.deepEqual(hosts, [
+    'api-pos.engaz.tech',
     'api-reports.engaz.tech',
     'api.engaz.tech',
     'engaz-d1-proxy.hassanmamdouh461.workers.dev',

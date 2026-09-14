@@ -597,4 +597,96 @@ describe('Repositories & Outbox Unit Tests (Isolated SQLite)', () => {
       assert.equal(database.releaseParkedSyncRows(), 0, 'releasing twice changes nothing');
     });
   });
+
+  describe('Sync push scoping (transactions) and re-arming parked rows', () => {
+    /** Parks a row the way repeated push failures do: its retry budget is exhausted. */
+    const parkRow = (table, id) => {
+      database.getDb().prepare(`UPDATE ${table} SET sync_attempts = 5, is_synced = 0 WHERE id = ?`).run(id);
+    };
+
+    /** Inserts a movement directly, so its branch can be set to something this test needs. */
+    const insertMovement = (id, itemId, branchId) => {
+      database.getDb().prepare(`
+        INSERT INTO inventory_transactions
+          (id, itemId, type, quantity, referenceId, createdAt, branch_id, is_synced, sync_attempts)
+        VALUES (?, ?, 'IN', 3, 'MANUAL', '2026-01-01T00:00:00.000Z', ?, 0, 0)
+      `).run(id, itemId, branchId);
+    };
+
+    test('getUnsyncedTransactions does not push another branch movements', () => {
+      const own = inventoryRepository.createInventoryItem(
+        { name: 'Milk', unit: 'L', stock: 10, minStock: 2, costPerUnit: 5 }
+      );
+      inventoryRepository.createInventoryTransaction({
+        itemId: own.id, type: 'IN', quantity: 5, referenceId: 'MANUAL',
+      });
+      insertMovement('tx-foreign', own.id, 'other-branch');
+      insertMovement('tx-shared', own.id, null);
+
+      const ids = inventoryRepository.getUnsyncedTransactions().map(t => t.id);
+
+      assert.ok(ids.includes('tx-shared'), 'a shared (NULL branch) movement is still pushed');
+      assert.ok(!ids.includes('tx-foreign'), 'a sibling branch movement must never be pushed');
+    });
+
+    test('the ledger shows shared movements as well as this branch ones', () => {
+      const item = inventoryRepository.createInventoryItem(
+        { name: 'Sugar', unit: 'kg', stock: 10, minStock: 2, costPerUnit: 5 }
+      );
+      inventoryRepository.createInventoryTransaction({
+        itemId: item.id, type: 'IN', quantity: 4, referenceId: 'MANUAL',
+      });
+      insertMovement('tx-shared-view', item.id, null);
+
+      const ids = inventoryRepository.getInventoryTransactions(item.id, 'branch-1').map(t => t.id);
+      assert.ok(ids.includes('tx-shared-view'), 'a shared movement is visible in the ledger');
+    });
+
+    test('an edit re-arms a row that had parked, so it leaves the device again', () => {
+      const item = menuRepository.createMenuItem(
+        { name: 'Flat White', price: 32, category: 'Hot Coffee|Bar' }
+      );
+      parkRow('menu_items', item.id);
+      assert.equal(menuRepository.getUnsyncedMenu().length, 0, 'the row is parked');
+
+      menuRepository.deleteMenuItem(item.id);
+
+      assert.equal(
+        menuRepository.getUnsyncedMenu().length, 1,
+        'deleting a parked item must queue it again, or the delete never reaches the cloud'
+      );
+    });
+
+    test('cancelling an order re-arms it after it parked', () => {
+      const order = orderRepository.createOrder({
+        tableId: 'Table 5',
+        orderNumber: 'ORD-PARKED',
+        items: [{ id: 'item-1', name: 'Latte', price: 30, quantity: 1 }],
+        totalAmount: 30,
+      });
+      parkRow('orders', order.id);
+      assert.equal(orderRepository.getUnsyncedOrders().length, 0, 'the order is parked');
+
+      orderRepository.updateOrderStatus(order.id, 'Cancelled');
+
+      assert.equal(orderRepository.getUnsyncedOrders().length, 1, 'a cancelled order must sync again');
+    });
+
+    test('a stock movement re-arms a parked inventory item', () => {
+      const item = inventoryRepository.createInventoryItem(
+        { name: 'Beans', unit: 'kg', stock: 8, minStock: 1, costPerUnit: 40 }
+      );
+      parkRow('inventory', item.id);
+      assert.equal(inventoryRepository.getUnsyncedInventory().length, 0, 'the item is parked');
+
+      inventoryRepository.createInventoryTransaction({
+        itemId: item.id, type: 'OUT', quantity: 2, referenceId: 'MANUAL',
+      });
+
+      assert.equal(
+        inventoryRepository.getUnsyncedInventory().length, 1,
+        'stock moved, so the item must sync again'
+      );
+    });
+  });
 });

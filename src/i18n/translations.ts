@@ -66,6 +66,7 @@ export const translations: TranslationTable = {
   'Potential Selling Value': 'القيمة البيعية المتوقعة',
   'Expected Potential Profit': 'الأرباح المتوقعة',
   'Potential Value Loss': 'القيمة المفقودة المتوقعة',
+  'Loss': 'خسارة',
   'Cost Value:': 'القيمة التقديرية (تكلفة):',
   'Potential Selling Value:': 'القيمة البيعية المتوقعة:',
   'Potential Profit:': 'الأرباح المتوقعة:',

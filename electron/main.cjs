@@ -138,7 +138,7 @@ function registerIpcHandlers() {
 
   // ─── Orders ────────────────────────────────────────────────────────────────
   handle('db:get-orders', (branchId) => orderRepository.getOrders(
-    validate.optionalString(branchId, 'branchId', { max: 60 }) ?? undefined
+    validate.optionalString(branchId, 'branchId', { max: validate.BRANCH_ID_MAX }) ?? undefined
   ));
   handle('db:create-order', (order) => orderRepository.createOrder(validate.validateNewOrder(order)));
   handle('db:update-order-status', (id, status) => orderRepository.updateOrderStatus(
@@ -169,7 +169,7 @@ function registerIpcHandlers() {
 
   // ─── Cashiers ──────────────────────────────────────────────────────────────
   handle('db:get-cashiers', (branchId) => cashierRepository.getCashiers(
-    validate.optionalString(branchId, 'branchId', { max: 60 }) ?? undefined
+    validate.optionalString(branchId, 'branchId', { max: validate.BRANCH_ID_MAX }) ?? undefined
   ));
   handle('db:create-cashier', (name, avatar) => cashierRepository.createCashier(
     validate.requireString(name, 'name'),
@@ -194,7 +194,6 @@ function registerIpcHandlers() {
     /^engaz_telegram_config$/,
     /^engaz_store_config$/,
     /^engaz_tables_config$/,
-    /^engaz_admin_creds$/,
     /^engaz_d1_worker_url$/,
     /^engaz_d1_worker_api_key$/,
     /^branch_id$/,
@@ -208,7 +207,6 @@ function registerIpcHandlers() {
   // point the sync — key included — at any host.
   const SETTINGS_WRITE_ONLY = [
     /^engaz_d1_worker_api_key$/,
-    /^engaz_admin_creds$/,
   ];
 
   const isAllowedSettingKey = (key) => typeof key === 'string' && SETTINGS_WHITELIST.some(re => re.test(key));
@@ -237,7 +235,7 @@ function registerIpcHandlers() {
 
   // ─── Inventory and recipes ─────────────────────────────────────────────────
   handle('db:get-inventory', (branchId) => inventoryRepository.getInventory(
-    validate.optionalString(branchId, 'branchId', { max: 60 }) ?? undefined
+    validate.optionalString(branchId, 'branchId', { max: validate.BRANCH_ID_MAX }) ?? undefined
   ));
   handle('db:create-inventory-item', (item) => inventoryRepository.createInventoryItem(
     validate.validateInventoryItem(item)
@@ -252,7 +250,7 @@ function registerIpcHandlers() {
 
   handle('db:get-inventory-transactions', (itemId, branchId) => inventoryRepository.getInventoryTransactions(
     validate.optionalString(itemId, 'itemId', { max: 100 }) ?? undefined,
-    validate.optionalString(branchId, 'branchId', { max: 60 }) ?? undefined
+    validate.optionalString(branchId, 'branchId', { max: validate.BRANCH_ID_MAX }) ?? undefined
   ));
   handle('db:create-inventory-transaction', (tx) => inventoryRepository.createInventoryTransaction(
     validate.validateStockMovement(tx)

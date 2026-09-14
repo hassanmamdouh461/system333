@@ -744,7 +744,7 @@ function enqueueReportOutbox(target, recordId, payload, version = null) {
         payload = excluded.payload,
         version = excluded.version,
         queued_at = excluded.queued_at
-      WHERE excluded.version >= reports_outbox.version OR reports_outbox.version IS NULL
+      WHERE excluded.version > reports_outbox.version OR reports_outbox.version IS NULL
     `).run(target, recordId, rawPayload, v, now);
   } catch (e) {
     console.error(`[database] Failed to enqueue reports_outbox for ${target}/${recordId}:`, e);

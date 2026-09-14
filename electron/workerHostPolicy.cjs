@@ -14,13 +14,24 @@
 /**
  * Where the POS worker actually lives.
  *
- * api.engaz.tech is the natural name but is already serving another service, so the worker
- * answers on its canonical Cloudflare-provided URL until that cutover is decided. Both are
- * allowed here: moving the worker is then a config change plus a settings update, not a
- * rebuild, and neither hostname is a surprise to this allowlist.
+ * The canonical name is api-pos.engaz.tech. api.engaz.tech is the natural name but is
+ * already serving another service, so it is listed only because a deployment may legitimately
+ * point there once that service is retired — never to take its route by accident.
+ *
+ * The Cloudflare-provided *.workers.dev URL is kept in the list as the migration host: it is
+ * where this worker was published before the move to a dedicated hostname, and a device that
+ * has not been updated yet still dials it. It must be removed once every device is migrated,
+ * because a workers.dev host is reachable by anyone who knows the name and carries none of
+ * the Access, WAF or rate-limit rules that protect engaz.tech.
+ *
+ * The list, not the default, is the security boundary: `DEFAULT_WORKER_URL` only decides what
+ * a device without a saved setting uses, and adding a host here is what lets an operator move
+ * the worker without shipping a new build.
  */
-const DEFAULT_WORKER_URL = 'https://engaz-d1-proxy.hassanmamdouh461.workers.dev';
-const POS_HOSTS = [DEFAULT_WORKER_URL, 'https://api.engaz.tech'];
+const POS_WORKER_URL = 'https://api-pos.engaz.tech';
+const LEGACY_WORKERS_DEV_URL = 'https://engaz-d1-proxy.hassanmamdouh461.workers.dev';
+const DEFAULT_WORKER_URL = POS_WORKER_URL;
+const POS_HOSTS = [POS_WORKER_URL, LEGACY_WORKERS_DEV_URL, 'https://api.engaz.tech'];
 
 /** The isolated reports worker this process mirrors to. */
 const REPORTS_WORKER_URL = 'https://api-reports.engaz.tech';
@@ -94,6 +105,8 @@ function assertWorkerHostAllowed(url, env = process.env) {
 
 module.exports = {
   DEFAULT_WORKER_URL,
+  POS_WORKER_URL,
+  LEGACY_WORKERS_DEV_URL,
   REPORTS_WORKER_URL,
   POS_HOSTS,
   DEV_HOSTS,

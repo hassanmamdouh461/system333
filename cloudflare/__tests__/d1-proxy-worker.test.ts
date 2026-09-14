@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { checkRateLimit, timingSafeEqual, RATE_MAX_REQUESTS, SYNC_RATE_MAX_REQUESTS, __testing } from '../d1-proxy-worker.js';
 
 const {
-  SYNC_TABLES, buildSyncStatements, assertItems, MAX_BATCH,
+  SYNC_TABLES, buildSyncStatements, buildSyncBatch, summariseBatch, countWritten, assertItems, MAX_BATCH,
   MAX_TEXT_BYTES, MAX_IMAGE_BYTES, MAX_JSON_BYTES, BRANCH_ID_MAX,
 } = __testing;
 
@@ -347,5 +347,85 @@ describe('checkRateLimit', () => {
     for (let i = 0; i < 200; i++) limit('1.2.3.4', now, buckets);
     expect(limit('1.2.3.4', now, buckets).allowed).toBe(false);
     expect(limit('1.2.3.4', now + 61_000, buckets).allowed).toBe(true);
+  });
+});
+
+describe('write accounting', () => {
+  // A till marks a row synced on the strength of the number the worker reports, so the
+  // number has to mean "rows the database actually changed" and nothing weaker.
+  const batchWith = (rows: number[]) =>
+    rows.map((rows_written) => ({ success: true, meta: { rows_written, changes: rows_written } }));
+
+  it('counts rows written, not statements sent', () => {
+    // Two upserts lost on updated_at and one landed: one row, not three.
+    expect(summariseBatch(batchWith([0, 0, 1]), ['verify', 'verify', 'verify']))
+      .toEqual({ written: 1, expected: 3, skipped: 2 });
+  });
+
+  it('does not treat a tombstone for an unknown row as a shortfall', () => {
+    // A branch deleting an item the cloud never held sends an UPDATE that matches nothing.
+    // Counting that as a failure would report a shortfall on almost every sync and bury
+    // the ones that matter.
+    expect(summariseBatch(batchWith([0, 1]), ['tombstone', 'verify']))
+      .toEqual({ written: 1, expected: 1, skipped: 0 });
+  });
+
+  it('does not treat an already-present ledger row as a shortfall', () => {
+    // Append-only: INSERT OR IGNORE matching zero rows means the movement was recorded.
+    expect(summariseBatch(batchWith([0]), ['append']))
+      .toEqual({ written: 0, expected: 0, skipped: 0 });
+  });
+
+  it('reports zero rather than guessing when the result set is missing', () => {
+    // "We cannot tell" must never be reported as "written".
+    expect(summariseBatch(undefined, ['verify', 'verify']))
+      .toEqual({ written: 0, expected: 2, skipped: 2 });
+    expect(countWritten(undefined)).toBe(0);
+  });
+
+  it('accepts the older `changes` field as well as `rows_written`', () => {
+    expect(countWritten([{ meta: { changes: 3 } }, { meta: { rows_written: 4 } }])).toBe(7);
+  });
+});
+
+describe('buildSyncBatch', () => {
+  it('keeps the good records when one is rejected', () => {
+    const db = fakeDb();
+    const huge = JSON.stringify([{ name: 'x'.repeat(70_000) }]);
+    const { statements, failed } = buildSyncBatch(db, SYNC_TABLES.orders, [
+      { id: 'o1' },
+      { id: 'o2', items: huge },
+      { id: 'o3' },
+    ]);
+
+    // One malformed record used to abort the whole batch, and `db.batch` is a single
+    // transaction -- so 199 good records died with the one bad one.
+    expect(statements).toHaveLength(2);
+    expect(failed).toHaveLength(1);
+    expect(failed[0].id).toBe('o2');
+    expect(failed[0].error).toMatch(/exceed/i);
+  });
+
+  it('names a record with no id so the till can hold it back', () => {
+    const db = fakeDb();
+    const { statements, failed } = buildSyncBatch(db, SYNC_TABLES.orders, [{ name: 'no id' }]);
+    expect(statements).toHaveLength(0);
+    expect(failed).toHaveLength(1);
+    expect(failed[0].id).toBeNull();
+  });
+
+  it('labels each statement so the shortfall skips the harmless no-ops', () => {
+    const db = fakeDb();
+    const { kinds } = buildSyncBatch(db, SYNC_TABLES.orders, [
+      { id: 'o1' },
+      { id: 'o2', deletedAt: '2026-01-01T00:00:00.000Z' },
+    ]);
+    expect(kinds).toEqual(['verify', 'tombstone']);
+  });
+
+  it('never labels a ledger row as needing to change a row', () => {
+    const db = fakeDb();
+    const { kinds } = buildSyncBatch(db, SYNC_TABLES['points-transactions'], [{ id: 'p1' }]);
+    expect(kinds).toEqual(['append']);
   });
 });
