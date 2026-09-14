@@ -11,8 +11,18 @@
  * of the credential path that can be tested directly.
  */
 
-/** The production POS worker, and the isolated reports worker this process mirrors to. */
-const DEFAULT_WORKER_URL = 'https://api.engaz.tech';
+/**
+ * Where the POS worker actually lives.
+ *
+ * api.engaz.tech is the natural name but is already serving another service, so the worker
+ * answers on its canonical Cloudflare-provided URL until that cutover is decided. Both are
+ * allowed here: moving the worker is then a config change plus a settings update, not a
+ * rebuild, and neither hostname is a surprise to this allowlist.
+ */
+const DEFAULT_WORKER_URL = 'https://engaz-d1-proxy.hassanmamdouh461.workers.dev';
+const POS_HOSTS = [DEFAULT_WORKER_URL, 'https://api.engaz.tech'];
+
+/** The isolated reports worker this process mirrors to. */
 const REPORTS_WORKER_URL = 'https://api-reports.engaz.tech';
 
 /** Local origins, permitted only when the app is explicitly started in dev mode. */
@@ -35,7 +45,7 @@ function allowedWorkerHosts(env = process.env) {
   const dev = String(env.ENGAZ_DEV || '') === '1' ? DEV_HOSTS : [];
 
   return new Set([
-    new URL(DEFAULT_WORKER_URL).hostname,
+    ...POS_HOSTS.map((url) => new URL(url).hostname),
     new URL(REPORTS_WORKER_URL).hostname,
     ...dev,
     ...configured,
@@ -85,6 +95,7 @@ function assertWorkerHostAllowed(url, env = process.env) {
 module.exports = {
   DEFAULT_WORKER_URL,
   REPORTS_WORKER_URL,
+  POS_HOSTS,
   DEV_HOSTS,
   allowedWorkerHosts,
   assertWorkerHostAllowed,

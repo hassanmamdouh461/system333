@@ -45,9 +45,28 @@ test('honours the override when an operator sets it', () => {
   const env = { ENGAZ_ALLOWED_WORKER_HOSTS: 'pos.internal.example, other.example ' };
   assert.deepEqual(
     [...allowedWorkerHosts(env)].sort(),
-    ['api-reports.engaz.tech', 'api.engaz.tech', 'other.example', 'pos.internal.example']
+    [
+      'api-reports.engaz.tech',
+      'api.engaz.tech',
+      'engaz-d1-proxy.hassanmamdouh461.workers.dev',
+      'other.example',
+      'pos.internal.example',
+    ]
   );
   assert.equal(assertWorkerHostAllowed('https://pos.internal.example', env).hostname, 'pos.internal.example');
+});
+
+test('accepts the hostname the POS worker is actually deployed on', () => {
+  // The worker answers on its canonical workers.dev URL, not api.engaz.tech, so an
+  // allowlist that only knew the vanity hostname would refuse the app its own backend.
+  assert.equal(
+    assertWorkerHostAllowed('https://engaz-d1-proxy.hassanmamdouh461.workers.dev', PRODUCTION).hostname,
+    'engaz-d1-proxy.hassanmamdouh461.workers.dev'
+  );
+});
+
+test('still accepts api.engaz.tech, so the cutover needs no rebuild', () => {
+  assert.equal(assertWorkerHostAllowed('https://api.engaz.tech', PRODUCTION).hostname, 'api.engaz.tech');
 });
 
 test('refuses cleartext, because a key in a plain request is readable on the path', () => {
@@ -83,5 +102,9 @@ test('reports an unparseable URL rather than throwing a TypeError', () => {
 
 test('does not leak an override that was never set into the allowlist', () => {
   const hosts = [...allowedWorkerHosts({})].sort();
-  assert.deepEqual(hosts, ['api-reports.engaz.tech', 'api.engaz.tech']);
+  assert.deepEqual(hosts, [
+    'api-reports.engaz.tech',
+    'api.engaz.tech',
+    'engaz-d1-proxy.hassanmamdouh461.workers.dev',
+  ]);
 });
