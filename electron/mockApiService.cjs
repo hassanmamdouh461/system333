@@ -4,8 +4,8 @@
  * Talks to the Engaz workers over named endpoints. This process sends records and filters;
  * the worker owns every SQL statement. Nothing here builds a query.
  *
- * Two destinations per push: the production database, and — fire and forget — the isolated
- * reports database that backs reporting.engaz.tech.
+ * Two destinations per push: the primary POS database and a durable SQLite outbox for
+ * the isolated reports database. A primary acknowledgement is not reports delivery.
  */
 
 const fs = require('fs');
@@ -71,7 +71,9 @@ function loadConfig(force = false) {
   const previousUrl = WORKER_URL;
   WORKER_URL = url || DEFAULT_WORKER_URL;
   WORKER_API_KEY = key;
-  REPORTS_WORKER_KEY = fromEnv.reportsKey || REPORTS_WORKER_KEY;
+  // Main-process environment supports packaged installs; never expose this through VITE.
+  // Removing the credential must also clear the cached value after the TTL.
+  REPORTS_WORKER_KEY = process.env.ENGAZ_REPORTS_API_KEY || fromEnv.reportsKey || '';
   configLoadedAt = now;
 
   if (WORKER_URL !== previousUrl) {
