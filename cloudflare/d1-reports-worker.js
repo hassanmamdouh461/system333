@@ -251,30 +251,53 @@ export function parseBranchId(input) {
   return { id };
 }
 
+function branchRegistryStatements(db) {
+  return [
+    db.prepare(`SELECT * FROM branches WHERE deleted_at IS NULL ORDER BY name, id LIMIT ?`).bind(READ_LIMIT + 1),
+    db.prepare(`SELECT id FROM branches WHERE deleted_at IS NOT NULL ORDER BY id LIMIT ?`).bind(READ_LIMIT + 1),
+  ];
+}
+
+function completeBranchRegistry(live, deleted) {
+  // Missing results and a full probe page are not an empty/complete registry. Fail rather
+  // than let the portal mistake an omitted tombstone for an unregistered till.
+  for (const result of [live, deleted]) {
+    if (!result || result.success === false || !Array.isArray(result.results)) {
+      throw new Error('Branch registry could not be read completely');
+    }
+    if (result.results.length > READ_LIMIT) {
+      throw new Error(`Branch registry exceeds its read cap (${READ_LIMIT}); a complete registry is required`);
+    }
+  }
+  return { branches: live.results, deletedBranchIds: deleted.results.map((row) => row.id) };
+}
+
 async function readBranches(db) {
-  const { results } = await db
-    .prepare(`SELECT * FROM branches WHERE deleted_at IS NULL ORDER BY name ASC LIMIT ?`)
-    .bind(READ_LIMIT)
-    .all();
-  return results || [];
+  const [live, deleted] = await db.batch(branchRegistryStatements(db));
+  return completeBranchRegistry(live, deleted);
 }
 
 async function saveBranch(db, branch) {
-  await db
+  const saved = await db
     .prepare(
       `INSERT INTO branches (id, name, phone, address, active, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          name = excluded.name, phone = excluded.phone, address = excluded.address,
-         active = excluded.active, updated_at = excluded.updated_at`
+         active = excluded.active, updated_at = excluded.updated_at
+       WHERE branches.deleted_at IS NULL
+       RETURNING id`
     )
     .bind(branch.id, branch.name, branch.phone, branch.address, branch.active, nowIso(), nowIso())
-    .run();
+    .first();
+  // The conditional write is atomic: a concurrent delete cannot be silently renamed or
+  // restored between a separate existence check and the upsert.
+  if (!saved) throw rejected('This branch id was deleted and is reserved; choose a new id');
 }
 
 /**
- * Soft-deletes one branch by stamping `deleted_at`. Rows already tagged with this id stay
- * readable in the historical snapshot; only future mirror writes stop creating new ones.
+ * Hides one registry entry by stamping `deleted_at`. Historical business rows and future
+ * POS mirror writes are unchanged: this is not a POS access or synchronization switch.
  */
 async function deleteBranch(db, id) {
   await db
@@ -459,7 +482,7 @@ function paged(result, limit) {
 
 async function readSnapshot(db) {
   // `limit + 1` is deliberate: the extra row is a probe, never shown.
-  const [orders, customers, inventory, menuItems, movements, branches] = await db.batch([
+  const [orders, customers, inventory, menuItems, movements, branches, deletedBranches] = await db.batch([
     db.prepare(`SELECT * FROM orders WHERE deleted_at IS NULL ORDER BY createdAt DESC LIMIT ?`).bind(READ_LIMIT + 1),
     db.prepare(`SELECT * FROM customers WHERE deleted_at IS NULL ORDER BY points DESC LIMIT ?`).bind(READ_LIMIT + 1),
     db.prepare(`SELECT * FROM inventory WHERE deleted_at IS NULL ORDER BY name ASC LIMIT ?`).bind(READ_LIMIT + 1),
@@ -467,10 +490,10 @@ async function readSnapshot(db) {
     // Cost of goods comes from this ledger rather than from recipes, so the portal reports
     // what each sale actually consumed even after its recipe is edited.
     db.prepare(`SELECT * FROM inventory_transactions ORDER BY createdAt DESC LIMIT ?`).bind(MOVEMENT_LIMIT + 1),
-    // The registry, so the portal can show a branch by name rather than by the id stamped
-    // on its rows.
-    db.prepare(`SELECT * FROM branches WHERE deleted_at IS NULL ORDER BY name ASC LIMIT ?`).bind(READ_LIMIT + 1),
+    // Read both registry sets in the same batch as the business rows.
+    ...branchRegistryStatements(db),
   ]);
+  const registry = completeBranchRegistry(branches, deletedBranches);
 
   const page = {
     orders: paged(orders, READ_LIMIT),
@@ -478,7 +501,6 @@ async function readSnapshot(db) {
     inventory: paged(inventory, READ_LIMIT),
     menuItems: paged(menuItems, READ_LIMIT),
     movements: paged(movements, MOVEMENT_LIMIT),
-    branches: paged(branches, READ_LIMIT),
   };
 
   return {
@@ -487,7 +509,7 @@ async function readSnapshot(db) {
     inventory: page.inventory.rows,
     menuItems: page.menuItems.rows,
     movements: page.movements.rows,
-    branches: page.branches.rows,
+    ...registry,
     /** Collections that hit their cap, so the portal never presents a partial total as final. */
     truncated: Object.fromEntries(
       Object.entries(page).filter(([, p]) => p.truncated).map(([key]) => [key, true])
@@ -821,14 +843,13 @@ export default {
       if (error) return json({ success: false, error }, 400, origin);
       try {
         await saveBranch(env.DB, branch);
-        return json({ success: true, branch, branches: await readBranches(env.DB) }, 200, origin);
+        return json({ success: true, branch, ...(await readBranches(env.DB)) }, 200, origin);
       } catch (err) {
-        return json({ success: false, error: String(err.message || err) }, 500, origin);
+        return json({ success: false, error: String(err.message || err) }, err.isRejection ? 409 : 500, origin);
       }
     }
 
-    // Soft-delete a branch: the registry stops listing it, rows already stamped with the id
-    // are preserved by the mirror's tombstone column.
+    // Hide a registry entry only. No business rows, POS access, or mirror writes change.
     if (url.pathname === '/branches/delete') {
       if (!hasViewerToken && !hasWriteKey) {
         return json({ success: false, error: 'Unauthorized' }, 401, origin);
@@ -837,7 +858,7 @@ export default {
       if (error) return json({ success: false, error }, 400, origin);
       try {
         await deleteBranch(env.DB, id);
-        return json({ success: true, id, branches: await readBranches(env.DB) }, 200, origin);
+        return json({ success: true, id, ...(await readBranches(env.DB)) }, 200, origin);
       } catch (err) {
         return json({ success: false, error: String(err.message || err) }, 500, origin);
       }
