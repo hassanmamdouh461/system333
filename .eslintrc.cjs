@@ -66,6 +66,15 @@ module.exports = {
       },
     },
     {
+      // Throwaway diagnostic probes written during audits (outputs/). They are CommonJS on
+      // Node, and were failing the browser profile above with `require`/`__dirname`/`Buffer`
+      // reported as undefined — 40 errors that had nothing to do with shipped code.
+      files: ['outputs/**/*.cjs'],
+      env: { browser: false, node: true, es2022: true },
+      parserOptions: { ecmaVersion: 2022, sourceType: 'script' },
+      rules: { '@typescript-eslint/no-require-imports': 'off' },
+    },
+    {
       // Electron main process: CommonJS on Node, no browser globals.
       files: ['electron/**/*.cjs'],
       env: { browser: false, node: true, es2022: true },
