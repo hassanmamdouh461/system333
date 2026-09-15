@@ -8,7 +8,7 @@
  * invoice could account for, and the two were indistinguishable once summed.
  */
 import { useMemo } from 'react';
-import { orderRevenue, lineItemTotal, roundMoney } from '../utils/orderTotals';
+import { orderRevenue, allocateOrderRevenue, roundMoney } from '../utils/orderTotals';
 import { useOrders } from './useOrders';
 import { useMenu } from './useMenu';
 import { Order, OrderStatus } from '../types/order';
@@ -227,13 +227,14 @@ export function useAnalytics(period: AnalyticsPeriod): AnalyticsResult {
   const topItems = useMemo<TopItem[]>(() => {
     const map: Record<string, TopItem> = {};
 
-    completedPeriod.forEach(order =>
-      order.items.forEach(item => {
+    completedPeriod.forEach(order => {
+      const lineRevenues = allocateOrderRevenue(order.items, order);
+      order.items.forEach((item, index) => {
         if (!map[item.name]) map[item.name] = { name: item.name, count: 0, revenue: 0 };
         map[item.name].count   += item.quantity;
-        map[item.name].revenue = roundMoney(map[item.name].revenue + lineItemTotal(item, order));
-      }),
-    );
+        map[item.name].revenue = roundMoney(map[item.name].revenue + lineRevenues[index]);
+      });
+    });
 
     return Object.values(map).sort((a, b) => b.count - a.count).slice(0, 5);
   }, [completedPeriod]);

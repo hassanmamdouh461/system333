@@ -11,6 +11,7 @@ import {
   categoryLabel,
   itemCategoryId,
   itemDisplay,
+  safeImageUrl,
   sortMenuItems,
   visibleCategories,
   visibleMenuItems,
@@ -381,7 +382,11 @@ function ItemCard({
   const category = itemCategoryId(item);
   const label = categoryLabel(category, config);
   const display = itemDisplay(item);
-  const showImage = config.showImages && Boolean(item.image);
+  // Item images are operator-supplied and reach an <img src> on a page anyone can open.
+  // Browsers do not execute an img src, so this is not XSS, but an unsanitised value turns
+  // every menu view into a tracking beacon (or an unbounded data: URL) on a public page.
+  const imageUrl = safeImageUrl(item.image);
+  const showImage = config.showImages && Boolean(imageUrl);
 
   return (
     <motion.div
@@ -428,7 +433,7 @@ function ItemCard({
       {showImage && (
         <div className="mt-3 rounded-xl overflow-hidden h-36 w-full bg-stone-100 border border-stone-100">
           <img
-            src={item.image}
+            src={imageUrl}
             alt={display.name}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-500"
             loading="lazy"

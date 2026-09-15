@@ -10,7 +10,7 @@ import { UtensilsCrossed, Search, Star } from 'lucide-react';
 import { MenuItem } from '../../../types/menu';
 import { PublicMenuConfig } from '../../../types/menuBranding';
 import { menuThemeStyle } from '../../../utils/menuThemes';
-import { categoryLabel, itemCategoryId, itemDisplay, sortMenuItems, visibleCategories, visibleMenuItems } from '../../../utils/menuConfig';
+import { categoryLabel, itemCategoryId, itemDisplay, safeImageUrl, sortMenuItems, visibleCategories, visibleMenuItems } from '../../../utils/menuConfig';
 
 const PREVIEW_ITEM_LIMIT = 3;
 
@@ -117,12 +117,15 @@ function PreviewCard({
   pinned: boolean;
 }) {
   const display = itemDisplay(item);
+  // Same rule as the public menu: the preview is not a public page, but an operator pasting
+  // an arbitrary URL should see it rejected here rather than in front of customers.
+  const imageUrl = safeImageUrl(item.image);
 
   return (
     <div className="bg-white rounded-xl border border-stone-200 p-2.5">
-      {config.showImages && item.image && (
+      {config.showImages && imageUrl && (
         <div className="h-12 w-full rounded-lg overflow-hidden mb-1.5 bg-stone-100">
-          <img src={item.image} alt="" className="w-full h-full object-cover" />
+          <img src={imageUrl} alt="" className="w-full h-full object-cover" />
         </div>
       )}
       <div className="flex items-start justify-between gap-2">

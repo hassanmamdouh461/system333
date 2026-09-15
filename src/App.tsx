@@ -29,7 +29,7 @@ function ProtectedRoute() {
 function isMenuDomain() {
   if (typeof window === 'undefined') return false;
   const host = window.location.hostname.toLowerCase();
-  return host.startsWith('menu.') || host.includes('menu');
+  return host === 'menu.engaz.tech';
 }
 
 function DefaultRoute() {

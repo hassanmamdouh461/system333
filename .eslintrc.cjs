@@ -8,6 +8,8 @@ module.exports = {
   ],
   ignorePatterns: [
     'dist',
+    // Standalone public-menu build output; see vite.menu.config.ts.
+    'dist-menu',
     'dist-electron',
     'node_modules',
     'reports-site/dist',
@@ -15,6 +17,12 @@ module.exports = {
     'scratch',
     '.zcode',
     '.eslintrc.cjs',
+    // Audit artefacts: captured third-party bundles and one-off diagnostic probes saved
+    // under outputs/ during live audits (e.g. the served portal/menu SPA bundles inspected
+    // for leaked keys). None of it is shipped source — minified vendor code can never
+    // satisfy eslint:recommended, and a probe kept for its evidence should not fail CI
+    // because it stopped being used. Lint the code that ships.
+    'outputs/**',
   ],
   parser: '@typescript-eslint/parser',
   parserOptions: {

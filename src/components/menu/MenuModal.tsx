@@ -16,7 +16,7 @@ import {
 interface MenuModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (item: Omit<MenuItem, 'id'> | MenuItem, recipeIngredients: RecipeIngredient[]) => void;
+  onSave: (item: Omit<MenuItem, 'id'> | MenuItem, recipeIngredients: RecipeIngredient[]) => Promise<void>;
   initialData?: MenuItem | null;
   existingItems: MenuItem[];
 }
@@ -30,7 +30,9 @@ interface MappedIngredientRow {
 
 export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems }: MenuModalProps) {
   const { t, language } = useLanguage();
-  const { panelRef, titleId, dialogProps } = useDialog<HTMLDivElement>({ onClose, enabled: isOpen });
+  const [isSaving, setIsSaving] = useState(false);
+  const handleClose = () => { if (!isSaving) onClose(); };
+  const { panelRef, titleId, dialogProps } = useDialog<HTMLDivElement>({ onClose: handleClose, enabled: isOpen });
   const [activeTab, setActiveTab] = useState<'general' | 'recipe'>('general');
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
   const [mappedIngredients, setMappedIngredients] = useState<MappedIngredientRow[]>([]);
@@ -241,6 +243,8 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
+    setIsSaving(true);
     try {
       const menuCategory = showNewCategoryInput ? newCategoryName.trim() : formData.category;
       if (!menuCategory) {
@@ -273,6 +277,8 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
     } catch (err) {
       console.error('Failed to save menu item:', err);
       reportFailure(t('Failed to save item. Please try again.'), err);
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -285,7 +291,7 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          onClick={onClose}
+          onClick={handleClose}
           className="absolute inset-0 bg-black/60 backdrop-blur-sm"
         />
         
@@ -302,7 +308,7 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
               {initialData ? t('Edit Item') : t('Add New Item')}
             </h2>
             <button
-              onClick={onClose}
+              onClick={handleClose}
               className="text-gray-400 hover:text-gray-500 transition-colors p-1 rounded-lg hover:bg-gray-50"
             >
               <X size={20} />
@@ -533,14 +539,16 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
             <div className="flex gap-3 pt-6 border-t border-gray-100 mt-6">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleClose}
                 className="flex-1 px-4 py-2 rounded-xl border border-gray-200 text-gray-700 font-medium hover:bg-gray-50 transition-colors"
               >
                 {t('Cancel')}
               </button>
               <button
                 type="submit"
-                className="flex-1 px-4 py-2 rounded-xl bg-mocha-700 text-white font-medium hover:bg-mocha-800 shadow-lg shadow-mocha-500/20 transition-colors"
+                disabled={isSaving}
+                aria-busy={isSaving}
+                className="flex-1 px-4 py-2 rounded-xl bg-mocha-700 text-white font-medium hover:bg-mocha-800 shadow-lg shadow-mocha-500/20 transition-colors disabled:opacity-50"
               >
                 {t('Save Changes')}
               </button>

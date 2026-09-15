@@ -47,9 +47,12 @@ import {
   MAX_IMAGE_BYTES,
   MAX_JSON_BYTES,
   MAX_BODY_BYTES,
+  clientError,
   countWritten,
   summariseBatch,
 } from './shared/common.js';
+import { assertUniqueIds, prepareSyncEntry, buildSyncBatch as prepareSyncBatch, executeSyncBatch, persistedColumns } from './shared/sync.js';
+import { boundedSelectSql, readPage } from './shared/reads.js';
 
 // Re-exported so the test suite and anything else importing from this module keeps working.
 export {
@@ -285,7 +288,8 @@ const SYNC_TABLES = {
                phone = excluded.phone,
                points = excluded.points,
                branch_id = excluded.branch_id,
-               updated_at = excluded.updated_at
+               updated_at = excluded.updated_at,
+               deleted_at = excluded.deleted_at
              WHERE excluded.updated_at > customers.updated_at OR customers.updated_at IS NULL`,
     upsertParams: (c) => [
       str(c.id),
@@ -310,7 +314,8 @@ const SYNC_TABLES = {
                minStock = excluded.minStock,
                costPerUnit = excluded.costPerUnit,
                branch_id = excluded.branch_id,
-               updated_at = excluded.updated_at
+               updated_at = excluded.updated_at,
+               deleted_at = excluded.deleted_at
              WHERE excluded.updated_at > inventory.updated_at OR inventory.updated_at IS NULL`,
     upsertParams: (i) => [
       str(i.id),
@@ -332,7 +337,7 @@ const SYNC_TABLES = {
              VALUES (?, ?, ?, ?, ?, ?, ?)
              ON CONFLICT(id) DO UPDATE SET
                name = excluded.name, avatar = excluded.avatar, branch_id = excluded.branch_id,
-               updated_at = excluded.updated_at
+               updated_at = excluded.updated_at, deleted_at = excluded.deleted_at
              WHERE excluded.updated_at > cashiers.updated_at OR cashiers.updated_at IS NULL`,
     upsertParams: (c) => [
       str(c.id), cashierName(c.name, true), cashierAvatar(c.avatar), branchIdOf(c),
@@ -377,76 +382,22 @@ const SYNC_TABLES = {
   },
 };
 
-function isDeleted(record) {
-  return Boolean(record.deletedAt ?? record.deleted_at);
+/** Builds the prepared writes; execution also verifies no-op replays atomically. */
+function buildSyncStatements(db, spec, items, branchId = null) {
+  assertUniqueIds(items);
+  return items.map((record) => prepareSyncEntry(db, spec, record, { branchId, tombstoneUpdates: true }).statement);
 }
 
-/** Builds the prepared statements for one sync call. */
-function buildSyncStatements(db, spec, items) {
-  const statements = [];
-
-  for (const record of items) {
-    if (!record || !record.id) throw new Error('Every record needs an id');
-
-    if (!spec.appendOnly && isDeleted(record)) {
-      const deletedAt = str(record.deletedAt ?? record.deleted_at);
-      // The tombstone must obey the same last-writer-wins rule as every upsert. Without the
-      // timestamp predicate a branch that was offline, or any client with a skewed clock,
-      // re-sending an old delete wipes a row another branch edited more recently.
-      const effectiveAt = str(record.updatedAt ?? record.updated_at, deletedAt);
-      statements.push(
-        db.prepare(
-          `UPDATE ${spec.table} SET deleted_at = ?, updated_at = ? WHERE id = ? AND (updated_at IS NULL OR ? > updated_at)`
-        ).bind(deletedAt, effectiveAt, str(record.id), effectiveAt)
-      );
-      continue;
-    }
-
-    statements.push(db.prepare(spec.upsert).bind(...spec.upsertParams(record)));
-  }
-
-  return statements;
-}
-
-/**
- * Builds a batch, keeping the records that can be written and naming the ones that cannot.
- *
- * One malformed record used to throw and take its whole batch with it: `db.batch` is a
- * single transaction, so a single oversized order left 199 good records unwritten and the
- * client, told only "400", replayed the identical batch forever.
- *
- * `buildSyncStatements` still throws — that is its contract with the test suite. This
- * catches per record so one bad row is reported instead of being fatal.
- */
-function buildSyncBatch(db, spec, items) {
-  const statements = [];
-  const kinds = [];
-  const failed = [];
-
-  for (const record of items) {
-    try {
-      const [statement] = buildSyncStatements(db, spec, [record]);
-      statements.push(statement);
-      kinds.push(spec.appendOnly ? 'append' : (isDeleted(record) ? 'tombstone' : 'verify'));
-    } catch (err) {
-      failed.push({
-        id: record && record.id ? str(record.id) : null,
-        error: String((err && err.message) || err),
-      });
-    }
-  }
-
-  return { statements, kinds, failed };
+function buildSyncBatch(db, spec, items, branchId = null) {
+  return prepareSyncBatch(db, spec, items, { branchId, tombstoneUpdates: true });
 }
 
 // ─── Read handlers ───────────────────────────────────────────────────────────
 
-async function readMenuItems(db) {
-  const { results } = await db
-    .prepare(`SELECT * FROM menu_items WHERE deleted_at IS NULL ORDER BY category, name LIMIT ?`)
-    .bind(READ_LIMIT)
-    .all();
-  return { menuItems: results || [] };
+async function readMenuItemsPage(db, branchId) {
+  const scope = await readScoped(db, 'menu_items', 'category, name', branchId);
+  const { rows, truncated } = pageRows(await scope.all(), READ_LIMIT);
+  return { rows, truncated };
 }
 
 /**
@@ -463,20 +414,30 @@ async function readMenuItems(db) {
  * remains the only figure available — the honest answer for rows written before the ledger
  * existed, rather than a fabricated zero.
  */
-async function readDerivedBalances(db) {
+async function readDerivedBalances(db, branchId) {
+  // Scoped with the read it accompanies: an unscoped ledger total would mix branches and then
+  // be compared against a per-branch stored column, so every shared row would look divergent.
+  const scope = (column) => (branchId ? `WHERE (${column} = ? OR ${column} IS NULL)` : '');
+  const bind = (sql) => {
+    const statement = db.prepare(sql);
+    return branchId ? statement.bind(branchId) : statement;
+  };
+
   const [stock, points] = await db.batch([
-    db.prepare(`
+    bind(`
       SELECT itemId AS id,
              SUM(CASE WHEN type = 'OUT' THEN -quantity ELSE quantity END) AS balance,
              COUNT(*) AS movements
       FROM inventory_transactions
+      ${scope('branch_id')}
       GROUP BY itemId
     `),
-    db.prepare(`
+    bind(`
       SELECT customerId AS id,
              SUM(points) AS balance,
              COUNT(*) AS movements
       FROM points_transactions
+      ${scope('branch_id')}
       GROUP BY customerId
     `),
   ]);
@@ -510,21 +471,58 @@ function withDerivedBalance(rows, derived, storedKey) {
   });
 }
 
-async function readManagerSnapshot(db) {
+/** `limit + 1` rows are requested so the extra one can be seen and dropped: proof of more. */
+const pageRows = readPage;
+
+/**
+ * Reads one table within a branch, or across every branch for a manager key.
+ *
+ * The shared API key used to open the whole estate: any device that held it — or any copy of
+ * it that leaked — could pull every branch's orders, customers and stock. Scoping follows the
+ * same resolution the pull endpoints already use, so a branch key sees its own rows and only
+ * a manager key sees all of them.
+ */
+async function readScoped(db, table, orderBy, branchId) {
+  const limit = READ_LIMIT + 1;
+  const params = [];
+  let where = 'WHERE deleted_at IS NULL';
+  if (branchId) {
+    where += ' AND (branch_id = ? OR branch_id IS NULL)';
+    params.push(branchId);
+  }
+  params.push(limit);
+  const spec = Object.values(SYNC_TABLES).find((entry) => entry.table === table);
+  const columns = persistedColumns(spec).filter((column) => !['avatar', 'cashierAvatar'].includes(column));
+  return db.prepare(boundedSelectSql(table, columns, where, `${orderBy}, id`)).bind(...params);
+}
+
+async function readManagerSnapshot(db, branchId) {
   // Soft-deleted rows are tombstones, not live records; they must not be counted in
   // revenue or stock.
   const [orders, customers, inventory] = await db.batch([
-    db.prepare(`SELECT * FROM orders WHERE deleted_at IS NULL ORDER BY createdAt DESC LIMIT ?`).bind(READ_LIMIT),
-    db.prepare(`SELECT * FROM customers WHERE deleted_at IS NULL ORDER BY createdAt DESC LIMIT ?`).bind(READ_LIMIT),
-    db.prepare(`SELECT * FROM inventory WHERE deleted_at IS NULL ORDER BY name ASC LIMIT ?`).bind(READ_LIMIT),
+    await readScoped(db, 'orders', 'createdAt DESC', branchId),
+    await readScoped(db, 'customers', 'createdAt DESC', branchId),
+    await readScoped(db, 'inventory', 'name ASC', branchId),
   ]);
 
-  const derived = await readDerivedBalances(db);
+  const derived = await readDerivedBalances(db, branchId);
+  const pageOrders = pageRows(orders, READ_LIMIT);
+  const pageCustomers = pageRows(customers, READ_LIMIT);
+  const pageInventory = pageRows(inventory, READ_LIMIT);
 
   return {
-    orders: orders.results || [],
-    customers: withDerivedBalance(customers.results || [], derived.points, 'points'),
-    inventory: withDerivedBalance(inventory.results || [], derived.stock, 'stock'),
+    orders: pageOrders.rows,
+    customers: withDerivedBalance(pageCustomers.rows, derived.points, 'points'),
+    inventory: withDerivedBalance(pageInventory.rows, derived.stock, 'stock'),
+    /**
+     * Collections that hit their cap. Without it a partial total is indistinguishable from a
+     * complete one, and a manager reading a truncated revenue figure treats it as the day.
+     */
+    truncated: {
+      ...(pageOrders.truncated ? { orders: true } : {}),
+      ...(pageCustomers.truncated ? { customers: true } : {}),
+      ...(pageInventory.truncated ? { inventory: true } : {}),
+    },
   };
 }
 
@@ -687,6 +685,23 @@ async function runMigration(db) {
   await tryExec('idx.orders_branch', 'CREATE INDEX IF NOT EXISTS idx_orders_branch ON orders(branch_id)');
   await tryExec('idx.inv_tx_item', 'CREATE INDEX IF NOT EXISTS idx_inv_tx_item ON inventory_transactions(itemId)');
 
+  // Every incremental pull filters on `updated_at` (or `createdAt` for the append-only
+  // ledgers) and, once branch scoping is on, on `branch_id` as well. Without these, each pull
+  // scanned the whole table — fine at a few hundred rows, a timeout once a branch has a year
+  // of orders. The ledger indexes also serve the cursor, which sorts on the same columns.
+  await tryExec('idx.customers_updated_at', 'CREATE INDEX IF NOT EXISTS idx_customers_updated_at ON customers(updated_at)');
+  await tryExec('idx.customers_branch', 'CREATE INDEX IF NOT EXISTS idx_customers_branch ON customers(branch_id)');
+  await tryExec('idx.menu_items_updated_at', 'CREATE INDEX IF NOT EXISTS idx_menu_items_updated_at ON menu_items(updated_at)');
+  await tryExec('idx.menu_items_branch', 'CREATE INDEX IF NOT EXISTS idx_menu_items_branch ON menu_items(branch_id)');
+  await tryExec('idx.inventory_updated_at', 'CREATE INDEX IF NOT EXISTS idx_inventory_updated_at ON inventory(updated_at)');
+  await tryExec('idx.inventory_branch', 'CREATE INDEX IF NOT EXISTS idx_inventory_branch ON inventory(branch_id)');
+  await tryExec('idx.inv_tx_created', 'CREATE INDEX IF NOT EXISTS idx_inv_tx_created ON inventory_transactions(createdAt)');
+  await tryExec('idx.inv_tx_branch', 'CREATE INDEX IF NOT EXISTS idx_inv_tx_branch ON inventory_transactions(branch_id)');
+  await tryExec('idx.points_tx_customer', 'CREATE INDEX IF NOT EXISTS idx_points_tx_customer ON points_transactions(customerId)');
+  await tryExec('idx.points_tx_created', 'CREATE INDEX IF NOT EXISTS idx_points_tx_created ON points_transactions(createdAt)');
+  await tryExec('idx.points_tx_branch', 'CREATE INDEX IF NOT EXISTS idx_points_tx_branch ON points_transactions(branch_id)');
+  await tryExec('idx.cashiers_branch', 'CREATE INDEX IF NOT EXISTS idx_cashiers_branch ON cashiers(branch_id)');
+
   // cashiers table & indexes
   await tryExec('cashiers.table', `CREATE TABLE IF NOT EXISTS cashiers (
     id TEXT PRIMARY KEY,
@@ -718,43 +733,31 @@ async function runMigration(db) {
 }
 
 // ─── Branch-scoped credentials ───────────────────────────────────────────────
-/**
- * Which branch the presented credential may act as.
- *
- * One shared WORKER_API_KEY means every install can read and write every branch: the key
- * is copied onto each machine, and `branchId` in the request body was trusted, so a till
- * could pull another branch's orders by simply omitting it. This resolves the credential to
- * a branch instead, and that scope — not the request — decides what a read returns.
- *
- * Returns:
- *   • `'manager'` — the key may read every branch.
- *   • a branch id — reads are confined to it (plus rows shared by every branch).
- *   • `null` — no scoped key matched. This is LEGACY MODE: the shared key is still
- *     accepted and the request's own branchId is honoured, exactly as before. Scoping only
- *     becomes mandatory once rows exist in `api_keys`, so enabling it is a data change
- *     rather than a deploy that would lock every till out.
- */
-async function resolveKeyBranch(env, apiKey) {
-  if (!apiKey || !env.DB) return null;
-
-  let hash;
+// Registry entries always take precedence, even when the presented key is WORKER_API_KEY.
+// Only an explicitly configured, unregistered shared key retains the admin/legacy role.
+async function resolveKeyBranch(env, apiKey, migration = false) {
+  if (!apiKey) return null;
+  const shared = Boolean(env.WORKER_API_KEY) && timingSafeEqual(apiKey, env.WORKER_API_KEY);
+  const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(apiKey)));
+  const hash = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+  let row;
   try {
-    const bytes = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(apiKey)));
-    hash = [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
-  } catch {
-    return null;
-  }
-
-  try {
-    const row = await env.DB.prepare(
-      `SELECT branch_id FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL LIMIT 1`
+    row = await env.DB.prepare(
+      'SELECT branch_id, revoked_at FROM api_keys WHERE key_hash = ? LIMIT 1'
     ).bind(hash).first();
-    return row && row.branch_id ? String(row.branch_id) : null;
-  } catch {
-    // The table has not been migrated yet. Falling back to legacy mode keeps the estate
-    // running; refusing would take every till offline at once.
-    return null;
+  } catch (err) {
+    // A fresh database can bootstrap ONLY through /migrate, not through a data endpoint.
+    if (migration && shared && /no such table:\s*(?:main\.)?api_keys\b/i.test(String(err?.message))) {
+      return { admin: true, branchId: null };
+    }
+    throw err;
   }
+  if (row) {
+    if (row.revoked_at != null || typeof row.branch_id !== 'string' || !row.branch_id.trim()) return null;
+    return { admin: false, branchId: row.branch_id };
+  }
+  if (shared && (migration || String(env.REQUIRE_BRANCH_KEYS) !== 'true')) return { admin: true, branchId: null };
+  return null;
 }
 
 // ─── Router ──────────────────────────────────────────────────────────────────
@@ -773,11 +776,14 @@ export default {
     }
 
     const clientId = request.headers.get('CF-Connecting-IP') || 'unknown';
-    // Authentication is a synchronous header comparison, so it is settled here rather than
-    // after the body is read: an authenticated caller can then be given the sync budget,
-    // while traffic that has not identified itself stays on the anonymous one.
     const apiKey = request.headers.get('X-API-Key');
-    const authenticated = Boolean(env.WORKER_API_KEY) && timingSafeEqual(apiKey, env.WORKER_API_KEY);
+    let principal;
+    try {
+      principal = await resolveKeyBranch(env, apiKey, url.pathname === '/migrate');
+    } catch (err) {
+      return json({ success: false, error: clientError(err, 503) }, 503, origin, env);
+    }
+    const authenticated = principal !== null;
 
     const limit = checkRateLimit(
       clientId,
@@ -804,30 +810,15 @@ export default {
       return json({ success: false, error: 'Method not allowed' }, 405, origin, env);
     }
 
-    if (!env.WORKER_API_KEY || !authenticated) {
+    if (!authenticated) {
       return json({ success: false, error: 'Unauthorized' }, 401, origin, env);
     }
 
-    // Resolved once, before the body is read, and used to override any branchId the caller
-    // sent. A scoped credential cannot widen itself by editing the payload.
-    const keyBranch = await resolveKeyBranch(env, apiKey);
-
-    /**
-     * The pull options a request is allowed to use.
-     *
-     * Legacy mode passes the payload through untouched, so a deployment with no scoped keys
-     * behaves exactly as it always did — including the old literal 'manager' branch filter,
-     * which must NOT be reinterpreted as "every branch" here, because that would widen a
-     * read that used to be narrow. A manager-scoped key is represented as a null branchId,
-     * which is the value this worker has always read as "no filter".
-     */
-    const pullOptions = (options = {}) => {
-      if (keyBranch === null) return options;
-      if (keyBranch === 'manager') return { ...options, branchId: null };
-      return { ...options, branchId: keyBranch };
-    };
+    const pullOptions = (options = {}) => principal.admin ? options : { ...options, branchId: principal.branchId };
+    const branchScope = () => principal.branchId;
 
     if (url.pathname === '/migrate') {
+      if (!principal.admin) return json({ success: false, error: 'Admin credential required' }, 403, origin, env);
       const { results, failed } = await runMigration(env.DB);
       return json({
         success: failed.length === 0,
@@ -872,15 +863,7 @@ export default {
           return json({ success: false, error: `Unknown sync target: ${syncMatch[1]}` }, 404, origin, env);
         }
         const items = assertItems(payload.items);
-        if (items.length === 0) return json({ success: true, written: 0 }, 200, origin, env);
-
-        const { statements, kinds, failed } = buildSyncBatch(env.DB, spec, items);
-        const results = await env.DB.batch(statements);
-        const { written, expected, skipped } = summariseBatch(results, kinds);
-
-        // `written` is rows changed, not statements sent: a caller that marks a row synced
-        // on the strength of this number has to be able to trust it.
-        return json({ success: true, written, expected, skipped, failed }, 200, origin, env);
+        return json(await executeSyncBatch(env.DB, buildSyncBatch(env.DB, spec, items, branchScope())), 200, origin, env);
       }
 
       if (url.pathname === '/pull/orders') {
@@ -913,17 +896,18 @@ export default {
       }
 
       if (url.pathname === '/read/menu-items') {
-        return json({ success: true, ...(await readMenuItems(env.DB)) }, 200, origin, env);
+        const { rows, truncated } = await readMenuItemsPage(env.DB, branchScope());
+        return json({ success: true, menuItems: rows, truncated }, 200, origin, env);
       }
 
       if (url.pathname === '/read/manager-snapshot') {
-        return json({ success: true, ...(await readManagerSnapshot(env.DB)) }, 200, origin, env);
+        return json({ success: true, ...(await readManagerSnapshot(env.DB, branchScope())) }, 200, origin, env);
       }
 
       return json({ success: false, error: `Unknown endpoint: ${url.pathname}` }, 404, origin, env);
     } catch (err) {
       const status = (err && (err.isRejection || /rejection|expected|too many|must be/i.test(String(err.message || '')))) ? 400 : 500;
-      return json({ success: false, error: String(err.message || err) }, status, origin, env);
+      return json({ success: false, error: clientError(err, status) }, status, origin, env);
     }
   },
 };

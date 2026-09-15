@@ -97,12 +97,109 @@ export function num(value, fallback = null) {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/**
+ * Coerces a value D1 will store in an INTEGER flag column.
+ *
+ * A plain truthiness test is wrong for the one shape this actually receives: JSON booleans
+ * arrive as booleans, but a client that serialises form data — or a row replayed from a
+ * backup — sends the *string* `"false"`, and `"false"` is truthy. Every such item was stored
+ * as available = 1, so an item the manager had unpublished appeared on the public menu.
+ *
+ * Anything unrecognised keeps the old truthiness behaviour rather than guessing: the column
+ * is an integer flag, and a value that is neither a known false nor a known true is treated
+ * the way it always was.
+ */
 export function bool01(value) {
+  if (typeof value === 'string') {
+    const text = value.trim().toLowerCase();
+    if (text === '' || text === 'false' || text === '0' || text === 'no' || text === 'off') return 0;
+    if (text === 'true' || text === '1' || text === 'yes' || text === 'on') return 1;
+  }
   return value ? 1 : 0;
 }
 
 export function nowIso() {
   return new Date().toISOString();
+}
+
+/**
+ * What an error response may tell the caller.
+ *
+ * A raw D1 message carries the schema with it: `no such table: customers`,
+ * `table orders has no column named paidAt`, and the constraint names behind a failed write.
+ * Handing that to whoever knocked on a public endpoint is a free map of the database, and
+ * one unauthenticated read path used to do exactly that.
+ *
+ * A 4xx is the caller's fault and they need the detail to fix it, so those pass through. A
+ * 5xx is ours: the caller can act on "try again", not on the name of a missing index, so the
+ * real message goes to the worker log where an operator can read it.
+ */
+export function clientError(err, status) {
+  const message = String((err && err.message) || err || 'Unknown error');
+  if (status >= 400 && status < 500 && err?.isRejection === true) return message;
+  console.error('[worker] internal error:', message);
+  return 'Internal server error';
+}
+
+/**
+ * Drops inline image data from the rows that overflow a byte budget.
+ *
+ * Returns the rows in their original order, so the menu does not reshuffle when part of it
+ * loses its pictures, and a flag telling the caller that it happened — a silent truncation
+ * is indistinguishable from a menu that genuinely has no photos.
+ *
+ * @param {Array<object>} rows
+ * @param {string} field the column holding the inline data URI
+ * @param {number} budget total bytes of inline image data allowed in one response
+ */
+export function boundInlineImages(rows, field, budget = MAX_PUBLIC_IMAGE_TOTAL_BYTES) {
+  if (!Array.isArray(rows)) return { rows: [], imagesTruncated: false };
+
+  let remaining = Number.isFinite(budget) ? budget : 0;
+  let imagesTruncated = false;
+
+  const bounded = rows.map((row) => {
+    if (!row || typeof row !== 'object') return row;
+    const value = row[field];
+    if (typeof value !== 'string' || value === '') return row;
+
+    const size = new TextEncoder().encode(value).byteLength;
+    if (size > remaining) {
+      imagesTruncated = true;
+      const { [field]: _omitted, ...rest } = row;
+      return rest;
+    }
+    remaining -= size;
+    return row;
+  });
+
+  return { rows: bounded, imagesTruncated };
+}
+
+/**
+ * Removes columns a caller has no use for.
+ *
+ * `/read/snapshot` returns `SELECT *`, so every avatar and product photo on every row
+ * travelled to a portal that renders analytics and never draws either one. A thousand orders
+ * each carrying a 400 kB avatar is 400 MB of JSON per poll, paid by the manager's browser and
+ * by the worker's memory limit.
+ *
+ * @param {Array<object>} rows
+ * @param {string[]} fields columns to drop
+ */
+export function omitFields(rows, fields) {
+  if (!Array.isArray(rows)) return [];
+  const drop = new Set(Array.isArray(fields) ? fields : []);
+  if (drop.size === 0) return rows;
+
+  return rows.map((row) => {
+    if (!row || typeof row !== 'object') return row;
+    const kept = {};
+    for (const [key, value] of Object.entries(row)) {
+      if (!drop.has(key)) kept[key] = value;
+    }
+    return kept;
+  });
 }
 
 // ─── Field bounds ────────────────────────────────────────────────────────────
@@ -111,6 +208,20 @@ export function nowIso() {
 
 export const MAX_TEXT_BYTES = 4_000;
 export const MAX_IMAGE_BYTES = 400_000;
+
+/**
+ * Ceiling on inline image data in a single public response.
+ *
+ * One image may be `MAX_IMAGE_BYTES` (400 kB of base64) and a read may return 1000 rows, so
+ * the arithmetic worst case for an unauthenticated `/read/public-menu` was ~400 MB — three
+ * times the memory a Worker is allowed to use, and a denial of service available to anyone
+ * who can guess the hostname.
+ *
+ * Images are dropped from the tail of the response once the budget is spent. Losing a picture
+ * is visible and recoverable; a response the worker cannot build at all is neither, and items
+ * still render without their photo.
+ */
+export const MAX_PUBLIC_IMAGE_TOTAL_BYTES = 8_000_000;
 export const MAX_JSON_BYTES = 64_000;
 export const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
@@ -146,70 +257,21 @@ export function orderItemsJson(items) {
 // targeted, and a ledger duplicate dropped by INSERT OR IGNORE all change zero rows while
 // still being one statement that was sent.
 
-/**
- * Counts the rows a D1 batch actually wrote.
- *
- * D1 reports `rows_written`, while the older interface and most test doubles report
- * `changes`; both are accepted so the answer does not depend on which is present. A result
- * set that is missing entirely counts as zero rather than as one per statement, because
- * "we cannot tell" must never be reported as "written".
- */
+/** Logical row changes only; physical rows_written cannot prove acceptance. */
 export function countWritten(batchResults) {
   if (!Array.isArray(batchResults)) return 0;
-
-  let written = 0;
-  for (const result of batchResults) {
-    const meta = result && result.meta;
-    if (!meta) continue;
-    const rows = meta.rows_written ?? meta.changes ?? 0;
-    if (Number.isFinite(rows)) written += rows;
-  }
-  return written;
+  return batchResults.reduce((total, result) => {
+    const changes = result?.meta?.changes;
+    return total + (result?.success === true && Number.isSafeInteger(changes) && changes > 0 ? changes : 0);
+  }, 0);
 }
 
-/**
- * Summarises a batch result against what each statement was expected to do.
- *
- * Only statements marked `verify` are held to "must have changed a row", because two kinds
- * of no-op are correct and constant:
- *
- *  - a tombstone for a row the cloud never had. A branch that deleted an item it created
- *    locally sends an UPDATE that matches nothing, and that is the desired outcome.
- *  - an append-only ledger row that is already present. `INSERT OR IGNORE` matching zero
- *    rows means the movement was recorded earlier, which is a success.
- *
- * Counting either as a failure would produce a shortfall on almost every sync and bury the
- * shortfalls that matter.
- *
- * @param {Array} results the value D1's `batch` resolved to
- * @param {string[]} kinds one entry per statement: 'verify', 'tombstone' or 'append'
- */
+// A summary alone cannot acknowledge a no-op. The sync executor verifies its stored state.
 export function summariseBatch(results, kinds) {
   const list = Array.isArray(results) ? results : [];
-  const kindList = Array.isArray(kinds) ? kinds : [];
-
-  let written = 0;
-  let expected = 0;
-  let verifiedWritten = 0;
-
-  // Driven by whichever list is longer, not by the results alone: a result set that is
-  // shorter than the statements sent means some rows are unaccounted for, and reporting
-  // "nothing needed verifying" for them would be the same optimistic guess as before.
-  const length = Math.max(list.length, kindList.length);
-
-  for (let i = 0; i < length; i++) {
-    const meta = list[i] && list[i].meta;
-    const raw = meta ? (meta.rows_written ?? meta.changes ?? 0) : 0;
-    const rows = Number.isFinite(raw) ? raw : 0;
-
-    written += rows;
-    if (kindList[i] === 'verify') {
-      expected += 1;
-      verifiedWritten += rows;
-    }
-  }
-
-  return { written, expected, skipped: Math.max(0, expected - verifiedWritten) };
+  const expected = Array.isArray(kinds) ? kinds.length : list.length;
+  const accepted = list.slice(0, expected).filter((result) => countWritten([result]) > 0).length;
+  return { written: countWritten(list.slice(0, expected)), expected, skipped: expected - accepted };
 }
 
 // ─── Rejections ──────────────────────────────────────────────────────────────

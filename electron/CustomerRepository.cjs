@@ -87,6 +87,62 @@ class CustomerRepository {
     runTx(rows);
   }
 
+  /**
+   * Applies loyalty ledger rows pulled from the cloud.
+   *
+   * `upsertPulledCustomers` deliberately refuses to copy a sibling branch's `points` balance,
+   * because that balance is simply whichever branch pushed last. That left loyalty broken
+   * across branches: points earned at one till never reached a customer record that already
+   * existed at another. The ledger is the only correct source for the *change*, so a pulled
+   * transaction is inserted here and its delta applied locally.
+   *
+   * The ledger is append-only and every row carries a stable id, so a row already present is
+   * ignored — this runs on every cycle, and replaying a row would apply its delta twice. Own
+   * rows pushed earlier and pulled back are therefore harmless.
+   */
+  upsertPulledPointsTransactions(rows) {
+    if (!rows || rows.length === 0) return;
+    const sqlite = this.getDb();
+    const insert = sqlite.prepare(`
+      INSERT OR IGNORE INTO points_transactions
+        (id, customerId, orderId, type, points, balanceAfter, createdAt, branch_id, is_synced)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1)
+    `);
+    const applyDelta = sqlite.prepare(`
+      UPDATE customers
+         SET points = MAX(0, COALESCE(points, 0) + ?),
+             updated_at = ?,
+             is_synced = 0
+       WHERE id = ? AND deleted_at IS NULL
+    `);
+
+    const runTx = sqlite.transaction((items) => {
+      for (const row of items) {
+        if (!row || !row.id || !row.customerId) continue;
+        const delta = Number(row.points);
+        if (!Number.isFinite(delta) || delta === 0) continue;
+
+        const result = insert.run(
+          row.id,
+          row.customerId,
+          row.orderId || null,
+          row.type || 'EARN',
+          delta,
+          row.balanceAfter != null ? Number(row.balanceAfter) : null,
+          row.createdAt || new Date().toISOString(),
+          row.branch_id || null
+        );
+
+        // INSERT OR IGNORE reports zero changes for a row this till already has, which is
+        // what keeps a replay from double-counting it.
+        if (result.changes > 0) {
+          applyDelta.run(delta, nextUpdatedAt(null), row.customerId);
+        }
+      }
+    });
+    runTx(rows);
+  }
+
   getCustomerByPhone(phone) {
     const sqlite = this.getDb();
     const branchId = this.getBranchId();
@@ -101,33 +157,35 @@ class CustomerRepository {
   saveCustomer(customer) {
     const sqlite = this.getDb();
     const branchId = this.getBranchId();
-    const existing = sqlite.prepare(`
-      SELECT * FROM customers
-      WHERE phone = ? AND deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
-    `).get(customer.phone, branchId);
-    // Monotonic version even for a burst of edits within one millisecond.
-    const now = nextUpdatedAt(existing ? existing.updated_at : null);
-
-    if (existing) {
-      sqlite.prepare('UPDATE customers SET name = ?, points = ?, updated_at = ?, is_synced = 0, sync_attempts = 0, last_error = NULL WHERE phone = ?').run(
-        customer.name || existing.name,
-        customer.points !== undefined ? customer.points : existing.points,
-        now,
-        customer.phone
-      );
-      return this.getCustomerByPhone(customer.phone);
-    } else {
-      const id = customer.id || `cust-${randomUUID()}`;
-      const createdAt = customer.createdAt || now;
-      // A branchId from the caller is accepted only when it is this branch's own id; a
-      // foreign id would re-scope the row to a branch this till cannot even read back.
-      const assignedBranch = (customer.branchId && customer.branchId === branchId)
-        ? customer.branchId
-        : branchId;
-      sqlite.prepare('INSERT INTO customers (id, name, phone, points, createdAt, branch_id, is_synced, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)')
-        .run(id, customer.name || 'Customer', customer.phone, customer.points || 0, createdAt, assignedBranch, now);
-      return this.getCustomerByPhone(customer.phone);
+    if (customer.branchId != null && customer.branchId !== '' && customer.branchId !== branchId) {
+      throw new Error('Cannot access another branch');
     }
+    return sqlite.transaction(() => {
+      const existing = sqlite.prepare(`
+        SELECT * FROM customers
+        WHERE phone = ? AND deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
+      `).get(customer.phone, branchId);
+      const now = nextUpdatedAt(existing ? existing.updated_at : null);
+      const id = existing ? existing.id : customer.id || `cust-${randomUUID()}`;
+
+      if (existing) {
+        sqlite.prepare('UPDATE customers SET name = ?, points = ?, updated_at = ?, is_synced = 0, sync_attempts = 0, last_error = NULL WHERE id = ?').run(
+          customer.name || existing.name,
+          customer.points ?? existing.points,
+          now,
+          id
+        );
+      } else {
+        // The existing schema makes phone globally unique. Never replace or adopt an
+        // inaccessible row to get around that constraint, including a tombstoned row.
+        if (sqlite.prepare('SELECT id FROM customers WHERE phone = ?').get(customer.phone)) {
+          throw new Error('Phone belongs to an unavailable customer');
+        }
+        sqlite.prepare('INSERT INTO customers (id, name, phone, points, createdAt, branch_id, is_synced, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?)')
+          .run(id, customer.name || 'Customer', customer.phone, customer.points ?? 0, customer.createdAt || now, branchId, now);
+      }
+      return this.mapRow(sqlite.prepare('SELECT * FROM customers WHERE id = ?').get(id));
+    }).immediate();
   }
 
   /**
@@ -142,16 +200,24 @@ class CustomerRepository {
    */
   applyPointsChangeInTx(phone, { pointsEarned = 0, pointsRedeemed = 0, orderId = null, branchId = null, customerName = null }) {
     const sqlite = this.getDb();
-    const now = new Date().toISOString();
-    const activeBranch = branchId || this.getBranchId();
+    const activeBranch = this.getBranchId();
+    if (branchId != null && branchId !== '' && branchId !== activeBranch) {
+      throw new Error('Cannot access another branch');
+    }
 
     // Points are a whole-unit balance; a fractional point cannot be redeemed.
     const earned = Math.max(0, Math.floor(Number(pointsEarned) || 0));
     const redeemed = Math.max(0, Math.floor(Number(pointsRedeemed) || 0));
 
-    // Upsert by phone: the phone number is the loyalty identity.
-    let customer = sqlite.prepare('SELECT * FROM customers WHERE phone = ? AND deleted_at IS NULL').get(phone);
+    let customer = sqlite.prepare(`
+      SELECT * FROM customers
+      WHERE phone = ? AND deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
+    `).get(phone, activeBranch);
+    const now = nextUpdatedAt(customer ? customer.updated_at : null);
     if (!customer) {
+      if (sqlite.prepare('SELECT id FROM customers WHERE phone = ?').get(phone)) {
+        throw new Error('Phone belongs to an unavailable customer');
+      }
       const id = `cust-${randomUUID()}`;
       sqlite.prepare('INSERT INTO customers (id, name, phone, points, createdAt, branch_id, is_synced, updated_at) VALUES (?, ?, ?, 0, ?, ?, 0, ?)')
         .run(id, customerName || 'Customer', phone, now, activeBranch, now);
@@ -168,7 +234,7 @@ class CustomerRepository {
 
     // sync_attempts is cleared for the same reason as the other mutation paths: a row
     // parked at the budget stays parked unless an edit gives it its attempts back.
-    sqlite.prepare('UPDATE customers SET points = ?, updated_at = ?, is_synced = 0, sync_attempts = 0 WHERE id = ?')
+    sqlite.prepare('UPDATE customers SET points = ?, updated_at = ?, is_synced = 0, sync_attempts = 0, last_error = NULL WHERE id = ?')
       .run(newBalance, now, customer.id);
 
     const insertLedger = sqlite.prepare(`
@@ -194,11 +260,18 @@ class CustomerRepository {
     const branchId = this.getBranchId();
     // Soft delete with tombstone so the deletion syncs (Issue 20).
     // Past orders keep their customerPhone snapshot for reporting context.
-    const now = new Date().toISOString();
-    sqlite.prepare(`
-      UPDATE customers SET deleted_at = ?, updated_at = ?, is_synced = 0
-      WHERE id = ? AND (branch_id = ? OR branch_id IS NULL)
-    `).run(now, now, id, branchId);
+    sqlite.transaction(() => {
+      const customer = sqlite.prepare(`
+        SELECT updated_at FROM customers
+        WHERE id = ? AND deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
+      `).get(id, branchId);
+      if (!customer) return;
+      const now = nextUpdatedAt(customer.updated_at);
+      sqlite.prepare(`
+        UPDATE customers SET deleted_at = ?, updated_at = ?, is_synced = 0, sync_attempts = 0, last_error = NULL
+        WHERE id = ?
+      `).run(now, now, id);
+    }).immediate();
   }
 
   getUnsyncedCustomers() {

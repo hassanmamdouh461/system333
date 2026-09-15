@@ -2,6 +2,18 @@
 
 const MAX_HTML_CHARS = 2_000_000;
 
+/** How long the receipt may take to render. */
+const RENDER_TIMEOUT_MS = 30_000;
+/**
+ * How long the operator may take with the print dialog.
+ *
+ * One 30-second guard used to cover both phases, so anyone who had to find the right printer,
+ * clear a jam, or answer the driver's own prompt had the job destroyed mid-dialog and the
+ * receipt lost — with no error the cashier could act on. The load phase stays tightly bounded;
+ * the wait on a human is not.
+ */
+const PRINT_DIALOG_TIMEOUT_MS = 5 * 60_000;
+
 /**
  * Renders receipt HTML in an isolated, sandboxed, invisible window and triggers printing.
  *
@@ -81,6 +93,9 @@ function printReceiptHtml(html) {
         return resolve();
       }
 
+      // The dialog is up: from here the delay is the operator's, not the app's.
+      armTimeout(PRINT_DIALOG_TIMEOUT_MS);
+
       printWindow.webContents.print(
         {
           silent: false,
@@ -113,12 +128,19 @@ function printReceiptHtml(html) {
       reject(new Error(`Failed to load receipt HTML: ${errorDescription} (${errorCode})`));
     });
 
-    timeoutId = setTimeout(() => {
-      if (!finished) {
-        cleanup();
-        reject(new Error('Print operation timed out'));
-      }
-    }, 30000);
+    // Re-armable guard: the same deadline cannot sensibly cover rendering the receipt and
+    // waiting on a person at a printer dialog.
+    const armTimeout = (ms) => {
+      if (timeoutId) clearTimeout(timeoutId);
+      timeoutId = setTimeout(() => {
+        if (!finished) {
+          cleanup();
+          reject(new Error('Print operation timed out'));
+        }
+      }, ms);
+    };
+
+    armTimeout(RENDER_TIMEOUT_MS);
 
     printWindow.loadURL(dataUrl).catch((err) => {
       cleanup();

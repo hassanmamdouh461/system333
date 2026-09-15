@@ -331,15 +331,18 @@ function validateInventoryItemUpdate(data) {
 /**
  * A stock movement.
  *
- * The quantity is always positive; the direction comes from the type. Allowing a signed
- * quantity meant an "IN" of -5 quietly removed stock while reading as a delivery in the log.
+ * IN and OUT require a positive quantity. ADJUST accepts an absolute nonnegative count,
+ * including zero; the repository converts that target to a signed ledger delta atomically.
  */
 function validateStockMovement(tx) {
   if (!tx || typeof tx !== 'object') fail('transaction must be an object');
+  const type = requireEnum(tx.type, 'type', STOCK_MOVEMENT_TYPES);
+  if (typeof tx.quantity !== 'number' && typeof tx.quantity !== 'string') fail('quantity must be a number');
+  const quantity = typeof tx.quantity === 'string' ? tx.quantity.trim() : tx.quantity;
   return {
     itemId: requireId(tx.itemId, 'itemId'),
-    type: requireEnum(tx.type, 'type', STOCK_MOVEMENT_TYPES),
-    quantity: requireNumber(tx.quantity, 'quantity', { min: 0.001, max: MAX_QUANTITY }),
+    type,
+    quantity: requireNumber(quantity, 'quantity', { min: type === 'ADJUST' ? 0 : 0.001, max: MAX_QUANTITY }),
     referenceId: optionalString(tx.referenceId, 'referenceId', { max: 100 }),
     notes: optionalString(tx.notes, 'notes', { max: MAX_TEXT_LENGTH }),
     branchId: optionalString(tx.branchId ?? tx.branch_id, 'branchId', { max: BRANCH_ID_MAX }),

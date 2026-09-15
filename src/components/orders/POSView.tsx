@@ -5,7 +5,7 @@ import { buildOrderTotals, roundMoney } from '../../utils/orderTotals';
 import { MenuItem } from '../../types/menu';
 import { OrderItem, Order } from '../../types/order';
 import { useLanguage } from '../../context/LanguageContext';
-import { Coffee, Trash2, Plus, Minus, CreditCard, DollarSign, Check, XCircle, Printer, Search } from 'lucide-react';
+import { Coffee, Trash2, Plus, Minus, CreditCard, DollarSign, Check, XCircle, Printer, Search, AlertCircle } from 'lucide-react';
 import { clsx } from 'clsx';
 import { printCustomerReceipt } from '../../utils/printReceipts';
 import { playKeypadClick, playAddItemSound, playPaymentSuccessChime, playWarningSound } from '../../utils/soundEffects';
@@ -164,7 +164,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       setNewCashierAvatar(await resizeImageFile(file));
     } catch (err) {
       console.error('Failed to process cashier photo:', err);
-      showToast(t('Invalid photo'));
+      showToast(t('Invalid photo'), 'error');
     }
   };
 
@@ -179,7 +179,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       }
     } catch (err) {
       console.error(err);
-      showToast(t('Could not save photo'));
+      showToast(t('Could not save photo'), 'error');
     }
   };
 
@@ -187,7 +187,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     const name = newCashierName.trim();
     if (!name) return;
     if (name.length > 60) {
-      showToast(t('Cashier name must be at most 60 characters'));
+      showToast(t('Cashier name must be at most 60 characters'), 'error');
       return;
     }
     if (!window.electronAPI?.createCashier) return;
@@ -202,7 +202,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     } catch (err) {
       console.error(err);
       playWarningSound();
-      showToast(t('Failed to add cashier'));
+      showToast(t('Failed to add cashier'), 'error');
     }
   };
 
@@ -228,12 +228,19 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [toastText, setToastText] = useState<string>('');
+  const [toastTone, setToastTone] = useState<'success' | 'error'>('success');
   const [isToastVisible, setIsToastVisible] = useState(false);
   const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
-  const showToast = (msg: string) => {
+  /**
+   * `tone` exists because this toast is also the error channel: "Failed to save order",
+   * "Invalid photo", "Order saved but printing failed" all arrived styled as a green tick, so
+   * a cashier read a failure as a confirmation and moved to the next customer.
+   */
+  const showToast = (msg: string, tone: 'success' | 'error' = 'success') => {
     if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
     setToastText(msg);
+    setToastTone(tone);
     setIsToastVisible(true);
     toastTimeoutRef.current = setTimeout(() => {
       setIsToastVisible(false);
@@ -521,7 +528,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
         const msg = t('Failed to save order');
         setSaveError(msg);
         playWarningSound();
-        showToast(msg);
+        showToast(msg, 'error');
         return;
       }
 
@@ -533,7 +540,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       playWarningSound();
       const msg = (err as Error)?.message || t('Failed to save order');
       setSaveError(msg);
-      showToast(msg);
+      showToast(msg, 'error');
     } finally {
       savingRef.current = false;
       setIsSaving(false);
@@ -576,7 +583,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
         const msg = t('Failed to save order');
         setSaveError(msg);
         playWarningSound();
-        showToast(msg);
+        showToast(msg, 'error');
         return;
       }
 
@@ -588,7 +595,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       playWarningSound();
       const msg = (err as Error)?.message || t('Failed to process print and save');
       setSaveError(msg);
-      showToast(msg);
+      showToast(msg, 'error');
       return;
     } finally {
       savingRef.current = false;
@@ -600,7 +607,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
         await printCustomerReceipt(createdOrder, activeCashier?.avatar);
       } catch (printErr) {
         console.error('Print failed:', printErr);
-        showToast(t('Order saved but printing failed'));
+        showToast(t('Order saved but printing failed'), 'error');
       }
     }
   };
@@ -1282,15 +1289,21 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       <div
         className={clsx(
           "fixed bottom-6 start-6 z-50 flex items-center gap-2 px-3.5 py-2 rounded-xl shadow-lg border text-xs sm:text-sm font-bold transition-all duration-300 pointer-events-none select-none",
-          "bg-emerald-600/95 text-white border-emerald-500/40 shadow-emerald-950/20 backdrop-blur-sm",
+          // A failure must not look like a confirmation: the cashier glances at it for a
+          // fraction of a second and decides whether to move on.
+          toastTone === 'error'
+            ? "bg-red-600/95 text-white border-red-500/40 shadow-red-950/20 backdrop-blur-sm"
+            : "bg-emerald-600/95 text-white border-emerald-500/40 shadow-emerald-950/20 backdrop-blur-sm",
           isToastVisible
             ? "opacity-100 translate-y-0 scale-100"
             : "opacity-0 translate-y-2 scale-95"
         )}
         role="status"
-        aria-live="polite"
+        aria-live={toastTone === 'error' ? 'assertive' : 'polite'}
       >
-        <Check size={16} className="shrink-0 stroke-[2.5]" />
+        {toastTone === 'error'
+          ? <AlertCircle size={16} className="shrink-0 stroke-[2.5]" />
+          : <Check size={16} className="shrink-0 stroke-[2.5]" />}
         <span className="font-sans">{toastText}</span>
       </div>
     </div>

@@ -108,6 +108,17 @@ describe('mirror field bounds', () => {
     expect(image).toHaveLength(MAX_IMAGE_BYTES);
   });
 
+  it('stores the string "false" as unavailable, the way the POS worker does', () => {
+    // The mirror used raw truthiness here, and "false" is truthy: an item the manager
+    // unpublished reappeared on the public menu through the mirror path, and the two
+    // databases disagreed about the same record.
+    expect(paramsFor('menu-items', { id: 'm1', available: 'false' })[6]).toBe(0);
+    expect(paramsFor('menu-items', { id: 'm1', available: '0' })[6]).toBe(0);
+    expect(paramsFor('menu-items', { id: 'm1', available: false })[6]).toBe(0);
+    expect(paramsFor('menu-items', { id: 'm1', available: 'true' })[6]).toBe(1);
+    expect(paramsFor('menu-items', { id: 'm1', available: true })[6]).toBe(1);
+  });
+
   it('matches the bounds the POS worker applies', () => {
     // Deliberate: these three numbers are copied from d1-proxy-worker.js on purpose. If one
     // side is tightened, this fails rather than letting the mirror drift silently.
@@ -137,13 +148,13 @@ describe('viewer tokens', () => {
   it('issues a token that verifies against the same secret', async () => {
     const { token, expiresAt } = await issueViewerToken(SECRET);
     expect(expiresAt).toBeGreaterThan(Date.now());
-    await expect(verifyViewerToken(SECRET, token)).resolves.toBe(true);
+    await expect(verifyViewerToken(SECRET, token)).resolves.toBe('read');
   });
 
   it('rejects a token signed with a different secret', async () => {
     // This is what makes the token unforgeable by the static site that carries it.
     const { token } = await issueViewerToken(SECRET);
-    await expect(verifyViewerToken('another-secret', token)).resolves.toBe(false);
+    await expect(verifyViewerToken('another-secret', token)).resolves.toBeNull();
   });
 
   it('rejects a token whose payload was edited', async () => {
@@ -152,25 +163,47 @@ describe('viewer tokens', () => {
     const forgedPayload = btoa(JSON.stringify({ scope: 'read', expiresAt: Date.now() + 10 ** 12 }))
       .replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
-    await expect(verifyViewerToken(SECRET, `${forgedPayload}.${signature}`)).resolves.toBe(false);
+    await expect(verifyViewerToken(SECRET, `${forgedPayload}.${signature}`)).resolves.toBeNull();
   });
 
   it('rejects an expired token', async () => {
     const issuedAt = Date.now() - TOKEN_TTL_MS - 1000;
-    const { token } = await issueViewerToken(SECRET, issuedAt);
-    await expect(verifyViewerToken(SECRET, token)).resolves.toBe(false);
+    const { token } = await issueViewerToken(SECRET, { now: issuedAt });
+    await expect(verifyViewerToken(SECRET, token)).resolves.toBeNull();
   });
 
   it('rejects malformed input rather than throwing', async () => {
     for (const bad of ['', 'no-dot', 'a.b', '.', null, undefined, 123]) {
-      await expect(verifyViewerToken(SECRET, bad as string)).resolves.toBe(false);
+      await expect(verifyViewerToken(SECRET, bad as string)).resolves.toBeNull();
     }
   });
 
   it('expires within the documented window', async () => {
     const now = 1_700_000_000_000;
-    const { expiresAt } = await issueViewerToken(SECRET, now);
+    const { expiresAt } = await issueViewerToken(SECRET, { now });
     expect(expiresAt).toBe(now + TOKEN_TTL_MS);
+  });
+
+  it('reports the write scope, so a branch edit is not satisfied by a read token', async () => {
+    const { token } = await issueViewerToken(SECRET, { scope: 'write' });
+    await expect(verifyViewerToken(SECRET, token)).resolves.toBe('write');
+  });
+
+  it('gives a write token a much shorter life than a read token', async () => {
+    const now = 1_700_000_000_000;
+    const read = await issueViewerToken(SECRET, { now });
+    const write = await issueViewerToken(SECRET, { now, scope: 'write' });
+    expect(write.expiresAt).toBeLessThan(read.expiresAt);
+  });
+
+  it('mints a distinct jti per token, so one can be revoked without another', async () => {
+    // Revocation is not implemented yet, but without a jti it could never be added without
+    // invalidating every live session.
+    const a = await issueViewerToken(SECRET);
+    const b = await issueViewerToken(SECRET);
+    const claims = (t: string) => JSON.parse(atob(t.split('.')[0].replace(/-/g, '+').replace(/_/g, '/')));
+    expect(claims(a.token).jti).toBeTruthy();
+    expect(claims(a.token).jti).not.toBe(claims(b.token).jti);
   });
 });
 
@@ -751,7 +784,7 @@ describe('branch registry statements', () => {
 });
 
 describe('deleteBranch', () => {
-  function recordingDb() {
+  function recordingDb(changes = 1) {
     const seen: { sql: string; bindings: unknown[] }[] = [];
     return {
       seen,
@@ -764,7 +797,7 @@ describe('deleteBranch', () => {
             return chain;
           },
           async run() {
-            return { success: true };
+            return { success: true, meta: { changes } };
           },
           async all() {
             return { results: [] };
@@ -788,6 +821,13 @@ describe('deleteBranch', () => {
     // The id is the third binding: timestamp, updated_at, id.
     expect(bindings[2]).toBe('main');
   });
+
+  it('refuses to report success when no row carried that id', async () => {
+    // The old version discarded the result, so deleting a nonexistent id told the portal
+    // the branch was gone. That is the message a stale tab acts on.
+    await expect(deleteBranch(recordingDb(0), 'ghost')).rejects.toThrow(/No branch with id/);
+    await expect(deleteBranch(recordingDb(0), 'ghost')).rejects.toMatchObject({ isRejection: true });
+  });
 });
 
 describe('parseBranchId', () => {
@@ -809,6 +849,44 @@ describe('parseBranchId', () => {
 describe('DEFAULT_BRANCH', () => {
   it('is a valid branch, so a fresh database is never branchless', () => {
     expect(parseBranch(DEFAULT_BRANCH).error).toBeUndefined();
+  });
+});
+
+describe('branch registry authorization', () => {
+  // The portal a manager signs into holds a viewer token. It must never be enough to rewrite
+  // the branch list: that registry decides which tills exist and what their rows are filed
+  // under, so write access to it is administrative.
+  const postBranch = (env: Record<string, unknown>, headers: Record<string, string>) =>
+    worker.fetch(
+      new Request('https://api-reports.engaz.tech/branches/save', {
+        method: 'POST',
+        body: JSON.stringify({ branch: { id: 'branch-1', name: 'Branch 1' } }),
+        headers: { 'Content-Type': 'application/json', ...headers },
+      }),
+      env as never
+    );
+
+  it('refuses a read-scoped viewer token even when no write password is configured', async () => {
+    // This is the case that used to be allowed: with REPORTS_BRANCH_PASSWORD unset, any
+    // valid token was accepted, so the split between read and write depended entirely on an
+    // operator setting a secret. Read scope is now refused unconditionally.
+    const { token } = await issueViewerToken(SECRET, { scope: 'read' });
+    const res = await postBranch(
+      { REPORTS_API_KEY: 'write-key', REPORTS_TOKEN_SECRET: SECRET, DB: {} },
+      { Authorization: `Bearer ${token}` }
+    );
+
+    expect(res.status).toBe(401);
+    await expect(res.json()).resolves.toMatchObject({ success: false });
+  });
+
+  it('still allows the write key, so the desktop can register its own till', async () => {
+    // The shared write credential keeps working: refusing it would take the POS offline.
+    const res = await postBranch(
+      { REPORTS_API_KEY: 'write-key', REPORTS_TOKEN_SECRET: SECRET, DB: {} },
+      { 'X-API-Key': 'write-key' }
+    );
+    expect(res.status).not.toBe(401);
   });
 });
 

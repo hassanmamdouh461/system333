@@ -53,7 +53,7 @@ export interface StockValuation {
   costValue: number;
   /** What the quantity on hand is expected to sell for once turned into menu items. */
   potentialSales: number;
-  /** Sales minus cost, floored at zero so an unprofitable recipe never reads as negative profit. */
+  /** Estimated sales minus stock cost, including losses; excludes overhead and is not accounting net profit. */
   potentialProfit: number;
 }
 
@@ -68,7 +68,7 @@ export function valuateQuantity(
   return {
     costValue,
     potentialSales,
-    potentialProfit: potentialSales > 0 ? Math.max(potentialSales - costValue, 0) : 0,
+    potentialProfit: potentialSales - costValue,
   };
 }
 

@@ -1,5 +1,6 @@
 const database = require('./database.cjs');
 const { randomUUID } = require('crypto');
+const { validateStockMovement } = require('./validate.cjs');
 const { MAX_SYNC_ATTEMPTS } = database;
 
 // Monotonic per-row version: a second edit in the same millisecond still gets a newer
@@ -263,58 +264,49 @@ class InventoryRepository {
    * movement was still written, leaving a ledger entry no balance ever reflected.
    */
   createInventoryTransaction(tx) {
+    tx = { ...tx, ...validateStockMovement(tx) };
     const sqlite = this.getDb();
     const id = tx.id || `tx-${randomUUID()}`;
-    const now = new Date().toISOString();
-    // Same rule as item creation: a caller-supplied branchId is honoured only when it is
-    // this till's own id.
-    const activeBranch = this.getBranchId();
-    const branchId = (tx.branchId && tx.branchId === activeBranch) ? tx.branchId : activeBranch;
-    const quantity = Math.abs(Number(tx.quantity));
+    const branchId = this.resolveBranch(tx.branchId);
 
     const runTx = sqlite.transaction(() => {
-      const item = sqlite.prepare('SELECT id, stock FROM inventory WHERE id = ? AND deleted_at IS NULL').get(tx.itemId);
+      const item = sqlite.prepare(`
+        SELECT id, stock, updated_at FROM inventory
+        WHERE id = ? AND deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
+      `).get(tx.itemId, branchId);
       if (!item) {
         throw new Error(`Stock item not found: ${tx.itemId}`);
       }
+      if (!Number.isFinite(item.stock)) {
+        throw new Error('Current stock must be a finite number');
+      }
+      if (tx.type === 'OUT' && tx.quantity > item.stock) {
+        throw new Error('Cannot withdraw more than the current stock');
+      }
 
+      const stockAfter = tx.type === 'ADJUST' ? tx.quantity
+        : item.stock + (tx.type === 'OUT' ? -tx.quantity : tx.quantity);
+      if (!Number.isFinite(stockAfter) || stockAfter < 0) {
+        throw new Error('Resulting stock must be finite and nonnegative');
+      }
+      // The request carries an absolute count, but the existing ledger stores signed
+      // ADJUST deltas. Read the balance under the write lock, never from the renderer.
+      const quantity = tx.type === 'ADJUST' ? tx.quantity - item.stock : tx.quantity;
+      const now = nextUpdatedAt(item.updated_at);
       sqlite.prepare(`
         INSERT INTO inventory_transactions (id, itemId, type, quantity, referenceId, createdAt, branch_id, is_synced, notes)
         VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
-      `).run(
-        id,
-        tx.itemId,
-        tx.type,
-        quantity,
-        tx.referenceId || null,
-        now,
-        branchId,
-        tx.notes || null
-      );
+      `).run(id, tx.itemId, tx.type, quantity, tx.referenceId, now, branchId, tx.notes);
 
-      // IN adds, OUT subtracts. ADJUST is a physical count: the entered quantity is the
-      // new balance, so the delta is counted from the current stock rather than added to
-      // it. Treating a count as an IN meant every stocktake inflated the balance.
-      let stockChange;
-      if (tx.type === 'OUT') {
-        stockChange = -quantity;
-      } else if (tx.type === 'ADJUST') {
-        stockChange = quantity - item.stock;
-      } else {
-        stockChange = quantity;
-      }
-
-      // Stock is floored at zero: a physical count cannot be negative, and a negative
-      // balance propagates into the valuation as negative money.
       sqlite.prepare(`
         UPDATE inventory
-        SET stock = MAX(0, stock + ?), updated_at = ?, is_synced = 0, sync_attempts = 0
+        SET stock = ?, updated_at = ?, is_synced = 0, sync_attempts = 0, last_error = NULL
         WHERE id = ?
-      `).run(stockChange, now, tx.itemId);
+      `).run(stockAfter, now, tx.itemId);
+      return { ...tx, id, quantity, createdAt: now, branchId };
     });
 
-    runTx();
-    return { ...tx, id, quantity, createdAt: now, branchId };
+    return runTx.immediate();
   }
 
   // ─── Menu Recipes (Ingredients Mapping) ────────────────────────────────────

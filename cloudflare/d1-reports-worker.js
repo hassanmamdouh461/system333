@@ -40,6 +40,7 @@ import {
   SYNC_RATE_MAX_REQUESTS,
   str,
   num,
+  bool01,
   nowIso,
   capped,
   orderItemsJson,
@@ -48,9 +49,14 @@ import {
   MAX_IMAGE_BYTES,
   MAX_JSON_BYTES,
   MAX_BODY_BYTES,
+  MAX_PUBLIC_IMAGE_TOTAL_BYTES,
+  boundInlineImages,
+  omitFields,
+  clientError,
   countWritten,
   summariseBatch,
 } from './shared/common.js';
+import { buildSyncBatch, executeSyncBatch } from './shared/sync.js';
 
 // Re-exported so the test suite and anything else importing from this module keeps working.
 export {
@@ -63,6 +69,9 @@ export {
   MAX_IMAGE_BYTES,
   MAX_JSON_BYTES,
   MAX_BODY_BYTES,
+  MAX_PUBLIC_IMAGE_TOTAL_BYTES,
+  boundInlineImages,
+  omitFields,
 };
 
 const ALLOWED_ORIGINS = [
@@ -92,6 +101,13 @@ const MAX_MENU_CONFIG_CHARS = 900_000;
  */
 /** Viewer sessions are short: the portal re-authenticates rather than holding a long token. */
 const TOKEN_TTL_MS = 8 * 60 * 60 * 1000;
+
+/**
+ * A token that may rewrite the branch registry lives a fraction as long as a read token.
+ * Registry edits are a few clicks at the start of a day, not a session-long activity, so the
+ * cost of re-authenticating is negligible next to the window it closes.
+ */
+const WRITE_TOKEN_TTL_MS = 30 * 60 * 1000;
 
 /** Per-isolate rate-limit state. Shared by every request this isolate serves. */
 const rateBuckets = new Map();
@@ -147,26 +163,51 @@ async function hmac(secret, message) {
   return base64UrlEncode(new Uint8Array(signature));
 }
 
-export async function issueViewerToken(secret, now = Date.now()) {
-  const expiresAt = now + TOKEN_TTL_MS;
-  const payload = base64UrlEncode(new TextEncoder().encode(JSON.stringify({ scope: 'read', expiresAt })));
+/**
+ * Mints a token.
+ *
+ * `scope` is the point of the exercise. A single `read` scope used to authorise
+ * `/branches/save` and `/branches/delete`, so the token the portal holds "for viewing" could
+ * rewrite the branch registry — and with no `jti`, no revocation list and an eight-hour life,
+ * there was no way to take it back once it leaked.
+ *
+ * A `jti` is minted on every token so that revocation can be added later against a stored
+ * deny-list without changing the token format or invalidating every live session.
+ */
+export async function issueViewerToken(secret, { scope = 'read', now = Date.now() } = {}) {
+  const expiresAt = now + (scope === 'write' ? WRITE_TOKEN_TTL_MS : TOKEN_TTL_MS);
+  const claims = {
+    scope,
+    expiresAt,
+    jti: base64UrlEncode(crypto.getRandomValues(new Uint8Array(16))),
+  };
+  const payload = base64UrlEncode(new TextEncoder().encode(JSON.stringify(claims)));
   const signature = await hmac(secret, payload);
   return { token: `${payload}.${signature}`, expiresAt };
 }
 
+/**
+ * Verifies a token and reports the scope it actually carries.
+ *
+ * Returns the scope string, or `null` when the token is absent, forged, malformed or expired.
+ * Callers compare against the scope they need rather than asking a yes/no question: a single
+ * `hasViewerToken` boolean is what allowed a read token to satisfy a write check.
+ */
 export async function verifyViewerToken(secret, token, now = Date.now()) {
-  if (typeof token !== 'string' || !token.includes('.')) return false;
+  if (typeof secret !== 'string' || !secret || typeof token !== 'string' || token.length > 2048 ||
+      !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(token) || !Number.isFinite(now)) return null;
   const [payload, signature] = token.split('.');
-  if (!payload || !signature) return false;
 
   const expected = await hmac(secret, payload);
-  if (!timingSafeEqual(signature, expected)) return false;
+  if (!timingSafeEqual(signature, expected)) return null;
 
   try {
     const claims = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload)));
-    return claims.scope === 'read' && typeof claims.expiresAt === 'number' && now < claims.expiresAt;
+    const scopeOk = claims.scope === 'read' || claims.scope === 'write';
+    if (!scopeOk || typeof claims.expiresAt !== 'number' || now >= claims.expiresAt) return null;
+    return claims.scope;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -176,39 +217,9 @@ export async function verifyViewerToken(secret, token, now = Date.now()) {
 // only promised it.
 
 function assertItems(items) {
-  if (!Array.isArray(items)) throw new Error('Expected an "items" array');
-  if (items.length > MAX_BATCH) throw new Error(`Too many records (max ${MAX_BATCH})`);
+  if (!Array.isArray(items)) throw rejected('Expected an "items" array');
+  if (items.length > MAX_BATCH) throw rejected(`Too many records (max ${MAX_BATCH})`);
   return items;
-}
-
-/**
- * Builds a batch, keeping the records that can be written and naming the ones that cannot.
- *
- * One malformed record used to abort the whole batch: `db.batch` is a single transaction,
- * so a single oversized order left every good record behind it unwritten and the caller,
- * told only that the call failed, resent the identical batch on every cycle.
- */
-function buildSyncBatch(db, spec, items) {
-  const statements = [];
-  const kinds = [];
-  const failed = [];
-
-  for (const record of items) {
-    try {
-      if (!record || !record.id) throw new Error('Every record needs an id');
-      statements.push(db.prepare(spec.upsert).bind(...spec.params(record)));
-      // Mirrored tombstones and append-only ledgers are deliberately not held to "must have
-      // changed a row" -- see summariseBatch for why.
-      kinds.push(spec.appendOnly ? 'append' : (record.deletedAt || record.deleted_at ? 'tombstone' : 'verify'));
-    } catch (err) {
-      failed.push({
-        id: record && record.id ? str(record.id) : null,
-        error: String((err && err.message) || err),
-      });
-    }
-  }
-
-  return { statements, kinds, failed };
 }
 
 // ─── Branch registry ─────────────────────────────────────────────────────────
@@ -315,10 +326,17 @@ async function saveBranch(db, branch) {
  * POS mirror writes are unchanged: this is not a POS access or synchronization switch.
  */
 async function deleteBranch(db, id) {
-  await db
+  const result = await db
     .prepare(`UPDATE branches SET deleted_at = ?, updated_at = ? WHERE id = ?`)
     .bind(nowIso(), nowIso(), id)
     .run();
+  // Without a row check the portal reported a deletion that changed nothing: an id from a
+  // stale tab, or one someone else already removed, came back as success and hid the fact
+  // that the registry never changed. saveBranch already uses RETURNING for the same reason.
+  const changes = result?.meta?.changes;
+  if (!Number.isSafeInteger(changes) || changes < 1) {
+    throw rejected(`No branch with id "${id}"`);
+  }
 }
 
 // ─── Mirror targets ──────────────────────────────────────────────────────────
@@ -348,7 +366,10 @@ const SYNC_TABLES = {
     params: (i) => [
       str(i.id), capped(str(i.name, ''), MAX_TEXT_BYTES), capped(str(i.description, ''), MAX_TEXT_BYTES),
       num(i.price, 0), capped(str(i.category, ''), MAX_TEXT_BYTES),
-      capped(str(i.image, ''), MAX_IMAGE_BYTES), i.available ? 1 : 0, str(i.branchId ?? i.branch_id),
+      // Same coercion as the POS worker: the string "false" arrives over form data and
+      // replays, and truthiness would store it as available=1 — an item the manager
+      // unpublished would reappear on the public menu through the mirror path.
+      capped(str(i.image, ''), MAX_IMAGE_BYTES), bool01(i.available), str(i.branchId ?? i.branch_id),
       str(i.createdAt ?? i.created_at, nowIso()), str(i.updatedAt ?? i.updated_at, nowIso()),
       str(i.deletedAt ?? i.deleted_at),
     ],
@@ -526,11 +547,15 @@ async function readSnapshot(db) {
     movements: paged(movements, MOVEMENT_LIMIT),
   };
 
+  // The portal renders tables and charts; it never draws an avatar or a product photo. Both
+  // columns are the largest things in the database and `SELECT *` was carrying every one of
+  // them on every poll, so they are dropped here rather than at the query — the query stays
+  // `SELECT *`, which is what keeps it correct when a column is added later.
   return {
-    orders: page.orders.rows,
-    customers: page.customers.rows,
+    orders: omitFields(page.orders.rows, ['cashierAvatar']),
+    customers: omitFields(page.customers.rows, ['avatar']),
     inventory: page.inventory.rows,
-    menuItems: page.menuItems.rows,
+    menuItems: omitFields(page.menuItems.rows, ['image']),
     movements: page.movements.rows,
     ...registry,
     /** Collections that hit their cap, so the portal never presents a partial total as final. */
@@ -627,11 +652,22 @@ async function readPublicMenu(db) {
       .map((rule) => String(rule.id))
   );
 
-  const menuItems = rows.filter(
+  const visible = rows.filter(
     (row) => !hiddenItems.has(String(row.id)) && !hiddenCategories.has(menuItemCategory(row))
   );
 
-  return { menuItems, config };
+  // This endpoint is unauthenticated, so its response size is chosen by whoever last edited
+  // the menu, not by this worker. A thousand items each carrying a 400 kB photo is ~400 MB —
+  // far past what an isolate may hold — so the tail of the menu loses its pictures once the
+  // budget is spent. The items themselves still appear, which is the side that matters to a
+  // customer reading the menu.
+  const { rows: menuItems, imagesTruncated } = boundInlineImages(
+    visible,
+    'image',
+    MAX_PUBLIC_IMAGE_TOTAL_BYTES
+  );
+
+  return { menuItems, config, imagesTruncated };
 }
 
 /**
@@ -720,6 +756,24 @@ async function runMigration(db) {
   )`));
   results.push(await tryExec('idx.cashiers_updated_at', 'CREATE INDEX IF NOT EXISTS idx_cashiers_updated_at ON cashiers(updated_at)'));
   results.push(await tryExec('idx.cashiers_branch', 'CREATE INDEX IF NOT EXISTS idx_cashiers_branch ON cashiers(branch_id)'));
+
+  // The portal's snapshot query sorts and filters orders by created_at/branch_id, and the
+  // mirror's own upserts look rows up by updated_at. These were the only large tables with no
+  // index at all, so every poll scanned them.
+  results.push(await tryExec('idx.orders_created', 'CREATE INDEX IF NOT EXISTS idx_orders_created ON orders(createdAt)'));
+  results.push(await tryExec('idx.orders_updated_at', 'CREATE INDEX IF NOT EXISTS idx_orders_updated_at ON orders(updated_at)'));
+  results.push(await tryExec('idx.orders_branch', 'CREATE INDEX IF NOT EXISTS idx_orders_branch ON orders(branch_id)'));
+  results.push(await tryExec('idx.customers_updated_at', 'CREATE INDEX IF NOT EXISTS idx_customers_updated_at ON customers(updated_at)'));
+  results.push(await tryExec('idx.customers_branch', 'CREATE INDEX IF NOT EXISTS idx_customers_branch ON customers(branch_id)'));
+  results.push(await tryExec('idx.menu_items_updated_at', 'CREATE INDEX IF NOT EXISTS idx_menu_items_updated_at ON menu_items(updated_at)'));
+  results.push(await tryExec('idx.menu_items_branch', 'CREATE INDEX IF NOT EXISTS idx_menu_items_branch ON menu_items(branch_id)'));
+  results.push(await tryExec('idx.inventory_updated_at', 'CREATE INDEX IF NOT EXISTS idx_inventory_updated_at ON inventory(updated_at)'));
+  results.push(await tryExec('idx.inventory_branch', 'CREATE INDEX IF NOT EXISTS idx_inventory_branch ON inventory(branch_id)'));
+  results.push(await tryExec('idx.inv_tx_created', 'CREATE INDEX IF NOT EXISTS idx_inv_tx_created ON inventory_transactions(createdAt)'));
+  results.push(await tryExec('idx.inv_tx_branch', 'CREATE INDEX IF NOT EXISTS idx_inv_tx_branch ON inventory_transactions(branch_id)'));
+  results.push(await tryExec('idx.points_tx_created', 'CREATE INDEX IF NOT EXISTS idx_points_tx_created ON points_transactions(createdAt)'));
+  results.push(await tryExec('idx.points_tx_branch', 'CREATE INDEX IF NOT EXISTS idx_points_tx_branch ON points_transactions(branch_id)'));
+  results.push(await tryExec('idx.branches_deleted', 'CREATE INDEX IF NOT EXISTS idx_branches_deleted ON branches(deleted_at)'));
   // The public menu's identity and display rules, as one row. Created here rather than on
   // first write, so a publish either succeeds against a migrated database or fails loudly
   // instead of issuing DDL on a request path.
@@ -803,7 +857,7 @@ export default {
         }
         return json({ success: true, ...data }, 200, origin, true);
       } catch (err) {
-        return json({ success: false, error: String(err.message || err) }, 500, origin, true);
+        return json({ success: false, error: clientError(err, 500) }, 500, origin, true);
       }
     }
 
@@ -843,17 +897,40 @@ export default {
       if (!env.REPORTS_VIEWER_PASSWORD || !env.REPORTS_TOKEN_SECRET) {
         return json({ success: false, error: 'Viewer access is not configured' }, 503, origin);
       }
-      if (!timingSafeEqual(String(payload.password || ''), env.REPORTS_VIEWER_PASSWORD)) {
+      // Two passwords, two scopes. The write one is optional only in the sense that a
+      // deployment which has not split them yet keeps handing out write tokens — because
+      // until it is configured there is no second secret to present, and refusing would
+      // take the branch screen away from every existing portal on deploy. Once it is set,
+      // the viewer password buys read-only access and only this one grants registry writes.
+      const wantsWrite = Boolean(env.REPORTS_BRANCH_PASSWORD);
+      const password = String(payload.password || '');
+      const readOk = timingSafeEqual(password, env.REPORTS_VIEWER_PASSWORD);
+      const writeOk = wantsWrite
+        ? timingSafeEqual(password, env.REPORTS_BRANCH_PASSWORD)
+        : readOk;
+
+      if (!readOk && !writeOk) {
         return json({ success: false, error: 'Invalid password' }, 401, origin);
       }
-      const { token, expiresAt } = await issueViewerToken(env.REPORTS_TOKEN_SECRET);
-      return json({ success: true, token, expiresAt }, 200, origin);
+
+      const { token, expiresAt } = await issueViewerToken(env.REPORTS_TOKEN_SECRET, {
+        scope: writeOk ? 'write' : 'read',
+      });
+      return json({ success: true, token, expiresAt, scope: writeOk ? 'write' : 'read' }, 200, origin);
     }
 
     const bearer = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
-    const hasViewerToken = env.REPORTS_TOKEN_SECRET
+    const tokenScope = env.REPORTS_TOKEN_SECRET
       ? await verifyViewerToken(env.REPORTS_TOKEN_SECRET, bearer)
-      : false;
+      : null;
+    const hasViewerToken = tokenScope !== null;
+    // Registry writes need the write scope, not merely a valid token. There is deliberately
+    // no fallback to "any valid token when REPORTS_BRANCH_PASSWORD is unset": that made the
+    // split optional, so a deployment that never set the secret kept handing a read-only
+    // viewer the branch registry, and the one control separating them was whatever the
+    // operator happened to configure. The secret is what makes 'write' reachable at all
+    // (see the login path above), so requiring it here cannot lock anyone out.
+    const canEditBranches = hasWriteKey || tokenScope === 'write';
 
     // ─── Read: a viewer token is enough, and is all the portal ever holds ───
     if (url.pathname === '/read/snapshot') {
@@ -863,7 +940,7 @@ export default {
       try {
         return json({ success: true, ...(await readSnapshot(env.DB)) }, 200, origin);
       } catch (err) {
-        return json({ success: false, error: String(err.message || err) }, 500, origin);
+        return json({ success: false, error: clientError(err, 500) }, 500, origin);
       }
     }
 
@@ -872,7 +949,7 @@ export default {
     // open a branch without a developer. The write key still works, so the desktop POS can
     // register its own till.
     if (url.pathname === '/branches/save') {
-      if (!hasViewerToken && !hasWriteKey) {
+      if (!canEditBranches) {
         return json({ success: false, error: 'Unauthorized' }, 401, origin);
       }
       const { branch, error } = parseBranch(payload.branch ?? payload);
@@ -881,13 +958,13 @@ export default {
         await saveBranch(env.DB, branch);
         return json({ success: true, branch, ...(await readBranches(env.DB)) }, 200, origin);
       } catch (err) {
-        return json({ success: false, error: String(err.message || err) }, err.isRejection ? 409 : 500, origin);
+        return json({ success: false, error: clientError(err, err.isRejection ? 409 : 500) }, err.isRejection ? 409 : 500, origin);
       }
     }
 
     // Hide a registry entry only. No business rows, POS access, or mirror writes change.
     if (url.pathname === '/branches/delete') {
-      if (!hasViewerToken && !hasWriteKey) {
+      if (!canEditBranches) {
         return json({ success: false, error: 'Unauthorized' }, 401, origin);
       }
       const { id, error } = parseBranchId(payload);
@@ -896,7 +973,7 @@ export default {
         await deleteBranch(env.DB, id);
         return json({ success: true, id, ...(await readBranches(env.DB)) }, 200, origin);
       } catch (err) {
-        return json({ success: false, error: String(err.message || err) }, 500, origin);
+        return json({ success: false, error: clientError(err, 500) }, 500, origin);
       }
     }
 
@@ -913,7 +990,7 @@ export default {
         // A rejected configuration is the caller's input; anything else is a server fault
         // that must not be dressed up as a validation message.
         const status = err && err.isRejection ? 400 : 500;
-        return json({ success: false, error: String(err.message || err) }, status, origin);
+        return json({ success: false, error: clientError(err, status) }, status, origin);
       }
     }
 
@@ -936,13 +1013,11 @@ export default {
         const items = assertItems(payload.items);
         if (items.length === 0) return json({ success: true, written: 0 }, 200, origin);
 
-        const { statements, kinds, failed } = buildSyncBatch(env.DB, spec, items);
-        const results = await env.DB.batch(statements);
-        const { written, expected, skipped } = summariseBatch(results, kinds);
-
-        // Same contract as the POS worker: `written` counts rows changed, so the caller can
-        // tell a write that landed from a statement that matched nothing.
-        return json({ success: true, written, expected, skipped, failed }, 200, origin);
+        // Same executor, and therefore the same receipt, as the POS worker. The desktop
+        // marks a record synced only when the worker names it in `acknowledged`, so a
+        // mirror answering with aggregate counts alone left every record unsynced forever —
+        // the reports-only path (no POS key configured) then never made progress at all.
+        return json(await executeSyncBatch(env.DB, buildSyncBatch(env.DB, spec, items)), 200, origin);
       }
 
       return json({ success: false, error: `Unknown endpoint: ${url.pathname}` }, 404, origin);
@@ -950,7 +1025,7 @@ export default {
       // Bad input is the caller's fault, not the server's: answering 500 for it puts
       // ordinary rejections in the same bucket as real outages.
       const status = err && err.isRejection ? 400 : 500;
-      return json({ success: false, error: String(err.message || err) }, status, origin);
+      return json({ success: false, error: clientError(err, status) }, status, origin);
     }
   },
 };

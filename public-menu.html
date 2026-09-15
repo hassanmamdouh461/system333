@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ar" dir="rtl">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>قائمة الطعام</title>
+
+    <meta name="theme-color" content="#1F1610" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="قائمة الطعام" />
+    <meta name="description" content="قائمة الطعام" />
+
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+
+    <!-- Arabic fonts, non-blocking -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="stylesheet"
+      href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800;900&family=IBM+Plex+Sans+Arabic:wght@400;500;600;700&display=swap"
+    />
+
+    <!--
+      The public menu gets its own CSP. It is the only entry point served to strangers, and
+      it is the one place a stray script tag would be read by customers rather than staff.
+      `style-src 'unsafe-inline'` is for the fonts link above and for CSSOM styling set by
+      React/framer-motion; there is no inline script here, so script-src stays 'self'.
+      img-src allows https: because menu images may be hosted off-site.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'self';
+               script-src 'self';
+               style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+               img-src 'self' data: https:;
+               font-src 'self' data: https://fonts.gstatic.com;
+               connect-src 'self' https://api-reports.engaz.tech;
+               object-src 'none';
+               base-uri 'self';
+               form-action 'none';
+               frame-ancestors 'none'"
+    />
+  </head>
+  <body class="bg-[#FBF9F6] text-gray-900 antialiased font-sans select-none overflow-x-hidden">
+    <div id="root"></div>
+    <script type="module" src="/src/publicMenu.tsx"></script>
+  </body>
+</html>

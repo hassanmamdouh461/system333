@@ -13,6 +13,7 @@ const path = require('path');
 const https = require('https');
 const http = require('http');
 const database = require('./database.cjs');
+const { reconcileAcknowledgements } = require('./syncAcknowledgement.cjs');
 const {
   DEFAULT_WORKER_URL,
   REPORTS_WORKER_URL,
@@ -51,8 +52,9 @@ function readEnvFileConfig() {
     // The name is unfortunate: the portal build treats this exact variable as a sentinel
     // secret and fails if it reaches a bundle (scripts/build-reports.mjs). Prefer
     // ENGAZ_REPORTS_API_KEY, which is not a Vite-visible name and cannot collide.
-    const reportsKeyMatch = envContent.match(/^\s*VITE_REPORTS_API_KEY\s*=\s*([^#\r\n]*)/m);
-    if (reportsKeyMatch) result.reportsKey = reportsKeyMatch[1].trim();
+    const reportsKeyMatch = envContent.match(/^\s*ENGAZ_REPORTS_API_KEY\s*=\s*([^#\r\n]*)/m)
+      || envContent.match(/^\s*VITE_REPORTS_API_KEY\s*=\s*([^#\r\n]*)/m);
+    if (reportsKeyMatch) result.reportsKey = reportsKeyMatch[1].trim().replace(/^(['"])(.*)\1$/, '$2');
   } catch (e) {
     console.error('[D1 Sync API] Failed to load .env file:', e.message);
   }
@@ -131,13 +133,17 @@ function postJson({ baseUrl, endpoint, body, apiKey, timeout }) {
     // configured: the URL is a renderer-writable setting, so a check at config time can be
     // bypassed by anything that reaches postJson with a different base. A key that is never
     // readable by the renderer still has to be sent, and this is where it is sent.
-    if (apiKey) {
-      try {
-        assertWorkerHostAllowed(parsed);
-      } catch (err) {
-        console.error('[D1 Sync API]', err.message);
-        return reject(err);
-      }
+    //
+    // Unconditional, not gated on the key being present. Requests without a key still carry
+    // orders with customer phone numbers, customer records and cashier rows — data worth
+    // exfiltrating on its own — and the worker URL is a renderer-writable setting, so gating
+    // the check on `apiKey` handed the renderer a working exfiltration channel: clear the key
+    // from settings and every subsequent request goes anywhere it likes, unchecked.
+    try {
+      assertWorkerHostAllowed(parsed);
+    } catch (err) {
+      console.error('[D1 Sync API]', err.message);
+      return reject(err);
     }
 
     const bodyStr = JSON.stringify(body || {});
@@ -198,11 +204,7 @@ async function callWorker(endpoint, body) {
   // to the reports database so the manager portal gets the live data.
   if (!WORKER_API_KEY && REPORTS_WORKER_KEY) {
     if (endpoint.startsWith('/sync/')) {
-      const res = await mirrorToReports(endpoint, body, true);
-      // No invented count: if the worker did not answer, nothing is known to have been
-      // written, and claiming otherwise is how a row stops being retried without ever
-      // having been stored.
-      return res || { success: true, written: 0, expected: (body && body.items ? body.items.length : 0), failed: [] };
+      return mirrorToReports(endpoint, body);
     }
     // Reports-only mode has no POS database to read from. Returning an empty page made a
     // pull indistinguishable from "no remote changes", so the device looked fully synced
@@ -227,25 +229,19 @@ async function callWorker(endpoint, body) {
     throw new Error(response.error || `Worker rejected ${endpoint}`);
   }
 
-  // Only writes are mirrored: the reports database is a read model built from them.
-  // A failed mirror is enqueued in the persistent SQLite reports_outbox so a transient
-  // reports-worker outage or app restart no longer loses unmirrored writes.
+  // Persist the reports obligation BEFORE the caller may mark the local record synced.
+  // Even without reports credentials the obligation survives restart. Only POS-accepted
+  // records enter the reports read model; rejected/stale payloads must not diverge it.
   if (endpoint.startsWith('/sync/')) {
     const target = endpoint.replace(/^\/sync\//, '');
-    mirrorToReports(endpoint, body).catch((err) => {
-      console.warn(`[D1 Sync API] Reports mirror failed for ${target}, persisting to reports_outbox:`, err.message);
-      if (Array.isArray(body?.items)) {
-        for (const item of body.items) {
-          if (item && item.id) {
-            // Never fall back to createdAt: it never changes, so the outbox version guard
-            // (`version >= existing`) would reject every later edit and keep re-sending the
-            // original payload forever. A missing timestamp means "now".
-            const version = item.updated_at || item.updatedAt || new Date().toISOString();
-            database.enqueueReportOutbox(target, item.id, item, version);
-          }
-        }
-      }
-    });
+    const { accepted } = reconcileAcknowledgements(body?.items || [], response);
+    const acceptedIds = new Set(accepted);
+    for (const item of body?.items || []) {
+      if (!acceptedIds.has(String(item.id))) continue;
+      const version = item.updated_at || item.updatedAt || item.createdAt || new Date().toISOString();
+      // A persistence failure throws: the primary record stays unsynced and can replay.
+      database.enqueueReportOutbox(target, item.id, item, version);
+    }
   }
 
   return response;
@@ -255,18 +251,30 @@ async function callWorker(endpoint, body) {
  * Flushes pending items from the persistent SQLite reports_outbox to the isolated reports database.
  */
 let outboxFlushInProgress = false;
+let reportsRetryAt = 0;
+let reportsFailures = 0;
+let reportsLastError = null;
 async function flushReportsOutbox(limit = 100) {
   loadConfig();
   // Reporting success for a flush that never ran is what hid the missing key for so long:
   // the caller has no way to tell "nothing to send" from "cannot send".
   if (!REPORTS_WORKER_KEY) return { success: false, sent: 0, error: 'reports key not configured' };
-  if (outboxFlushInProgress) return { success: true, sent: 0, skipped: 'in-progress' };
+  if (outboxFlushInProgress) return { success: false, sent: 0, error: 'reports flush already in progress' };
+  if (Date.now() < reportsRetryAt) {
+    return { success: false, sent: 0, error: reportsLastError, retryAt: reportsRetryAt };
+  }
   outboxFlushInProgress = true;
   let sentCount = 0;
+  const failures = [];
 
   try {
     const pending = database.getPendingReportOutbox(limit);
-    if (!pending || pending.length === 0) return { success: true, sent: 0 };
+    if (!pending || pending.length === 0) {
+      reportsFailures = 0;
+      reportsRetryAt = 0;
+      reportsLastError = null;
+      return { success: true, sent: 0 };
+    }
 
     const grouped = new Map();
     for (const row of pending) {
@@ -280,60 +288,59 @@ async function flushReportsOutbox(limit = 100) {
         for (let i = 0; i < items.length; i += MAX_BATCH) {
           const chunk = items.slice(i, i + MAX_BATCH);
           const chunkRows = rows.slice(i, i + MAX_BATCH);
-          await postJson({
+          const response = await postJson({
             baseUrl: REPORTS_WORKER_URL,
             endpoint: `/sync/${target}`,
             body: { items: chunk },
             apiKey: REPORTS_WORKER_KEY,
             timeout: MIRROR_TIMEOUT_MS,
           });
+          const { accepted, failed } = reconcileAcknowledgements(chunk, response);
+          const acceptedIds = new Set(accepted);
           for (const r of chunkRows) {
-            database.deleteReportOutbox(target, r.record_id, r.version);
-            sentCount++;
+            if (!acceptedIds.has(String(r.record_id))) continue;
+            sentCount += database.deleteReportOutbox(target, r.record_id, r.version);
           }
+          if (failed.length) failures.push(`${target}: ${failed.length} record(s) not acknowledged`);
         }
       } catch (err) {
         console.warn(`[D1 Sync API] Reports outbox flush failed for ${target}:`, err.message);
-        break;
+        failures.push(`${target}: ${err.message}`);
       }
     }
+  } catch (err) {
+    failures.push(`Reports queue unavailable: ${err.message}`);
   } finally {
     outboxFlushInProgress = false;
   }
 
+  if (failures.length) {
+    reportsFailures++;
+    reportsLastError = failures.join('; ');
+    reportsRetryAt = Date.now() + Math.min(30_000 * 2 ** Math.min(reportsFailures, 6), 30 * 60_000);
+    return { success: false, sent: sentCount, error: reportsLastError, retryAt: reportsRetryAt };
+  }
+  reportsFailures = 0;
+  reportsRetryAt = 0;
+  reportsLastError = null;
   return { success: true, sent: sentCount };
 }
 
-/**
- * Copies a write to the isolated reports database. Fire and forget when mirroring the production
- * worker, but throwing when operating in reports-only mode so the caller retries.
- */
-async function mirrorToReports(endpoint, body, shouldThrow = false) {
-  // Never a silent undefined: the caller has to be able to tell "mirrored" from
-  // "skipped because this device holds no reports key".
-  if (!REPORTS_WORKER_KEY) return { skipped: true, reason: 'no-reports-key' };
-  try {
-    const res = await postJson({
-      baseUrl: REPORTS_WORKER_URL,
-      endpoint,
-      body,
-      apiKey: REPORTS_WORKER_KEY,
-      timeout: MIRROR_TIMEOUT_MS,
-    });
-    if (res && res.success === false) {
-      console.warn('[D1 Sync API] Reports mirror rejected:', res.error);
-      if (shouldThrow) throw new Error(res.error || 'Reports mirror rejected');
-    }
-    return res;
-  } catch (e) {
-    console.warn('[D1 Sync API] Reports mirror failed:', e.message);
-    if (shouldThrow) throw e;
-  }
+/** Reports-only delivery: failures propagate; normal POS delivery uses the durable outbox. */
+async function mirrorToReports(endpoint, body) {
+  loadConfig();
+  if (!REPORTS_WORKER_KEY) throw new Error('reports key not configured');
+  const res = await postJson({
+    baseUrl: REPORTS_WORKER_URL, endpoint, body,
+    apiKey: REPORTS_WORKER_KEY, timeout: MIRROR_TIMEOUT_MS,
+  });
+  if (res?.success !== true) throw new Error(res?.error || 'Reports mirror rejected');
+  return res;
 }
 
 /** Splits a push into worker-sized chunks so a large backlog is not rejected wholesale. */
 async function syncRecords(target, records) {
-  if (!records || records.length === 0) return { success: true, written: 0, expected: 0, failed: [] };
+  if (!records || records.length === 0) return { success: true, written: 0, expected: 0, skipped: 0, acknowledged: [], failed: [] };
 
   // The counts the caller gets back have to mean something. `written` used to be thrown
   // away and `success` was a constant, so a till marked every row synced whether the worker
@@ -341,16 +348,24 @@ async function syncRecords(target, records) {
   let written = 0;
   let expected = 0;
   const failed = [];
+  const acknowledged = [];
 
   for (let i = 0; i < records.length; i += MAX_BATCH) {
     const chunk = records.slice(i, i + MAX_BATCH);
-    const res = await callWorker(`/sync/${target}`, { items: chunk });
-    written += (res && res.written) || 0;
-    expected += (res && typeof res.expected === 'number') ? res.expected : chunk.length;
-    if (res && Array.isArray(res.failed) && res.failed.length > 0) failed.push(...res.failed);
+    expected += chunk.length;
+    try {
+      const res = await callWorker(`/sync/${target}`, { items: chunk });
+      const receipt = reconcileAcknowledgements(chunk, res);
+      if (Number.isFinite(res?.written) && res.written > 0) written += res.written;
+      acknowledged.push(...receipt.accepted);
+      failed.push(...receipt.failed);
+    } catch (err) {
+      // Preserve earlier chunk acknowledgements rather than penalizing successful rows.
+      failed.push(...chunk.map(row => ({ id: String(row.id), error: String(err.message).slice(0, 500) })));
+    }
   }
 
-  return { success: true, written, expected, failed };
+  return { success: true, written, expected, skipped: failed.length, acknowledged, failed };
 }
 
 /**
@@ -435,8 +450,7 @@ async function deleteMenuItem(id) {
   console.log(`[D1 Sync API] Deleting menu item ${id}...`);
   const now = new Date().toISOString();
   // Soft delete so the tombstone is visible to incremental pulls on other branches.
-  await syncRecords('menu-items', [{ id, deletedAt: now, updatedAt: now }]);
-  return { success: true };
+  return syncRecords('menu-items', [{ id, deletedAt: now, updatedAt: now }]);
 }
 
 // ─── Row mapping ─────────────────────────────────────────────────────────────
@@ -571,7 +585,11 @@ async function checkWorkerHealth() {
   loadConfig();
   const targetUrl = (!WORKER_API_KEY && REPORTS_WORKER_KEY) ? REPORTS_WORKER_URL : WORKER_URL;
   try {
-    const parsedUrl = new URL(targetUrl);
+    // The same allowlist as postJson. This probe builds its own request instead of going
+    // through postJson, so it used to be the one path that reached the network unchecked:
+    // a renderer that set the worker URL to its own host would be answered here even though
+    // every real call was refused.
+    const parsedUrl = assertWorkerHostAllowed(targetUrl);
     // Same transport rule as postJson: an http worker must be dialled over http.
     const transport = parsedUrl.protocol === 'http:' ? http : https;
     const defaultPort = parsedUrl.protocol === 'http:' ? 80 : 443;

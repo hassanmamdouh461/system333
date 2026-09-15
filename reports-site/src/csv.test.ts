@@ -1,8 +1,10 @@
-import { describe, expect, it } from 'vitest';
+// @vitest-environment jsdom
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   CSV_BOM,
   buildCsv,
   csvCell,
+  downloadCsv,
   exportFileName,
   exportRowCount,
   toCsv,
@@ -105,9 +107,30 @@ describe('csvCell', () => {
     // A product name typed as `=1+1` would otherwise evaluate when the file is opened.
     for (const text of ['=1+1', '+x', '-x', '@x']) {
       const cell = csvCell(text);
-      expect(cell.startsWith('"\t')).toBe(true);
+      expect(cell).toBe(`'${text}`);
       expect(cell).toContain(text);
     }
+  });
+
+  const hiddenPrefixes = ['\t=1+1', '\r=1+1', '\n=1+1', '\ttext', '\rtext', '  =1+1', ' \t@x'];
+  it.each(hiddenPrefixes)(
+    'neutralises control characters and hidden formula prefixes: %j',
+    (text) => {
+      const marked = `'${text}`;
+      expect(csvCell(text)).toBe(/[\t\r\n]/.test(text) ? `"${marked}"` : marked);
+    }
+  );
+
+  it('escapes quotes in a control-prefixed formula without creating another cell', () => {
+    expect(csvCell('\t=HYPERLINK("x","y")')).toBe('"\'\t=HYPERLINK(""x"",""y"")"');
+  });
+
+  it('preserves safe non-formula values, spacing and internal controls', () => {
+    expect(csvCell('  ordinary text')).toBe('  ordinary text');
+    expect(csvCell('a\tb')).toBe('"a\tb"');
+    expect(csvCell('a\rb')).toBe('"a\rb"');
+    expect(csvCell('01000000000')).toBe('01000000000');
+    expect(csvCell('100.00')).toBe('100.00');
   });
 
   it('does not treat a minus inside a value as a formula', () => {
@@ -281,6 +304,68 @@ describe('exportFileName', () => {
     expect(exportFileName('orders', 'branch-1', 'week', new Date(2026, 8, 4))).toBe(
       'engaz-orders-branch-1-week-2026-09-04.csv'
     );
+  });
+});
+
+describe('downloadCsv', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+    document.body.replaceChildren();
+  });
+
+  it('clicks an attached link, removes it and revokes the blob only after a delay', async () => {
+    vi.useFakeTimers();
+    const createObjectURL = vi.fn((_blob: Blob) => 'blob:csv-download');
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('URL', { createObjectURL, revokeObjectURL });
+    let clickedLink: HTMLAnchorElement | undefined;
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {
+      // The link exists only while the download runs, so it is captured here rather than
+      // read afterwards — by the time the call returns it is already detached.
+      clickedLink ??= document.querySelector<HTMLAnchorElement>('a[download]') ?? undefined;
+      const link = clickedLink!;
+      expect(document.body.contains(link)).toBe(true);
+      expect(link.download).toBe('orders.csv');
+      expect(link.getAttribute('href')).toBe('blob:csv-download');
+      expect(link.hidden).toBe(true);
+      expect(revokeObjectURL).not.toHaveBeenCalled();
+    });
+
+    downloadCsv('orders.csv', 'name\r\nCoffee');
+
+    expect(click).toHaveBeenCalledOnce();
+    expect(clickedLink?.isConnected).toBe(false);
+    expect(createObjectURL).toHaveBeenCalledOnce();
+    const blob = createObjectURL.mock.calls[0][0] as Blob;
+    expect(blob.type).toBe('text/csv;charset=utf-8;');
+    // Read as a promise rather than through FileReader: the fake timers this test needs for
+    // the delayed revoke never fire FileReader's load event, so a reader here hangs until
+    // the test times out.
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    expect(Array.from(bytes.slice(0, 3))).toEqual([0xef, 0xbb, 0xbf]);
+    expect(new TextDecoder().decode(bytes)).toBe('name\r\nCoffee');
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(999);
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith('blob:csv-download');
+  });
+
+  it('still removes the link and schedules cleanup if the download click throws', () => {
+    vi.useFakeTimers();
+    const revokeObjectURL = vi.fn();
+    vi.stubGlobal('URL', { createObjectURL: vi.fn(() => 'blob:failed-download'), revokeObjectURL });
+    vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {
+      throw new Error('Click failed');
+    });
+
+    expect(() => downloadCsv('orders.csv', 'name')).toThrow('Click failed');
+    expect(document.querySelector('a[download]')).toBeNull();
+    expect(revokeObjectURL).not.toHaveBeenCalled();
+    vi.runAllTimers();
+    expect(revokeObjectURL).toHaveBeenCalledExactlyOnceWith('blob:failed-download');
   });
 });
 

@@ -71,13 +71,14 @@ export function buildOrderTotals(items: PricedLine[], taxRate: number): OrderTot
  * existed, where `totalAmount` held a pre-tax subtotal.
  */
 export function orderTotals(order: OrderTotalFields, fallbackTaxRate?: number): OrderTotalsSnapshot {
-  const rate = Number.isFinite(Number(order.taxRate))
+  const rate = order.taxRate != null && Number.isFinite(Number(order.taxRate))
     ? Number(order.taxRate)
     : fallbackTaxRate ?? getTaxRate();
 
-  const storedSubtotal = Number(order.subtotal);
-  const storedGrandTotal = Number(order.grandTotal);
-  const storedTaxAmount = Number(order.taxAmount);
+  // SQL NULL means no snapshot, not a recorded zero (matching Electron's null guards).
+  const storedSubtotal = Number(order.subtotal ?? NaN);
+  const storedGrandTotal = Number(order.grandTotal ?? NaN);
+  const storedTaxAmount = Number(order.taxAmount ?? NaN);
 
   const subtotal = Number.isFinite(storedSubtotal)
     ? roundMoney(storedSubtotal)
@@ -104,24 +105,64 @@ export function orderGrandTotal(order: OrderTotalFields, fallbackTaxRate?: numbe
  * were redeemed, so revenue reporting must use this and never the grand total.
  */
 export function orderRevenue(order: OrderTotalFields, fallbackTaxRate?: number): number {
-  const paid = Number(order.paidAmount);
+  const paid = Number(order.paidAmount ?? NaN);
   if (Number.isFinite(paid)) return roundMoney(paid);
   return orderGrandTotal(order, fallbackTaxRate);
 }
 
 /**
- * Tax-inclusive value of a single line item. Line items carry no snapshot of their own, so
- * the order's stored rate is used when available and the configured rate otherwise.
+ * Allocate collected revenue (including tax and discounts) in whole cents across ALL lines.
+ * Largest fractional remainders receive the leftover cents, with input order breaking ties.
+ * If every line is zero, split evenly; an empty order has no lines to allocate to.
+ */
+export function allocateOrderRevenue(
+  items: PricedLine[],
+  order: OrderTotalFields,
+  fallbackTaxRate?: number
+): number[] {
+  if (items.length === 0) return [];
+
+  const revenue = orderRevenue(order, fallbackTaxRate);
+  const targetCents = Math.round(Math.abs(revenue) * 100);
+  let weights = items.map(item =>
+    Math.max(0, Math.round(roundMoney(toFiniteNumber(item.price) * toFiniteNumber(item.quantity)) * 100))
+  );
+  let totalWeight = weights.reduce((sum, weight) => sum + weight, 0);
+  if (totalWeight === 0) {
+    weights = items.map(() => 1);
+    totalWeight = items.length;
+  }
+
+  const shares = weights.map((weight, index) => {
+    const numerator = targetCents * weight;
+    return { index, cents: Math.floor(numerator / totalWeight), remainder: numerator % totalWeight };
+  });
+  const remaining = targetCents - shares.reduce((sum, share) => sum + share.cents, 0);
+  const ranked = [...shares].sort((a, b) => b.remainder - a.remainder || a.index - b.index);
+  for (let i = 0; i < remaining; i++) ranked[i].cents++;
+
+  return shares.map(share => share.cents === 0 ? 0 : Math.sign(revenue) * share.cents / 100);
+}
+
+/**
+ * Standalone tax-inclusive line estimate using the stored snapshot when available.
+ * Independent rounding cannot reconcile an order; revenue reports must use
+ * allocateOrderRevenue for the entire basket instead.
  */
 export function lineItemTotal(
   item: PricedLine,
   order?: OrderTotalFields,
   fallbackTaxRate?: number
 ): number {
-  const rate = order && Number.isFinite(Number(order.taxRate))
+  const gross = roundMoney(toFiniteNumber(item.quantity) * toFiniteNumber(item.price));
+
+  const totals = order ? orderTotals(order, fallbackTaxRate) : null;
+  if (totals && totals.subtotal > 0) {
+    return roundMoney(gross * (totals.grandTotal / totals.subtotal));
+  }
+
+  const rate = order?.taxRate != null && Number.isFinite(Number(order.taxRate))
     ? Number(order.taxRate)
     : fallbackTaxRate ?? getTaxRate();
-
-  const gross = roundMoney(toFiniteNumber(item.quantity) * toFiniteNumber(item.price));
   return roundMoney(gross * (1 + rate));
 }

@@ -352,9 +352,13 @@ describe('Repositories & Outbox Unit Tests (Isolated SQLite)', () => {
       const item = inventoryRepository.createInventoryItem({ name: 'Beans', unit: 'kg', stock: 10, minStock: 2, costPerUnit: 100 });
 
       // A physical count of 4 on a bin that believes it holds 10
-      inventoryRepository.createInventoryTransaction({ itemId: item.id, type: 'ADJUST', quantity: 4, referenceId: 'MANUAL' });
+      const adjustment = inventoryRepository.createInventoryTransaction({ itemId: item.id, type: 'ADJUST', quantity: 4, referenceId: 'MANUAL' });
       const after = inventoryRepository.getInventoryItem(item.id);
       assert.equal(after.stock, 4, 'ADJUST must set the balance to the counted quantity');
+      assert.equal(adjustment.type, 'ADJUST');
+      assert.equal(adjustment.quantity, -6, 'the returned movement is the signed ledger delta');
+      const ledger = inventoryRepository.getInventoryTransactions(item.id);
+      assert.equal(ledger.find(tx => tx.id === adjustment.id).quantity, -6);
 
       // IN still adds, OUT still subtracts
       inventoryRepository.createInventoryTransaction({ itemId: item.id, type: 'IN', quantity: 6 });

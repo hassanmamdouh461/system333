@@ -27,9 +27,9 @@ export const CSV_BOM = '\uFEFF';
 
 export function csvCell(value: unknown): string {
   const text = value === null || value === undefined ? '' : String(value);
-  // A leading formula character is neutralised with a tab: the cell still reads as its text,
-  // and unlike a quote the tab does not show up as part of the value.
-  const safe = /^[=+\-@]/.test(text) ? `\t${text}` : text;
+  // A text marker neutralises formulas, including control characters or whitespace
+  // that spreadsheet importers may strip before interpreting the value.
+  const safe = /^[\t\r\n]|^\s*[=+\-@]/.test(text) ? `'${text}` : text;
   return /[",\n\r\t]/.test(safe) ? `"${safe.replace(/"/g, '""')}"` : safe;
 }
 
@@ -214,6 +214,13 @@ export function downloadCsv(fileName: string, csv: string) {
   const link = document.createElement('a');
   link.href = url;
   link.download = fileName;
-  link.click();
-  URL.revokeObjectURL(url);
+  link.hidden = true;
+  document.body.appendChild(link);
+  try {
+    link.click();
+  } finally {
+    link.remove();
+    // Keep the blob alive until the browser has had a chance to start the download.
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
 }

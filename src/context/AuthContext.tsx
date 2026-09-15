@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, ReactNode, useCallback } from 'react';
 import { getBranchConfig, setBranchConfig, verifyPassword, hashPassword } from '../utils/settingsConfig';
+import { clearLockout, isLockedOut, registerFailedAttempt, remainingLockoutMs } from '../utils/loginLockout';
 
 const LS_EMAIL_KEY = 'engaz_remembered_email';
 const LS_SESSION_KEY = 'auth_session';
@@ -106,10 +107,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return !(config.branchId === account.branchId && config.password);
   }, []);
   const login = async (email: string, password: string, rememberMe?: boolean) => {
+    // Checked before any hashing. Nothing throttled a local guess: the digest is on this
+    // device, so whoever can reach the login screen could try passwords as fast as the CPU
+    // would hash them. See utils/loginLockout for what this does and does not stop.
+    if (isLockedOut()) {
+      const seconds = Math.ceil(remainingLockoutMs() / 1000);
+      throw new Error(
+        `تم إيقاف تسجيل الدخول مؤقتاً بعد عدة محاولات خاطئة. حاول مرة أخرى بعد ${seconds} ثانية`
+      );
+    }
+
     const account = findAccount(email);
     // Same rejection for an unknown address and a wrong password: telling them apart lets
-    // an attacker enumerate valid accounts.
+    // an attacker enumerate valid accounts. Both count toward the lockout.
     if (!account) {
+      registerFailedAttempt();
       throw new Error('بيانات الدخول غير صحيحة');
     }
 
@@ -118,6 +130,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
     if (storedHash) {
       if (!(await verifyPassword(password, storedHash))) {
+        registerFailedAttempt();
         throw new Error('بيانات الدخول غير صحيحة');
       }
     } else if (password.length < MIN_PASSWORD_LENGTH) {
@@ -139,6 +152,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       branchName: account.branchName,
       authToken: `local-${crypto.randomUUID()}`,
     };
+
+    // A correct password ends the lockout early, so a cashier who mistyped four times is
+    // not still serving a delay on their next correct sign-in.
+    clearLockout();
 
     const sessionData: StoredSession = { user: userData, branch: branchSession };
 

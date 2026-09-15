@@ -19,6 +19,8 @@ export default function Menu() {
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
+  // Keep partial-create identity without resetting the modal's unsaved recipe.
+  const createdItemId = React.useRef<string | null>(null);
 
   // Menu categories: Only categories that actually contain at least 1 item
   const dynamicCategories = React.useMemo(() => {
@@ -90,45 +92,40 @@ export default function Menu() {
   };
 
   const handleEdit = (item: MenuItem) => {
+    createdItemId.current = null;
     setEditingItem(item);
     setIsModalOpen(true);
   };
 
   const handleAddNew = () => {
+    createdItemId.current = null;
     setEditingItem(null);
     setIsModalOpen(true);
   };
 
   const handleSave = async (itemData: MenuItem | Omit<MenuItem, 'id'>, recipeIngredients: RecipeIngredient[]) => {
-    try {
-      let savedItemId = '';
-      if ('id' in itemData) {
-        // Edit existing
-        const { id, ...data } = itemData;
-        await updateItem(id, data);
-        savedItemId = id;
-      } else {
-        // Add new
-        const newItem = await addItem(itemData);
-        if (newItem) {
-          savedItemId = newItem.id;
-        }
-      }
-      
-      if (savedItemId && recipeIngredients) {
-        const { inventoryService } = await import('../services/inventoryService');
-        await inventoryService.saveMenuRecipe(savedItemId, recipeIngredients);
-      }
-      
-      setIsModalOpen(false);
-    } catch (error) {
-      console.error('Failed to save item:', error);
-      reportFailure(t('Failed to save item'), error);
+    let savedItemId: string;
+    if ('id' in itemData) {
+      const { id, ...data } = itemData;
+      await updateItem(id, data);
+      savedItemId = id;
+    } else if (createdItemId.current) {
+      savedItemId = createdItemId.current;
+      await updateItem(savedItemId, itemData);
+    } else {
+      const newItem = await addItem(itemData);
+      if (!newItem?.id) throw new Error('Failed to create menu item');
+      savedItemId = newItem.id;
+      createdItemId.current = savedItemId;
     }
+
+    const { inventoryService } = await import('../services/inventoryService');
+    await inventoryService.saveMenuRecipe(savedItemId, recipeIngredients);
+    // Let MenuModal close only after both saves succeed; failures must reach its catch.
   };
 
-  // Show error state
-  if (error) {
+  // A mutation error must not unmount the modal and discard the user's edits.
+  if (error && !isModalOpen) {
     return (
       <div className="flex items-center justify-center h-96">
         <div className="text-center">

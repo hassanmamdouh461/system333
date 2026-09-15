@@ -28,6 +28,7 @@ const telegramService = require('./telegramService.cjs');
 const validate = require('./validate.cjs');
 const syncApi = require('./mockApiService.cjs');
 const printManager = require('./printManager.cjs');
+const { installFatalHandlers } = require('./processSafety.cjs');
 
 let mainWindow;
 let syncEngine;
@@ -62,10 +63,37 @@ function createWindow() {
     mainWindow.loadFile(path.join(__dirname, '../dist/index.html'));
   }
 
+  /**
+   * A prefix test on the URL string accepts `https://reporting.engaz.tech.attacker.tld` — a
+   * different site that merely begins with the same characters, and one that a crafted link
+   * could hand to shell.openExternal. Compare the parsed hostname, and require https so a
+   * `javascript:` or `data:` URL cannot reach the handler at all.
+   */
+  const EXTERNAL_LINK_HOSTS = new Set(['reporting.engaz.tech']);
+
+  function isAllowedExternalUrl(raw) {
+    try {
+      const parsed = new URL(String(raw));
+      return parsed.protocol === 'https:' && EXTERNAL_LINK_HOSTS.has(parsed.hostname);
+    } catch {
+      return false;
+    }
+  }
+
+  // Dev-server navigation is allowed only for the origin we were told to load, for the same
+  // reason: `http://localhost:5173.attacker.tld` is not the dev server.
+  function isDevServerUrl(raw) {
+    try {
+      return new URL(String(raw)).origin === new URL(String(process.env.ENGAZ_DEV_LOAD_URL)).origin;
+    } catch {
+      return false;
+    }
+  }
+
   // Nothing in this app should open a second window or navigate away from the bundled app.
   // External links to the manager portal open in the user's default browser.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('https://reporting.engaz.tech')) {
+    if (isAllowedExternalUrl(url)) {
       const { shell } = require('electron');
       shell.openExternal(url);
     } else {
@@ -74,7 +102,7 @@ function createWindow() {
     return { action: 'deny' };
   });
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    const isLocal = url.startsWith('file://') || (isDev && url.startsWith(process.env.ENGAZ_DEV_LOAD_URL));
+    const isLocal = url.startsWith('file://') || (isDev && isDevServerUrl(url));
     if (!isLocal) {
       console.warn('[main] Blocked navigation to:', url);
       event.preventDefault();
@@ -207,6 +235,11 @@ function registerIpcHandlers() {
   // point the sync — key included — at any host.
   const SETTINGS_WRITE_ONLY = [
     /^engaz_d1_worker_api_key$/,
+    // A Telegram bot token is fully capabilities-bearing: whoever holds it can read every
+    // message the bot can and post as it. The renderer keeps its own copy in localStorage for
+    // the settings form, so withholding it here costs nothing and stops a compromised
+    // renderer from reading the token out of SQLite over IPC.
+    /^engaz_telegram_config$/,
   ];
 
   const isAllowedSettingKey = (key) => typeof key === 'string' && SETTINGS_WHITELIST.some(re => re.test(key));
@@ -321,6 +354,39 @@ app.whenReady().then(() => {
   app.on('activate', function () {
     if (BrowserWindow.getAllWindows().length === 0) createWindow();
   });
+});
+
+/**
+ * Last line of defence.
+ *
+ * A till runs unattended for a whole shift, so this does fail safe rather than fail silent:
+ * the fault is logged with its stack, the sync loop is stopped so no further writes leave a
+ * process whose state is unknown, the operator is told instead of being left with a
+ * frozen-looking till, and the process exits non-zero so it can be restarted into a known
+ * state.
+ *
+ * It deliberately does NOT continue. Continuing after an *unknown* exception means taking
+ * more money on top of a state nobody has analysed — and the only symptom is a till that
+ * reports "synced" while drifting away from the cloud. Recoverable failures are handled at
+ * their own call site; anything reaching this handler is unhandled by definition.
+ */
+installFatalHandlers({
+  stopSync: () => {
+    // Only after the engine exists: a fault during startup must not be made worse by
+    // reaching for it. `will-quit` also stops it on a normal shutdown.
+    if (syncEngine) syncEngine.stop();
+  },
+  notify: (detail) => {
+    const { dialog } = require('electron');
+    // Shown before the window is torn down, so the cashier is never left guessing. The
+    // detail goes to the log, not the dialog: a stack trace on a till screen helps nobody.
+    dialog.showErrorBox(
+      'Engaz POS — تم إيقاف التطبيق',
+      'حدث خطأ غير متوقع وتم إيقاف التطبيق لحماية البيانات. سيتم إعادة التشغيل تلقائياً إن كان مُعدّاً لذلك.\n'
+      + 'راجع ملف السجل لمعرفة السبب.'
+    );
+    void detail;
+  },
 });
 
 app.on('window-all-closed', function () {

@@ -200,8 +200,9 @@ describe('sync field size limits', () => {
     const huge = [{ name: 'x'.repeat(MAX_JSON_BYTES), quantity: 1 }];
     expect(() => buildSyncStatements(db, SYNC_TABLES.orders, [{ id: 'o1', items: huge }]))
       .toThrow(/items/i);
-    // The statement was prepared but never bound, so nothing reaches D1 for this record.
-    expect(db.prepared[0].params).toHaveLength(0);
+    // The record is rejected before it is bound, so no statement reaches D1 for it at all.
+    // A half-built statement left in the queue would be the failure this guards against.
+    expect(db.prepared).toHaveLength(0);
   });
 
   it('accepts order items within the cap', () => {
@@ -362,18 +363,16 @@ describe('write accounting', () => {
       .toEqual({ written: 1, expected: 3, skipped: 2 });
   });
 
-  it('does not treat a tombstone for an unknown row as a shortfall', () => {
-    // A branch deleting an item the cloud never held sends an UPDATE that matches nothing.
-    // Counting that as a failure would report a shortfall on almost every sync and bury
-    // the ones that matter.
+  it('counts every submitted statement as expected, including harmless no-ops', () => {
+    // `skipped` is the number of statements the database did not change. It is deliberately
+    // NOT filtered by statement kind: a tombstone for a row the cloud never held and an
+    // already-present ledger entry both change nothing, and reporting them as an unexpected
+    // shortfall is what used to bury the shortfalls that matter. The sync executor is what
+    // decides whether each no-op is acceptable, by verifying the stored state.
     expect(summariseBatch(batchWith([0, 1]), ['tombstone', 'verify']))
-      .toEqual({ written: 1, expected: 1, skipped: 0 });
-  });
-
-  it('does not treat an already-present ledger row as a shortfall', () => {
-    // Append-only: INSERT OR IGNORE matching zero rows means the movement was recorded.
+      .toEqual({ written: 1, expected: 2, skipped: 1 });
     expect(summariseBatch(batchWith([0]), ['append']))
-      .toEqual({ written: 0, expected: 0, skipped: 0 });
+      .toEqual({ written: 0, expected: 1, skipped: 1 });
   });
 
   it('reports zero rather than guessing when the result set is missing', () => {
@@ -384,7 +383,16 @@ describe('write accounting', () => {
   });
 
   it('accepts the older `changes` field as well as `rows_written`', () => {
-    expect(countWritten([{ meta: { changes: 3 } }, { meta: { rows_written: 4 } }])).toBe(7);
+    // Only a result that reports success counts: an absent or failed result is "unknown",
+    // and unknown must never be added to a total a till trusts.
+    const ok = (meta: Record<string, number>) => ({ success: true, meta });
+    expect(countWritten([ok({ changes: 3 }), ok({ changes: 4 })])).toBe(7);
+    // `changes` is the truth even when `rows_written` disagrees: rows_written counts
+    // physical work, not accepted logical changes, and an upsert whose predicate failed
+    // still touches a row.
+    expect(countWritten([ok({ rows_written: 4, changes: 0 })])).toBe(0);
+    expect(countWritten([{ success: false, meta: { changes: 5 } }])).toBe(0);
+    expect(countWritten([{ meta: { changes: 5 } }])).toBe(0);
   });
 });
 

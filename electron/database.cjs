@@ -747,7 +747,12 @@ function enqueueReportOutbox(target, recordId, payload, version = null) {
       WHERE excluded.version > reports_outbox.version OR reports_outbox.version IS NULL
     `).run(target, recordId, rawPayload, v, now);
   } catch (e) {
+    // Thrown, not logged away. A queued obligation that never reached disk is invisible: the
+    // primary record has already been accepted by the POS worker, so swallowing this is what
+    // leaves the reports database permanently behind while every status screen says "synced".
+    // The caller keeps the record unsynced instead, so it replays and can be mirrored later.
     console.error(`[database] Failed to enqueue reports_outbox for ${target}/${recordId}:`, e);
+    throw e;
   }
 }
 

@@ -11,6 +11,7 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && node scripts/build-freshness.mjs stamp",
+    "build:menu": "vite build --config vite.menu.config.ts",
     "lint": "eslint . --ext ts,tsx,js,cjs,mjs --report-unused-disable-directives --max-warnings 0",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "vitest run",

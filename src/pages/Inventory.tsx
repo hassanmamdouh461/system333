@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { 
   Package, History, Plus, Search, Trash2, Edit2, 
@@ -10,6 +10,7 @@ import { inventoryService } from '../services/inventoryService';
 import { menuService } from '../services/menuService';
 import { InventoryItem, InventoryTransaction, RecipeIngredient } from '../global';
 import { MenuItem } from '../types/menu';
+import { valuateQuantity, valuateStockItem } from '../utils/inventoryMath';
 
 export default function Inventory() {
   const { t, isRtl } = useLanguage();
@@ -19,6 +20,7 @@ export default function Inventory() {
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [recipes, setRecipes] = useState<RecipeIngredient[]>([]);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState('');
   
   // Modals state
@@ -41,29 +43,34 @@ export default function Inventory() {
     notes: ''
   });
 
-  const fetchData = async () => {
+  const fetchData = useCallback(async () => {
     setLoading(true);
     try {
       const [invData, txData, menuData, recipeData] = await Promise.all([
         inventoryService.getAll(),
         inventoryService.getTransactions(),
-        menuService.getAll().catch(() => []),
-        inventoryService.getMenuRecipes().catch(() => [])
+        menuService.getAll(),
+        inventoryService.getMenuRecipes()
       ]);
       setInventory(invData);
       setTransactions(txData);
       setMenuItems(menuData);
       setRecipes(recipeData);
+      setLoadError(null);
     } catch (error) {
       console.error('Failed to load inventory data:', error);
+      // Without this the page renders a tidy empty table. Every derived figure then reads
+      // zero — no stock, no consumption, no cost — and a manager who prices a dish off that
+      // screen is reading a load failure as a fact about the business.
+      setLoadError(t('Could not load inventory data. Check the connection and retry.'));
     } finally {
       setLoading(false);
     }
-  };
+  }, [t]);
 
   useEffect(() => {
     fetchData();
-  }, []);
+  }, [fetchData]);
 
   // Precompute average selling yield for each inventory item ID
   const itemYields = useMemo(() => {
@@ -144,10 +151,7 @@ export default function Inventory() {
   // Total Potential Profit
   const totalPotentialProfit = useMemo(() => {
     return inventory.reduce((sum, item) => {
-      const avgYield = itemYields[item.id] || 0;
-      const potSales = item.stock * avgYield;
-      const potProfit = potSales > 0 ? Math.max(potSales - (item.stock * item.costPerUnit), 0) : 0;
-      return sum + potProfit;
+      return sum + valuateStockItem(item, itemYields).potentialProfit;
     }, 0);
   }, [inventory, itemYields]);
 
@@ -180,7 +184,6 @@ export default function Inventory() {
       const data = {
         name: itemForm.name,
         unit: itemForm.unit,
-        stock: parseFloat(itemForm.stock),
         minStock: parseFloat(itemForm.minStock),
         costPerUnit: parseFloat(itemForm.costPerUnit)
       };
@@ -188,7 +191,7 @@ export default function Inventory() {
       if (selectedItem) {
         await inventoryService.update(selectedItem.id, data);
       } else {
-        await inventoryService.create(data);
+        await inventoryService.create({ ...data, stock: Number(itemForm.stock) });
       }
       setIsItemModalOpen(false);
       fetchData();
@@ -211,12 +214,21 @@ export default function Inventory() {
     e.preventDefault();
     if (!selectedItem) return;
     try {
-      const qty = parseFloat(adjustForm.quantity);
-      if (isNaN(qty) || qty <= 0) {
-        alert(t('Please enter a valid quantity greater than 0'));
+      const qty = Number(adjustForm.quantity);
+      const minQuantity = adjustForm.type === 'ADJUST' ? 0 : 0.001;
+      if (adjustForm.quantity.trim() === '' || !Number.isFinite(qty) || qty < minQuantity || qty > 100_000) {
+        alert(t(adjustForm.type === 'ADJUST'
+          ? 'Please enter a finite counted quantity from 0 to 100000'
+          : 'Please enter a finite quantity from 0.001 to 100000'));
         return;
       }
 
+      if (adjustForm.type === 'OUT' && qty > selectedItem.stock) {
+        alert(t('Cannot withdraw more than the current stock'));
+        return;
+      }
+
+      // ADJUST is an absolute target; SQLite computes its delta against fresh stock.
       await inventoryService.createTransaction({
         itemId: selectedItem.id,
         type: adjustForm.type,
@@ -270,7 +282,7 @@ export default function Inventory() {
       </div>
 
       {/* ── Stats Row ──────────────────────────────────────────────────────── */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+      {!loading && !loadError && <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
         <div className="bg-white/95 border border-gray-100 rounded-2xl p-5 shadow-sm flex items-center gap-4">
           <div className="bg-amber-50 text-amber-600 p-3 rounded-xl">
             <Package size={24} />
@@ -316,7 +328,7 @@ export default function Inventory() {
             </p>
           </div>
         </div>
-      </div>
+      </div>}
 
       {/* ── Tabs & Search Bar ─────────────────────────────────────────────── */}
       <div className="bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex flex-col md:flex-row md:items-center justify-between gap-3 sticky top-0 z-10">
@@ -362,6 +374,18 @@ export default function Inventory() {
           <RefreshCw className="animate-spin text-mocha-600 mb-2 w-8 h-8" />
           <span className="text-sm text-gray-500">{t('Loading inventory...')}</span>
         </div>
+      ) : loadError ? (
+        <div role="alert" className="flex flex-col items-center justify-center h-64 bg-red-50 rounded-2xl border border-red-200 gap-3">
+          <AlertTriangle className="text-red-600 w-8 h-8" />
+          <p className="text-sm font-semibold text-red-700 text-center px-6">{loadError}</p>
+          <button
+            type="button"
+            onClick={fetchData}
+            className="px-4 py-2 rounded-xl bg-red-600 text-white text-sm font-bold hover:bg-red-700 transition-colors"
+          >
+            {t('Retry')}
+          </button>
+        </div>
       ) : (
         <div className="bg-white rounded-2xl shadow-sm border border-gray-100 overflow-hidden">
           {activeTab === 'stock' ? (
@@ -383,10 +407,7 @@ export default function Inventory() {
                 <tbody className="divide-y divide-gray-100">
                   {filteredStock.map((item) => {
                     const isLow = item.stock <= item.minStock;
-                    const avgYield = itemYields[item.id] || 0;
-                    const potSales = item.stock * avgYield;
-                    const potCost = item.stock * item.costPerUnit;
-                    const potProfit = Math.max(0, potSales - potCost);
+                    const { potentialSales: potSales, potentialProfit: potProfit } = valuateStockItem(item, itemYields);
                     const ratio = item.minStock > 0 ? Math.min(Math.round((item.stock / (item.minStock * 2)) * 100), 100) : 100;
                     
                     return (
@@ -496,7 +517,7 @@ export default function Inventory() {
                           )}
                         </td>
                         <td className="p-4 text-center font-bold text-gray-800">
-                          {isOutgoing ? '-' : '+'}{tx.quantity.toFixed(2)} {t(tx.itemUnit || '')}
+                          {isOutgoing ? '-' : tx.quantity > 0 ? '+' : ''}{tx.quantity.toFixed(2)} {t(tx.itemUnit || '')}
                         </td>
                         <td className="p-4 text-center font-mono text-xs text-gray-500">
                           {tx.referenceId}
@@ -692,11 +713,25 @@ export default function Inventory() {
 
                   <div>
                     <label className="block text-xs font-semibold text-gray-500 uppercase mb-1">
-                      {t('Quantity')} ({selectedItem.unit})
+                      {adjustForm.type === 'ADJUST'
+                        ? `${t('Counted Quantity')} (${selectedItem.unit})`
+                        : `${t('Quantity')} (${selectedItem.unit})`}
                     </label>
+                    {adjustForm.type === 'ADJUST' && (
+                      <p className="text-[11px] text-gray-500 mb-1.5">
+                        {t('Enter what is actually on the shelf; the difference is recorded automatically.')}
+                      </p>
+                    )}
+                    {adjustForm.type === 'OUT' && (
+                      <p className="text-[11px] text-gray-500 mb-1.5">
+                        {t('Current stock')}: {Number(selectedItem.stock) || 0} {selectedItem.unit}
+                      </p>
+                    )}
                     <input
                       type="number"
                       step="0.001"
+                      min={adjustForm.type === 'ADJUST' ? 0 : 0.001}
+                      max={adjustForm.type === 'OUT' ? Math.min(selectedItem.stock, 100_000) : 100_000}
                       required
                       value={adjustForm.quantity}
                       onChange={(e) => setAdjustForm({ ...adjustForm, quantity: e.target.value })}
@@ -719,15 +754,28 @@ export default function Inventory() {
 
                 {/* Real-time Potential Selling & Profit calculation card */}
                 {(() => {
-                  const qtyVal = parseFloat(adjustForm.quantity) || 0;
-                  const itemCost = selectedItem.costPerUnit;
-                  const itemYield = itemYields[selectedItem.id] || 0;
+                  const qtyVal = Number(adjustForm.quantity);
+                  if (loading || loadError || adjustForm.quantity.trim() === '' || !Number.isFinite(qtyVal)
+                    || qtyVal < (adjustForm.type === 'ADJUST' ? 0 : 0.001) || qtyVal > 100_000
+                    || (adjustForm.type === 'OUT' && qtyVal > selectedItem.stock)) return null;
+                  const { costValue: totalTxCost, potentialSales: totalTxSales, potentialProfit: totalTxProfit } =
+                    valuateQuantity(qtyVal, selectedItem.costPerUnit, itemYields[selectedItem.id] || 0);
 
-                  const totalTxCost = qtyVal * itemCost;
-                  const totalTxSales = qtyVal * itemYield;
-                  const totalTxProfit = totalTxSales > 0 ? Math.max(totalTxSales - totalTxCost, 0) : 0;
-
-                  if (qtyVal <= 0) return null;
+                  if (adjustForm.type === 'ADJUST') {
+                    return (
+                      <div className="bg-blue-50/50 border border-blue-100 p-4 rounded-xl space-y-2 text-xs">
+                        <div className="flex justify-between font-bold text-blue-700">
+                          <span>{t('Stock after count')}:</span>
+                          <span>{qtyVal.toFixed(3)} {selectedItem.unit}</span>
+                        </div>
+                        <div className="flex justify-between font-bold text-gray-700">
+                          <span>{t('Counted stock value')}:</span>
+                          <span>EGP {totalTxCost.toFixed(2)}</span>
+                        </div>
+                        <p className="text-gray-500">{t('The movement is calculated from the latest stock when saved.')}</p>
+                      </div>
+                    );
+                  }
 
                   if (adjustForm.type === 'OUT') {
                     return (

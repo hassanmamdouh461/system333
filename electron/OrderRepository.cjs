@@ -1,6 +1,26 @@
 const database = require('./database.cjs');
 const { DEFAULT_TAX_RATE, roundMoney } = require('./money.cjs');
 const { randomUUID } = require('crypto');
+
+/**
+ * What was actually paid for an order.
+ *
+ * Three call sites used to derive this differently: order creation subtracted redeemed points
+ * and rounded, the seed/upsert path used the grand total bare, and a SQL backfill subtracted
+ * points with a floor at zero but never rounded. The same order therefore reported two
+ * different paid amounts depending on whether it was created on this till, seeded from a
+ * backup, or pulled from the cloud — which is how a day's revenue could disagree with the
+ * sum of the orders in it.
+ *
+ * An explicit `paidAmount` always wins: it is what the till actually took. It is still
+ * floored at zero because a negative value summed straight into revenue (older client,
+ * hand-edited payload, restored backup).
+ */
+function derivePaidAmount(order, grandTotal) {
+  if (order.paidAmount != null) return Math.max(0, roundMoney(Number(order.paidAmount)));
+  if (order.paymentStatus !== 'Paid') return null;
+  return Math.max(0, roundMoney(grandTotal - (Number(order.pointsRedeemed) || 0)));
+}
 const { MAX_SYNC_ATTEMPTS } = database;
 
 // Monotonic per-row versions also cover multiple edits within one millisecond.
@@ -95,10 +115,7 @@ class OrderRepository {
     // rejected at the till, but an order arriving with an over-redemption (older client,
     // edited payload, restored backup) used to store a negative paidAmount, which the daily
     // report then summed straight into revenue.
-    const rawPaid = order.paidAmount != null
-      ? roundMoney(Number(order.paidAmount))
-      : (order.paymentStatus === 'Paid' ? roundMoney(grandTotal - (Number(order.pointsRedeemed) || 0)) : null);
-    const paidAmount = rawPaid == null ? null : Math.max(0, rawPaid);
+    const paidAmount = derivePaidAmount(order, grandTotal);
 
     // Atomic daily counter inside the same transaction as the INSERT (Issue 23).
     // Counter is keyed by LOCAL date so it aligns with the local-time daily report (Issue 24).
@@ -299,7 +316,9 @@ class OrderRepository {
         paymentStatus = 'Paid',
         paymentMethod = ?,
         paidAt = ?,
-        paidAmount = COALESCE(paidAmount, MAX(0, COALESCE(grandTotal, totalAmount) - COALESCE(pointsRedeemed, 0))),
+        -- Same derivation as derivePaidAmount(): round to the money scale, so a row completed
+        -- here matches one created with an explicit paidAmount to the cent.
+        paidAmount = COALESCE(paidAmount, MAX(0, ROUND(COALESCE(grandTotal, totalAmount) - COALESCE(pointsRedeemed, 0), 2))),
         updated_at = ?,
         is_synced = 0,
         sync_attempts = 0,
@@ -368,9 +387,7 @@ class OrderRepository {
         const taxRate = order.taxRate != null ? Number(order.taxRate) : DEFAULT_TAX_RATE;
         const taxAmount = order.taxAmount != null ? Number(order.taxAmount) : roundMoney(subtotal * taxRate);
         const grandTotal = order.grandTotal != null ? Number(order.grandTotal) : roundMoney(subtotal + taxAmount);
-        const paidAmount = order.paidAmount != null
-          ? roundMoney(Number(order.paidAmount))
-          : (order.paymentStatus === 'Paid' ? grandTotal : null);
+        const paidAmount = derivePaidAmount(order, grandTotal);
         insert.run(
           id,
           order.orderNumber,

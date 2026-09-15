@@ -4,6 +4,9 @@ const mockApi = require('./mockApiService.cjs');
 const BASE_INTERVAL_MS = 30_000;
 /** Ceiling for the backoff, so a long outage still retries twice an hour. */
 const MAX_BACKOFF_MS = 30 * 60_000;
+/** Ceiling when only pulls are failing: slow enough to stop hammering, fast enough to notice
+ *  the moment the worker starts answering again. */
+const PULL_ONLY_MAX_BACKOFF_MS = 2 * 60_000;
 
 async function checkInternet() {
   // Real reachability, not navigator.onLine: can we actually reach our worker?
@@ -84,6 +87,8 @@ class SyncEngine {
     this.isSyncing = false;
     // Consecutive failed cycles, which sets how long to wait before the next attempt.
     this.consecutiveFailures = 0;
+    /** Set when the last failed cycle failed only on pulls; see nextDelay(). */
+    this.pullOnlyFailures = false;
     this.baseIntervalMs = BASE_INTERVAL_MS;
     this.timeoutId = null;
   }
@@ -98,6 +103,11 @@ class SyncEngine {
   nextDelay() {
     if (this.consecutiveFailures === 0) return this.baseIntervalMs;
     const backoff = this.baseIntervalMs * 2 ** Math.min(this.consecutiveFailures, 6);
+    // A pull that keeps failing is capped lower than a push that keeps failing. Both need to
+    // stop hammering the worker, but a pull-only failure is usually a server contract
+    // mismatch: drifting to the full ceiling hides it and the till stops noticing when the
+    // server is fixed. Local writes still reach the cloud on the shorter cadence.
+    if (this.pullOnlyFailures) return Math.min(backoff, PULL_ONLY_MAX_BACKOFF_MS);
     return Math.min(backoff, MAX_BACKOFF_MS);
   }
 
@@ -218,9 +228,17 @@ class SyncEngine {
 
       // 1b. Flush persistent reports outbox
       try {
-        await mockApi.flushReportsOutbox();
+        const flushed = await mockApi.flushReportsOutbox();
+        // An unconfigured key is reported as failure now, so this branch is reached. It is a
+        // phase error rather than a warning: the manager portal then shows stale figures with
+        // no indication that this till has stopped feeding it, which is the one failure a
+        // business reads as "no sales today".
+        if (flushed && flushed.success === false) {
+          phaseErrors.push(`Reports mirror failed: ${flushed.error || 'unknown error'}`);
+        }
       } catch (outboxError) {
         console.warn('[syncEngine] Reports outbox flush failed:', outboxError.message);
+        phaseErrors.push(`Reports mirror failed: ${outboxError.message}`);
       }
 
       // 2. Pull updates from the cloud incrementally (Issue 21)
@@ -256,6 +274,9 @@ class SyncEngine {
         { target: 'customers', setting: 'last_pulled_customers_at', repo: 'CustomerRepository.cjs', apply: 'upsertPulledCustomers', rowTime: (r) => r.updated_at },
         { target: 'inventory', setting: 'last_pulled_inventory_at', repo: 'InventoryRepository.cjs', apply: 'upsertPulledInventory', rowTime: (r) => r.updated_at },
         { target: 'cashiers', setting: 'last_pulled_cashiers_at', repo: 'CashierRepository.cjs', apply: 'upsertPulledCashiers', rowTime: (r) => r.updated_at },
+        // The loyalty ledger has no updated_at — it is append-only and ordered by createdAt,
+        // which is also the column the worker cursors on for this table.
+        { target: 'points-transactions', setting: 'last_pulled_points_transactions_at', repo: 'CustomerRepository.cjs', apply: 'upsertPulledPointsTransactions', rowTime: (r) => r.createdAt },
       ];
       for (const { target, setting, repo, apply, rowTime } of sharedPulls) {
         try {
@@ -466,13 +487,14 @@ class SyncEngine {
         this.status.state = 'error';
         this.status.lastError = phaseErrors.join('; ');
 
-        // Only a failed *push* earns a longer wait. A pull that keeps failing is a server
-        // contract mismatch (a deployed worker that does not implement /pull/*), and the
-        // exponential backoff then hides it: the till drifts to a 30-minute cadence and
-        // stops noticing when the server is fixed. Local writes still reach the cloud on
-        // every cycle, so there is nothing to back away from.
+        // Both directions now earn a wait — a pull that fails every 30 seconds for the life
+        // of the app is a hot loop against the worker, not a neutral condition — but a
+        // pull-only failure backs off to a shorter ceiling, because it is usually a server
+        // contract mismatch and drifting to 30 minutes would hide the moment it is fixed.
         const pushFailed = phaseErrors.some((message) => /push failed|transactions push failed/i.test(message));
-        if (pushFailed) this.consecutiveFailures += 1;
+        const pullFailed = phaseErrors.some((message) => /failed to pull/i.test(message));
+        this.pullOnlyFailures = pullFailed && !pushFailed;
+        if (pushFailed || pullFailed) this.consecutiveFailures += 1;
 
         console.warn(`[syncEngine] Sync cycle completed with ${phaseErrors.length} error(s):`, this.status.lastError);
       } else if (finalStats.totalPending > 0) {
@@ -480,12 +502,14 @@ class SyncEngine {
         this.status.lastError = null;
         this.status.lastSyncAt = new Date().toISOString();
         this.consecutiveFailures = 0;
+        this.pullOnlyFailures = false;
         console.log(`[syncEngine] Sync cycle completed with ${finalStats.totalPending} pending records remaining.`);
       } else {
         this.status.state = 'synced';
         this.status.lastError = null;
         this.status.lastSyncAt = new Date().toISOString();
         this.consecutiveFailures = 0;
+        this.pullOnlyFailures = false;
         console.log('[syncEngine] Sync cycle completed successfully.');
       }
       this.emitStatus();

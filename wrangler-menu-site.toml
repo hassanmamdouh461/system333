@@ -1,8 +1,12 @@
 # Engaz Public Customer Menu (static SPA)
-# Deploys dist to menu.engaz.tech as a Cloudflare Workers static site.
+# Deploys the menu-only bundle to menu.engaz.tech as a Cloudflare Workers static site.
 #
-# Build first:  npm run build
+# Build first:  npm run build:menu      (writes dist-menu — NOT dist)
 # Deploy:       node ./node_modules/wrangler/wrangler-dist/cli.js deploy -c wrangler-menu-site.toml
+#
+# This used to deploy `dist`, the same bundle the desktop app and the admin screens are built
+# from, so every internal route, settings screen and login routine was published to anyone who
+# opened the menu. dist-menu is built from public-menu.html, which imports only PublicMenu.
 
 name = "engaz-menu-portal"
 compatibility_date = "2025-01-01"
@@ -19,5 +23,5 @@ routes = [
 ]
 
 [assets]
-directory = "dist"
+directory = "dist-menu"
 not_found_handling = "single-page-application"
