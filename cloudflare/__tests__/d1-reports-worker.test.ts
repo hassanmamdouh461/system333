@@ -321,6 +321,9 @@ describe('readSnapshot', () => {
   /** Minimal D1 stand-in: records the statements and replays canned rows in order. */
   function fakeDb(resultSets) {
     const seen = [];
+    // Orders are read on their own because they are walked by cursor; everything else comes
+    // back from one batch. The first result set belongs to the orders query.
+    const [orders = [], ...rest] = resultSets;
     return {
       seen,
       prepare(sql) {
@@ -331,16 +334,19 @@ describe('readSnapshot', () => {
             statement.bindings = args;
             return this;
           },
+          async all() {
+            return { results: orders };
+          },
         };
       },
       async batch() {
-        return resultSets.map((results) => ({ results }));
+        return rest.map((results) => ({ results }));
       },
     };
   }
 
-  // Seven statements: five business collections, then the branch registry pair — live rows
-  // and the ids of entries a manager hid. The registry pair is why this is not six.
+  // Orders first (its own query), then four business collections, then the branch registry
+  // pair — live rows and the ids of entries a manager hid.
   const EMPTY = [[], [], [], [], [], [], []];
 
   it('returns every collection the portal reads, including the stock ledger', async () => {
@@ -353,9 +359,46 @@ describe('readSnapshot', () => {
       'menuItems',
       'movements',
       'orders',
+      'ordersNextCursor',
       'serverTime',
       'truncated',
     ]);
+  });
+
+  it('walks the orders by cursor instead of capping them', async () => {
+    // Revenue, best sellers and the daily chart are all computed over orders, so a page cap
+    // there did not hide rows so much as make every total a lower bound. A full page must
+    // now come back with a cursor rather than a silent stop.
+    const rows = Array.from({ length: 3 }, (_, i) => ({
+      id: `o${i}`,
+      createdAt: new Date(Date.UTC(2026, 0, 3 - i)).toISOString(),
+    }));
+    const snapshot = await readSnapshot(fakeDb([rows, [], [], [], [], [], []]), { ordersLimit: 2 });
+
+    expect(snapshot.orders).toHaveLength(2, 'the probe row is never shown');
+    // The cursor is (createdAt, id) so the walk is stable across identical timestamps.
+    expect(snapshot.ordersNextCursor).toEqual({
+      createdAt: rows[1].createdAt,
+      id: rows[1].id,
+    });
+    // Nothing was cut short: orders are no longer reported as a truncated collection.
+    expect(snapshot.truncated.orders).toBeUndefined();
+  });
+
+  it('hands back a keyset query when a cursor is supplied', async () => {
+    const db = fakeDb([[], [], [], [], [], [], []]);
+    await readSnapshot(db, { ordersCursor: { createdAt: '2026-01-02T00:00:00.000Z', id: 'o9' } });
+
+    const statement = db.seen.find((s) => s.sql.includes('FROM orders'));
+    expect(statement.sql).toMatch(/createdAt < \?/);
+    expect(statement.bindings.slice(0, 3)).toEqual(['2026-01-02T00:00:00.000Z', '2026-01-02T00:00:00.000Z', 'o9']);
+  });
+
+  it('says when there is nothing left to fetch', async () => {
+    // A short final page is how the caller knows to stop, rather than inferring it from a
+    // row count that could legitimately be an exact multiple of the page size.
+    const snapshot = await readSnapshot(fakeDb([[{ id: 'o1' }], [], [], [], [], [], []]), { ordersLimit: 10 });
+    expect(snapshot.ordersNextCursor).toBeNull();
   });
 
   it('maps each result set to its own collection, in order', async () => {
@@ -397,13 +440,12 @@ describe('readSnapshot', () => {
     // so understates every figure on screen and looks exactly like a complete one.
     const full = (n: number) => Array.from({ length: n }, (_, i) => ({ id: `r${i}` }));
     const snapshot = await readSnapshot(fakeDb([
-      full(1000),          // orders: exactly at the cap, no probe row, so not truncated
+      [],                  // orders: paged by cursor, so it is never reported short
       full(1001),          // customers: probe row present
       [], [], [], [], [],
     ]));
 
     expect(snapshot.truncated).toEqual({ customers: true });
-    expect(snapshot.orders).toHaveLength(1000);
     // The probe row is never shown.
     expect(snapshot.customers).toHaveLength(1000);
   });

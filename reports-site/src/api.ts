@@ -163,18 +163,59 @@ export interface Snapshot extends BranchRegistry {
   serverTime: string;
 }
 
-/** One request for the whole dashboard; the worker decides what a viewer may read. */
+/** The most pages a single dashboard load will walk before giving up. */
+const MAX_SNAPSHOT_PAGES = 200;
+
+/** A cursor returned by the worker, or anything a hostile response might put there. */
+function isCursor(value: unknown): value is { createdAt: string; id: string } {
+  return Boolean(value)
+    && typeof value === 'object'
+    && typeof (value as { createdAt?: unknown }).createdAt === 'string'
+    && typeof (value as { id?: unknown }).id === 'string';
+}
+
+/**
+ * The whole dashboard, walking the orders collection by cursor.
+ *
+ * Revenue, best sellers and the daily chart are computed over orders, so a page cap there
+ * did not hide rows so much as make every total on screen a lower bound. The worker now
+ * pages them and hands back a cursor, and this walks it until the worker says there is
+ * nothing left.
+ *
+ * A worker that predates cursors simply returns no cursor, so this fetches exactly one page
+ * and behaves as before — the truncation banner still covers that case.
+ */
 export async function fetchSnapshot(token: string): Promise<Snapshot> {
-  const data = await post<Snapshot>('/read/snapshot', {}, token);
+  const orders: SnapshotRow[] = [];
+  let cursor: { createdAt: string; id: string } | null = null;
+  let first: (Snapshot & { ordersNextCursor?: unknown }) | null = null;
+
+  for (let page = 0; page < MAX_SNAPSHOT_PAGES; page++) {
+    // Annotated rather than inferred: without it the compiler cannot resolve the type of
+    // this binding, because the cursor read from it feeds the next request's body.
+    const data: Snapshot & { ordersNextCursor?: unknown } = await post<Snapshot & { ordersNextCursor?: unknown }>(
+      '/read/snapshot',
+      cursor ? { ordersCursor: cursor } : {},
+      token
+    );
+    orders.push(...(data.orders || []));
+    if (!first) first = data;
+    // Anything unexpected stops the walk rather than looping on a malformed value.
+    cursor = isCursor(data.ordersNextCursor) ? data.ordersNextCursor : null;
+    if (!cursor) break;
+  }
+
+  const data = (first || {}) as Snapshot;
   return {
-    orders: data.orders || [],
+    orders,
     customers: data.customers || [],
     inventory: data.inventory || [],
     menuItems: data.menuItems || [],
     movements: data.movements || [],
     ...readBranchRegistry(data),
     cashiers: data.cashiers || [],
-    // Absent on an older worker; the portal treats that as "nothing was reported short".
+    // Orders are no longer capped, so they cannot be in this set. The other collections
+    // still can be; the portal says so when they are.
     truncated: data.truncated || {},
     serverTime: data.serverTime || new Date().toISOString(),
   };

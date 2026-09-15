@@ -598,10 +598,53 @@ function paged(result, limit) {
   return { rows: rows.slice(0, limit), truncated: true };
 }
 
-async function readSnapshot(db) {
-  // `limit + 1` is deliberate: the extra row is a probe, never shown.
-  const [orders, customers, inventory, menuItems, movements, branches, deletedBranches] = await db.batch([
-    db.prepare(`SELECT * FROM orders WHERE deleted_at IS NULL ORDER BY createdAt DESC LIMIT ?`).bind(READ_LIMIT + 1),
+/**
+ * Reads one page of orders by keyset cursor.
+ *
+ * Revenue, best sellers and the daily chart are all computed over the orders collection, so a
+ * page cap there does not merely hide rows — it makes every total a lower bound. The portal
+ * used to receive the first N orders and present the resulting revenue as the day's figure.
+ *
+ * The cursor is (createdAt, id) so the walk is stable: a bare timestamp ties on identical
+ * values, and any order written between two pages would otherwise be skipped or repeated.
+ */
+async function readOrdersPage(db, cursor, limit) {
+  const requested = Number(limit) > 0 ? Number(limit) : READ_LIMIT;
+  const pageSize = Math.min(requested, READ_LIMIT);
+  const statement = cursor
+    ? db.prepare(`
+        SELECT * FROM orders
+        WHERE deleted_at IS NULL AND (createdAt < ? OR (createdAt = ? AND id < ?))
+        ORDER BY createdAt DESC, id DESC
+        LIMIT ?
+      `).bind(cursor.createdAt, cursor.createdAt, cursor.id, pageSize + 1)
+    : db.prepare(`
+        SELECT * FROM orders
+        WHERE deleted_at IS NULL
+        ORDER BY createdAt DESC, id DESC
+        LIMIT ?
+      `).bind(pageSize + 1);
+
+  const result = await statement.all();
+  const rows = (result && result.results) || [];
+  const hasMore = rows.length > pageSize;
+  const page = hasMore ? rows.slice(0, pageSize) : rows;
+  const last = page[page.length - 1];
+
+  return {
+    rows: page,
+    nextCursor: hasMore && last ? { createdAt: String(last.createdAt), id: String(last.id) } : null,
+  };
+}
+
+async function readSnapshot(db, options = {}) {
+  const { ordersCursor = null, ordersLimit = null } = options || {};
+
+  const orders = await readOrdersPage(db, ordersCursor, ordersLimit);
+
+  // The orders collection is paged, so the rest are read alongside it rather than in one
+  // batch: a caller walking pages only needs the smaller collections once.
+  const [customers, inventory, menuItems, movements, branches, deletedBranches] = await db.batch([
     db.prepare(`SELECT * FROM customers WHERE deleted_at IS NULL ORDER BY points DESC LIMIT ?`).bind(READ_LIMIT + 1),
     db.prepare(`SELECT * FROM inventory WHERE deleted_at IS NULL ORDER BY name ASC LIMIT ?`).bind(READ_LIMIT + 1),
     db.prepare(`SELECT * FROM menu_items WHERE deleted_at IS NULL ORDER BY category, name LIMIT ?`).bind(READ_LIMIT + 1),
@@ -614,7 +657,8 @@ async function readSnapshot(db) {
   const registry = completeBranchRegistry(branches, deletedBranches);
 
   const page = {
-    orders: paged(orders, READ_LIMIT),
+    // Orders are walked by cursor, so there is no page cap left to hit.
+    orders: { rows: orders.rows, truncated: false },
     customers: paged(customers, READ_LIMIT),
     inventory: paged(inventory, READ_LIMIT),
     menuItems: paged(menuItems, READ_LIMIT),
@@ -638,6 +682,9 @@ async function readSnapshot(db) {
     ),
     // Lets the portal show the age of what it is displaying rather than the age of its poll.
     serverTime: nowIso(),
+    // Present only when there is more to fetch. null means the caller has everything, which
+    // is what lets it stop asking instead of guessing from a row count.
+    ordersNextCursor: orders.nextCursor,
   };
 }
 
@@ -1030,7 +1077,17 @@ export default {
         return json({ success: false, error: 'Unauthorized' }, 401, origin);
       }
       try {
-        return json({ success: true, ...(await readSnapshot(env.DB)) }, 200, origin);
+        // The cursor is caller-supplied, so it is parsed rather than trusted: a malformed one
+        // is answered as "no cursor" instead of throwing, which would turn a bad request into
+        // a 500 on the endpoint a manager's whole dashboard depends on.
+        const cursor = payload.ordersCursor;
+        const options = {
+          ordersCursor: cursor && typeof cursor === 'object' && cursor.createdAt != null && cursor.id != null
+            ? { createdAt: String(cursor.createdAt), id: String(cursor.id) }
+            : null,
+          ordersLimit: payload.ordersLimit ?? null,
+        };
+        return json({ success: true, ...(await readSnapshot(env.DB, options)) }, 200, origin);
       } catch (err) {
         return json({ success: false, error: clientError(err, 500) }, 500, origin);
       }
