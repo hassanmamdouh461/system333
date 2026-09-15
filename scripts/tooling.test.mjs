@@ -50,3 +50,19 @@ test('bundle scan rejects sentinel values and key headers, accepts public URL', 
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('bundle scan covers a bundle whose entry is not index.html', () => {
+  // The public menu ships as public-menu.html. Requiring index.html meant the most exposed
+  // artefact in the system — the one served to customers — was never scanned, so a key
+  // leaked into it would have passed the build.
+  const dir = mkdtempSync(join(tmpdir(), 'engaz-scan-entry-'));
+  try {
+    writeFileSync(join(dir, 'public-menu.html'), '<html></html>');
+    writeFileSync(join(dir, 'menu.js'), 'https://api-reports.engaz.tech');
+    assert.equal(scanBundle(dir, []), 2, 'a non-index entry still counts as a bundle');
+
+    // And it is scanned in earnest, not merely accepted.
+    writeFileSync(join(dir, 'menu.js'), 'VITE_REPORTS_API_KEY');
+    assert.throws(() => scanBundle(dir, []), /secret scan failed/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

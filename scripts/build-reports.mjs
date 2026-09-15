@@ -30,7 +30,13 @@ export function scanBundle(directory, secrets) {
     }
   };
   visit(directory);
-  if (!files || !existsSync(join(directory, 'index.html'))) throw new Error('Portal bundle missing/empty');
+  // Any top-level HTML entry counts, not just index.html. The public menu is built with
+  // public-menu.html, so requiring index.html silently exempted the one bundle served to
+  // customers — the most exposed artefact there is — from the very scan meant to catch a
+  // leaked key. An empty or entry-less directory is still a failure.
+  const hasEntry = existsSync(directory) &&
+    readdirSync(directory, { withFileTypes: true }).some((e) => e.isFile() && e.name.endsWith('.html'));
+  if (!files || !hasEntry) throw new Error('Portal bundle missing/empty');
   return files;
 }
 
