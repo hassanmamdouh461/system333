@@ -17,6 +17,10 @@ function getBranchId() {
     const row = sqlite.prepare("SELECT value FROM settings WHERE key = 'branch_id'").get();
     return row ? row.value : 'default';
   } catch (e) {
+    // Worth naming. A read failure is indistinguishable from "this device is on the default
+    // branch", and the difference decides whose rows this till pushes — so a database error
+    // here would silently file one branch's sales under another, or vice versa.
+    console.error('[database] Could not read branch_id; falling back to "default":', e && e.message);
     return 'default';
   }
 }
