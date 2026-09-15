@@ -625,6 +625,25 @@ function peekDailyOrderNumber(localDateStr) {
 // ─── Sync metadata helpers (Issue 19) ────────────────────────────────────────
 const SYNCABLE_TABLES = new Set(['orders', 'customers', 'menu_items', 'inventory', 'inventory_transactions', 'points_transactions', 'cashiers']);
 
+/**
+ * The next `updated_at`, guaranteed to be later than the value it replaces.
+ *
+ * Last-writer-wins decides every conflict in this system, and it compares `updated_at`
+ * strings. Two writes inside the same millisecond would produce the same timestamp, the
+ * comparison would be a tie, and the older row would win — so a monotonic step is not a
+ * nicety here, it is what makes the ordering total.
+ *
+ * Defined once, because five repositories had their own copy: a fix to the rule (a clock
+ * that jumps backwards, a stored value in a format `Date.parse` rejects) previously had to
+ * be made in five places, and missing one of them silently reintroduces the tie.
+ *
+ * @param {string|null} previous the timestamp being superseded
+ * @returns {string} an ISO timestamp strictly greater than `previous`
+ */
+function nextUpdatedAt(previous) {
+  return new Date(Math.max(Date.now(), (Date.parse(previous) || 0) + 1)).toISOString();
+}
+
 // After this many consecutive failures a row is parked instead of retried forever.
 // sync_attempts was previously incremented and never read, so one malformed row
 // blocked its whole table's batch on every cycle indefinitely.
@@ -809,6 +828,7 @@ module.exports = {
   getDb,
   getBranchId,
   getSettings,
+  nextUpdatedAt,
   saveSetting,
   deleteSetting,
   getSyncStats,

@@ -24,9 +24,10 @@ function derivePaidAmount(order, grandTotal) {
 const { MAX_SYNC_ATTEMPTS } = database;
 
 // Monotonic per-row versions also cover multiple edits within one millisecond.
-function nextUpdatedAt(previous) {
-  return new Date(Math.max(Date.now(), (Date.parse(previous) || 0) + 1)).toISOString();
-}
+// The monotonic-step rule lives in database.cjs: five copies of it meant a fix
+// had to be made five times, and missing one silently reintroduces a timestamp tie —
+// which is a lost write under last-writer-wins.
+const { nextUpdatedAt } = database;
 
 class OrderRepository {
   getDb() {

@@ -3,9 +3,10 @@ const { randomUUID } = require('crypto');
 const { MAX_SYNC_ATTEMPTS } = database;
 
 // A second edit in the same millisecond must still have a different push version.
-function nextUpdatedAt(previous) {
-  return new Date(Math.max(Date.now(), (Date.parse(previous) || 0) + 1)).toISOString();
-}
+// The monotonic-step rule lives in database.cjs: five copies of it meant a fix
+// had to be made five times, and missing one silently reintroduces a timestamp tie —
+// which is a lost write under last-writer-wins.
+const { nextUpdatedAt } = database;
 
 /** Per-branch till operators, plus explicitly shared (NULL branch) operators. */
 class CashierRepository {

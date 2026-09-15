@@ -5,9 +5,10 @@ const { MAX_SYNC_ATTEMPTS } = database;
 
 // Monotonic per-row version: a second edit in the same millisecond still gets a newer
 // updated_at, which the sync version guards compare on.
-function nextUpdatedAt(previous) {
-  return new Date(Math.max(Date.now(), (Date.parse(previous) || 0) + 1)).toISOString();
-}
+// The monotonic-step rule lives in database.cjs: five copies of it meant a fix
+// had to be made five times, and missing one silently reintroduces a timestamp tie —
+// which is a lost write under last-writer-wins.
+const { nextUpdatedAt } = database;
 
 class InventoryRepository {
   getDb() {
