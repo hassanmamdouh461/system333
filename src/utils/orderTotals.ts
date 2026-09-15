@@ -32,6 +32,15 @@ export interface OrderTotalsSnapshot {
   taxRate: number;
   taxAmount: number;
   grandTotal: number;
+  /**
+   * True when the tax above was not stored on the order but recomputed from today's rate.
+   *
+   * Rows written before the tax-snapshot columns existed have no taxAmount, so the reader
+   * has to assume something — and assuming the *current* rate is a guess about a past
+   * order. Reporting that guess as fact is what made profit look precise when part of it
+   * was inferred. Callers can now say so instead.
+   */
+  taxIsEstimated: boolean;
 }
 
 export interface OrderTotalFields {
@@ -62,7 +71,14 @@ export function buildOrderTotals(items: PricedLine[], taxRate: number): OrderTot
     items.reduce((sum, item) => sum + roundMoney(toFiniteNumber(item.price) * toFiniteNumber(item.quantity)), 0)
   );
   const taxAmount = roundMoney(subtotal * rate);
-  return { subtotal, taxRate: rate, taxAmount, grandTotal: roundMoney(subtotal + taxAmount) };
+  // Computed at creation from the rate actually charged, so this is the real tax, not a guess.
+  return {
+    subtotal,
+    taxRate: rate,
+    taxAmount,
+    grandTotal: roundMoney(subtotal + taxAmount),
+    taxIsEstimated: false,
+  };
 }
 
 /**
@@ -92,7 +108,18 @@ export function orderTotals(order: OrderTotalFields, fallbackTaxRate?: number): 
     ? roundMoney(storedGrandTotal)
     : roundMoney(subtotal + taxAmount);
 
-  return { subtotal, taxRate: rate, taxAmount, grandTotal };
+  return {
+    subtotal,
+    taxRate: rate,
+    taxAmount,
+    grandTotal,
+    taxIsEstimated: !Number.isFinite(storedTaxAmount),
+  };
+}
+
+/** Whether an order's tax had to be assumed rather than read. */
+export function orderTaxIsEstimated(order: OrderTotalFields): boolean {
+  return orderTotals(order).taxIsEstimated;
 }
 
 /** What the customer owes for this order, tax included. */

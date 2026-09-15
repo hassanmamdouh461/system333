@@ -95,6 +95,14 @@ export default function Reports() {
   // The number keeps its sign; only the card floors it, and it says so when it does.
   const profitDisplay = useMemo(() => formatProfitForDisplay(netProfit), [netProfit]);
 
+  // Orders whose tax was never stored, so the figure above was recomputed from today's rate.
+  // Profit is only as good as the tax subtracted from it, and a part-inferred number shown
+  // without that caveat is the difference between a real margin and a plausible one.
+  const estimatedTaxOrders = useMemo(
+    () => analytics.completedPeriod.filter((o) => orderTotals(o).taxIsEstimated).length,
+    [analytics.completedPeriod]
+  );
+
   const lowStockItems = useMemo(
     () => inventory.filter(isLowStock),
     [inventory]
@@ -219,10 +227,18 @@ export default function Reports() {
           color="orange"
         />
         <StatCard
-          label={profitDisplay.isLoss ? `${t('Net Profit')} (${t('Loss')})` : t('Net Profit')}
+          label={
+            estimatedTaxOrders > 0
+              ? `${profitDisplay.isLoss ? `${t('Net Profit')} (${t('Loss')})` : t('Net Profit')} (${t('Estimated')})`
+              : profitDisplay.isLoss ? `${t('Net Profit')} (${t('Loss')})` : t('Net Profit')
+          }
           value={`${profitDisplay.isLoss ? '-' : ''}${profitDisplay.amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ${currencyStr}`}
           icon={Coins}
-          trend={t('Earnings after COGS & tax')}
+          trend={
+            estimatedTaxOrders > 0
+              ? `${t('Earnings after COGS & tax')} — ${estimatedTaxOrders} ${t('orders without stored tax')}`
+              : t('Earnings after COGS & tax')
+          }
           color={profitDisplay.isLoss ? 'red' : 'green'}
         />
         <StatCard

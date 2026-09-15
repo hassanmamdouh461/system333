@@ -4,6 +4,7 @@ import {
   orderTotals,
   orderGrandTotal,
   orderRevenue,
+  orderTaxIsEstimated,
   allocateOrderRevenue,
   lineItemTotal,
   roundMoney,
@@ -68,7 +69,7 @@ describe('buildOrderTotals', () => {
 
   it('treats an empty basket as zero, not NaN', () => {
     expect(buildOrderTotals([], 0.1)).toEqual({
-      subtotal: 0, taxRate: 0.1, taxAmount: 0, grandTotal: 0,
+      subtotal: 0, taxRate: 0.1, taxAmount: 0, grandTotal: 0, taxIsEstimated: false,
     });
   });
 });
@@ -76,7 +77,9 @@ describe('buildOrderTotals', () => {
 describe('orderTotals', () => {
   it('returns the stored snapshot untouched instead of re-taxing it', () => {
     const order = { totalAmount: 18.15, subtotal: 16.5, taxRate: 0.1, taxAmount: 1.65, grandTotal: 18.15 };
-    expect(orderTotals(order)).toEqual({ subtotal: 16.5, taxRate: 0.1, taxAmount: 1.65, grandTotal: 18.15 });
+    expect(orderTotals(order)).toEqual({
+      subtotal: 16.5, taxRate: 0.1, taxAmount: 1.65, grandTotal: 18.15, taxIsEstimated: false,
+    });
   });
 
   it('honours a stored zero grand total instead of treating it as missing', () => {
@@ -90,16 +93,27 @@ describe('orderTotals', () => {
 
   it('treats null snapshot fields as absent, including the tax rate', () => {
     expect(orderTotals({ totalAmount: 20, subtotal: null, taxRate: null, taxAmount: null, grandTotal: null }, 0.1))
-      .toEqual({ subtotal: 20, taxRate: 0.1, taxAmount: 2, grandTotal: 22 });
+      .toEqual({ subtotal: 20, taxRate: 0.1, taxAmount: 2, grandTotal: 22, taxIsEstimated: true });
   });
 
   it('preserves explicit zero snapshots and tax rates', () => {
     expect(orderTotals({ totalAmount: 20, subtotal: 0, taxRate: 0, taxAmount: 0, grandTotal: 0 }, 0.1))
-      .toEqual({ subtotal: 0, taxRate: 0, taxAmount: 0, grandTotal: 0 });
+      .toEqual({ subtotal: 0, taxRate: 0, taxAmount: 0, grandTotal: 0, taxIsEstimated: false });
   });
 
   it('prefers the order rate over the caller fallback', () => {
     expect(orderGrandTotal({ totalAmount: 100, taxRate: 0.2 }, 0.1)).toBe(120);
+  });
+
+  it('says when the tax was assumed rather than read', () => {
+    // A row written before the snapshot columns existed has no stored tax, so the reader
+    // applies today's rate to a past order. That is a guess, and profit inherits it.
+    expect(orderTaxIsEstimated({ totalAmount: 20 })).toBe(true);
+    expect(orderTaxIsEstimated({ totalAmount: 20, taxAmount: null })).toBe(true);
+    expect(orderTaxIsEstimated({ totalAmount: 20, taxAmount: 2 })).toBe(false);
+    // An explicit zero is a recorded fact, not a missing one: "no tax" and "unknown tax"
+    // are different claims, and conflating them is how a pre-tax order gets taxed twice.
+    expect(orderTaxIsEstimated({ totalAmount: 20, taxAmount: 0 })).toBe(false);
   });
 });
 

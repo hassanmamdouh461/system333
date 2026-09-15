@@ -67,6 +67,8 @@ export const translations: TranslationTable = {
   'Expected Potential Profit': 'الأرباح المتوقعة',
   'Potential Value Loss': 'القيمة المفقودة المتوقعة',
   'Loss': 'خسارة',
+  'Estimated': 'تقديري',
+  'orders without stored tax': 'طلبات بلا ضريبة محفوظة',
   'Retry': 'إعادة المحاولة',
   'Counted Quantity': 'الكمية المعدودة',
   'Current stock': 'الرصيد الحالي',
