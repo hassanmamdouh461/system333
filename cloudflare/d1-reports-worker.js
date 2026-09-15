@@ -563,16 +563,24 @@ const SYNC_TABLES = {
     ],
   },
 
+  // The value after a movement is `balanceAfter` in the POS database and in the local SQLite
+  // ledger; this database was created with a shorter `balance` column for the same thing. The
+  // two now carry the same value under both names, so a reader written against either schema
+  // sees the same number, and the drift cannot silently become a data loss during a migration.
   'points-transactions': {
     table: 'points_transactions',
     upsert: `INSERT OR IGNORE INTO points_transactions
-             (id, customerId, orderId, type, points, balance, createdAt, branch_id)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    params: (e) => [
-      str(e.id), str(e.customerId, ''), capped(str(e.orderId), MAX_TEXT_BYTES), str(e.type, ''),
-      num(e.points, 0),
-      num(e.balanceAfter ?? e.balance), str(e.createdAt, nowIso()), str(e.branchId ?? e.branch_id),
-    ],
+             (id, customerId, orderId, type, points, balance, balanceAfter, createdAt, branch_id)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    params: (e) => {
+      const balance = num(e.balanceAfter ?? e.balance);
+      return [
+        str(e.id), str(e.customerId, ''), capped(str(e.orderId), MAX_TEXT_BYTES), str(e.type, ''),
+        num(e.points, 0),
+        balance, balance,
+        str(e.createdAt, nowIso()), str(e.branchId ?? e.branch_id),
+      ];
+    },
   },
 };
 
@@ -812,6 +820,11 @@ async function runMigration(db) {
     id TEXT PRIMARY KEY, customerId TEXT, orderId TEXT, type TEXT,
     points REAL, balance REAL, createdAt TEXT, branch_id TEXT
   )`));
+  // The POS database and the desktop both call this column `balanceAfter`; this one was
+  // created as `balance`. Added here so the mirror stops being a schema of its own — without
+  // it, the ledger write below would fail against any database that has not been migrated.
+  results.push(await tryExec('points_transactions.balanceAfter',
+    'ALTER TABLE points_transactions ADD COLUMN balanceAfter REAL'));
   results.push(await tryExec('branches', `CREATE TABLE IF NOT EXISTS branches (
     id TEXT PRIMARY KEY, name TEXT NOT NULL, phone TEXT, address TEXT,
     active INTEGER DEFAULT 1, created_at TEXT, updated_at TEXT, deleted_at TEXT

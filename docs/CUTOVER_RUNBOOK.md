@@ -114,6 +114,25 @@ do this.
 
 ---
 
+## Reports worker: one-step migration is required
+
+The reports database named the loyalty balance column `balance` while the POS database and the desktop
+call it `balanceAfter`. The mirror now writes the same value under **both** names so a reader written
+against either schema sees the same number.
+
+That means the reports worker's `points_transactions` write names a column that does not exist until the
+migration has run:
+
+```bash
+curl -sS -X POST https://api-reports.engaz.tech/migrate \
+  -H "X-API-Key: $REPORTS_API_KEY" -d '{}'
+```
+
+**Run this as part of deploying the reports worker.** Until it runs, loyalty-ledger mirrors fail — they
+are **not** lost: the desktop keeps them in its outbox and flushes them once the column exists. Expect
+`failedCount: 0` in the response; the `balanceAfter` step is idempotent, and existing rows are covered
+because the mirror replays from the outbox rather than relying on a backfill.
+
 ## Rollback
 
 Per device: set the worker URL back to the old `*.workers.dev` value. No redeploy needed.
