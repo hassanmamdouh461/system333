@@ -1,107 +1,142 @@
 import { MenuItem } from '../types/menu';
+import { PublicMenuConfig } from '../types/menuBranding';
 
-const APPWRITE_ENDPOINT = 'https://fra.cloud.appwrite.io/v1';
-const APPWRITE_PROJECT = '69879ae70002444f3f38';
-const APPWRITE_DB = '6a545eb00016d126bc82';
+interface MenuItemRow {
+  id: string;
+  name: string;
+  price: number | string;
+  category: string;
+  description?: string | null;
+  image?: string | null;
+  available?: number | boolean | null;
+}
+
+function mapRow(row: MenuItemRow): MenuItem {
+  return {
+    id: row.id,
+    name: row.name,
+    price: Number(row.price) || 0,
+    category: row.category,
+    description: row.description || '',
+    image: row.image || '',
+    available: row.available === undefined || row.available === null ? true : Boolean(row.available),
+    isSynced: true,
+  };
+}
+
+/** Throws when a mutation is attempted in the web build, which has no local database. */
+function requireDesktop(action: string) {
+  if (!window.electronAPI) {
+    throw new Error(`${action} متاح فقط في تطبيق سطح المكتب`);
+  }
+  return window.electronAPI;
+}
 
 /**
- * Menu Service - Handle all CRUD operations for Menu Items using SQLite via Electron IPC
+ * Menu CRUD. Reads work in both builds — the desktop app from local SQLite, the browser
+ * from the central worker — while writes are desktop-only because the branch database is
+ * the source of truth.
  */
 export const menuService = {
-  /**
-   * Fetch all menu items from local SQLite DB or Appwrite fallback
-   */
   async getAll(): Promise<MenuItem[]> {
-    const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
-    if (isElectron) {
+    if (window.electronAPI) {
       try {
         return await window.electronAPI.getMenu();
       } catch (error) {
         console.error('[menuService] Error fetching menu items from SQLite:', error);
-        throw new Error('Failed to fetch menu items');
-      }
-    } else {
-      // Browser/Web fallback — fetch from central Cloudflare D1 database
-      try {
-        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech';
-        const workerApiKey = import.meta.env.VITE_CF_WORKER_API_KEY || '';
-        const res = await fetch(workerUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
-          },
-          body: JSON.stringify({
-            sql: 'SELECT * FROM menu_items ORDER BY category, name'
-          })
-        });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error || 'D1 query failed');
-        const docs = data.result[0]?.results || [];
-        return docs.map((doc: any) => ({
-          id: doc.id,
-          name: doc.name,
-          price: Number(doc.price),
-          category: doc.category,
-          description: doc.description || "",
-          image: doc.image || "",
-          available: doc.available !== undefined ? Boolean(doc.available) : true,
-          isSynced: true
-        }));
-      } catch (error) {
-        console.error('[menuService] Error fetching menu items from D1:', error);
-        throw new Error('Failed to fetch menu items');
+        throw new Error('فشل قراءة أصناف القائمة');
       }
     }
+
+    // In the browser (public menu / web build) the menu is read from the public reports
+    // worker endpoint, which needs no credential. There is no authenticated fallback any
+    // more: the key that fallback used to send was inlined into the public bundle, so the
+    // whole path had to go. Reading the live menu is the public endpoint's job.
+    try {
+      const reportsUrl = (import.meta.env.VITE_REPORTS_WORKER_URL as string) || 'https://api-reports.engaz.tech';
+      const res = await fetch(`${reportsUrl.replace(/\/+$/, '')}/read/public-menu`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success && Array.isArray(data.menuItems)) {
+          return data.menuItems.map(mapRow);
+        }
+      }
+    } catch (e) {
+      console.warn('[menuService] Public menu fetch from reports worker failed:', e);
+    }
+
+    throw new Error('فشل قراءة أصناف القائمة');
   },
 
-  /**
-   * Create a new menu item in local SQLite DB
-   */
+  async getPublicMenuData(): Promise<{
+    menuItems: MenuItem[];
+    config: PublicMenuConfig | null;
+    /** True when the endpoint could not be reached: callers must surface a real message. */
+    unavailable?: boolean;
+  }> {
+    try {
+      const reportsUrl = (import.meta.env.VITE_REPORTS_WORKER_URL as string) || 'https://api-reports.engaz.tech';
+      const res = await fetch(`${reportsUrl.replace(/\/+$/, '')}/read/public-menu`, {
+        method: 'GET',
+        headers: { 'Content-Type': 'application/json' },
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data && data.success && Array.isArray(data.menuItems)) {
+          return {
+            menuItems: data.menuItems.map(mapRow),
+            config: data.config || null,
+          };
+        }
+      }
+    } catch (e) {
+      console.warn('[menuService] Public menu fetch with config failed:', e);
+    }
+
+    // No retry through getAll(): that method re-requests the very same /read/public-menu
+    // endpoint, so a failure here is a failure there. Retrying would double the browser's
+    // requests against an endpoint that just proved it is unreachable, and on the desktop
+    // build it would silently return the branch's local menu instead of the published one —
+    // which looks like success while showing stale data. Report unavailability instead.
+    return { menuItems: [], config: null, unavailable: true };
+  },
+
   async create(item: Omit<MenuItem, 'id'>): Promise<MenuItem> {
     try {
-      return await window.electronAPI.createMenuItem(item);
+      return await requireDesktop('إضافة صنف للقائمة').createMenuItem(item);
     } catch (error) {
       console.error('[menuService] Error creating menu item:', error);
-      throw new Error('Failed to create menu item');
+      throw new Error('فشل إضافة صنف للقائمة');
     }
   },
 
-  /**
-   * Update an existing menu item in local SQLite DB
-   */
   async update(id: string, data: Partial<Omit<MenuItem, 'id'>>): Promise<MenuItem> {
     try {
-      return await window.electronAPI.updateMenuItem(id, data);
+      return await requireDesktop('تعديل صنف القائمة').updateMenuItem(id, data);
     } catch (error) {
       console.error('[menuService] Error updating menu item:', error);
-      throw new Error('Failed to update menu item');
+      throw new Error('فشل تعديل صنف القائمة');
     }
   },
 
-  /**
-   * Delete a menu item from local SQLite DB
-   */
   async delete(id: string): Promise<void> {
     try {
-      await window.electronAPI.deleteMenuItem(id);
+      await requireDesktop('حذف صنف من القائمة').deleteMenuItem(id);
     } catch (error) {
       console.error('[menuService] Error deleting menu item:', error);
-      throw new Error('Failed to delete menu item');
+      throw new Error('فشل حذف صنف من القائمة');
     }
   },
 
-  /**
-   * Reset menu to default items (delete all + recreate)
-   */
   async resetToDefaults(defaultItems: Omit<MenuItem, 'id'>[]): Promise<MenuItem[]> {
     try {
-      return await window.electronAPI.resetMenu(defaultItems);
+      return await requireDesktop('إعادة تعيين القائمة').resetMenu(defaultItems);
     } catch (error) {
       console.error('[menuService] Error resetting menu to defaults:', error);
-      throw new Error('Failed to reset menu to defaults');
+      throw new Error('فشل إعادة تعيين القائمة');
     }
   },
 };
-

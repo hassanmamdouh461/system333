@@ -22,6 +22,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveCustomer: (customer) => ipcRenderer.invoke('db:save-customer', customer),
   deleteCustomer: (id) => ipcRenderer.invoke('db:delete-customer', id),
 
+  getCashiers: (branchId) => ipcRenderer.invoke('db:get-cashiers', branchId),
+  createCashier: (name, avatar) => ipcRenderer.invoke('db:create-cashier', name, avatar),
+  deleteCashier: (id) => ipcRenderer.invoke('db:delete-cashier', id),
+  renameCashier: (id, name) => ipcRenderer.invoke('db:rename-cashier', id, name),
+  setCashierAvatar: (id, avatar) => ipcRenderer.invoke('db:set-cashier-avatar', id, avatar),
+
   getSettings: () => ipcRenderer.invoke('db:get-settings'),
   saveSetting: (key, value) => ipcRenderer.invoke('db:save-setting', key, value),
   deleteSetting: (key) => ipcRenderer.invoke('db:delete-setting', key),
@@ -40,16 +46,21 @@ contextBridge.exposeInMainWorld('electronAPI', {
   saveMenuRecipe: (menuItemId, ingredients) => ipcRenderer.invoke('db:save-menu-recipe', menuItemId, ingredients),
   getRecipeCost: (menuItemId) => ipcRenderer.invoke('db:get-recipe-cost', menuItemId),
 
+  // Public menu identity. The reports write key it needs stays in the main process, so a
+  // bundle built from the renderer sources carries no credential.
+  publishMenuConfig: (config) => ipcRenderer.invoke('menu:publish-config', config),
+
   // Sync Engine APIs
   getSyncStatus: () => ipcRenderer.invoke('sync:get-status'),
   triggerSync: () => ipcRenderer.invoke('sync:trigger-now'),
+  getParkedSyncRows: () => ipcRenderer.invoke('sync:get-parked-rows'),
+  retryParkedSyncRows: (table, ids) => ipcRenderer.invoke('sync:retry-parked-rows', table, ids),
   onSyncStatusUpdate: (callback) => {
     const listener = (event, status) => callback(status);
     ipcRenderer.on('sync:status-update', listener);
     return () => ipcRenderer.removeListener('sync:status-update', listener);
   },
-  
-  // Manager Dashboard cloud bypass APIs
-  getManagerOrders: () => ipcRenderer.invoke('db:get-manager-orders'),
-  getManagerCustomers: () => ipcRenderer.invoke('db:get-manager-customers')
+
+  // Printing API
+  printReceipt: (html) => ipcRenderer.invoke('app:print-receipt', html),
 });

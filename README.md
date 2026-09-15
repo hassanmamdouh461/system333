@@ -1,220 +1,203 @@
 <div align="center">
 
-# ☕ BrewMaster
-### Full-Stack Coffee Shop Point-of-Sale System
+# ☕ Engaz POS
+### نظام نقاط بيع للمطاعم والكافيهات — يعمل محلياً، يتزامن سحابياً
 
-*Built for real cafés. Engineered for scale.*
+*Built for real cafés. Works offline, syncs when online.*
 
 [![React](https://img.shields.io/badge/React-18-61DAFB?style=for-the-badge&logo=react&logoColor=black)](https://reactjs.org/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5-3178C6?style=for-the-badge&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
-[![Vite](https://img.shields.io/badge/Vite-5-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
+[![Electron](https://img.shields.io/badge/Electron-29-47848F?style=for-the-badge&logo=electron&logoColor=white)](https://www.electronjs.org/)
+[![Vite](https://img.shields.io/badge/Vite-7-646CFF?style=for-the-badge&logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3-06B6D4?style=for-the-badge&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
-[![Appwrite](https://img.shields.io/badge/Appwrite-BaaS-FD366E?style=for-the-badge&logo=appwrite&logoColor=white)](https://appwrite.io/)
-[![Framer Motion](https://img.shields.io/badge/Framer_Motion-Animations-0055FF?style=for-the-badge&logo=framer&logoColor=white)](https://www.framer.com/motion/)
+[![Cloudflare Workers](https://img.shields.io/badge/Cloudflare-Workers/D1-F38020?style=for-the-badge&logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 
 </div>
 
 ---
 
-## 🎬 Demo & Screenshots
+## 📐 البنية العامة
 
-> **🚀 [Live Demo — Try it now](https://cafeflow.appwrite.network/reports)**
+نظام من ثلاث طبقات حول قاعدة بيانات محلية:
 
-| Dashboard | Kanban Orders | Payment |
-|:---------:|:-------------:|:-------:|
-| ![Dashboard](./public/screenshots/dashboard.png) | ![Orders](./public/screenshots/orders.png) | ![Payment](./public/screenshots/payment.png) |
+```
+┌──────────────────────────────┐   IPC (contextIsolation)   ┌───────────────────────────┐
+│   Renderer (React + Vite)    │ ─────────────────────────► │   Electron Main Process   │
+│   src/ — POS UI, screens     │ ◄───────────────────────── │   electron/*.cjs          │
+└──────────────────────────────┘      preload.cjs bridge    │  • SQLite (better-sqlite3)│
+                                                        │  • Repositories (scoped   │
+                                                        │    by branch_id)          │
+                                                        │  • Sync Engine            │
+                                                        └────────────┬──────────────┘
+                                                                     │ HTTPS (X-API-Key)
+                                                       ┌─────────────▼─────────────┐
+                                                       │  Cloudflare D1 Workers    │
+                                                       │  • api.engaz.tech  (POS)  │
+                                                       │  • api-reports…    (Portal)│
+                                                       └───────────────────────────┘
+```
 
-| Menu Management | Reports & Analytics |
-|:---------------:|:-------------------:|
-| ![Menu](./public/screenshots/menu.png) | ![Reports](./public/screenshots/reports.png) |
+- **قاعدة الحقيقة محلية**: كل عملية تُكتب في SQLite على الجهاز أولاً (`better-sqlite3`، وضع WAL)، والتطبيق يعمل كاملاً بلا إنترنت.
+- **المزامنة سحابية**: محرك خلفي (`electron/syncEngine.cjs`) يدفع الصفوف غير المتزامنة ويجذب تغييرات الفروع الأخرى كل 30 ثانية مع backoff عند الفشل، وصفّ ذهاب وإياب لكل جدول.
+- **فصل قاعدتين في السحابة**: قاعدة POS الإنتاجية، وقاعدة تقارير معزولة يقرأ منها بوابة المديرين (`reporting.engaz.tech`) — التطبيق يكتب في كلتيهما، والبوابة لا تحمل أي مفتاح كتابة.
+- **كل استعلامات SQL في الـ Worker مكتوبة داخل الـ Worker نفسه**: العميل يرسل بيانات وفلاتر مسماة فقط، لا نصوص SQL.
+- **حذف ناعم (tombstones)** في كل الجداول حتى تنتقل الحذوفات بين الفروع.
+
+> هذا المستودع لا يستخدم Appwrite. القديم المذكور في بعض الوثائق أزيل مع انتقال المشروع إلى Electron + SQLite + Cloudflare D1.
 
 ---
 
-## ✨ Features
+## ✨ المزايا
 
-### 🏪 Business Features
-- **Live Kanban Board** — Visual order pipeline: `New → Preparing → Ready`, drag-free with real-time sync
-- **Smart Payment Flow** — Cashier screen with sortable unpaid orders, cash/card method tracking, and instant status updates
-- **Dynamic Analytics Dashboard** — Revenue, order count, and peak-hour insights with configurable time filters (Today / This Week / This Month)
-- **Menu Management** — Full CRUD for menu items with image support and category organization
-- **Reports Page** — Weekly/monthly financial summaries, strictly calculated from **Paid** orders only
-- **Responsive Design** — Full desktop sidebar + mobile bottom-nav with swipe gestures, works on any tablet or phone
-
-### ⚙️ Technical Features
-- **Real-time multi-device sync** via Appwrite Realtime WebSocket subscriptions
-- **Smart Auth** with `Remember Me` — persists session to `localStorage` or `sessionStorage` based on user preference
-- **Framer Motion** powered animations for order card entrance/exit, modal transitions, and page changes
-- **Performance-optimized Kanban** using `useMemo` single-pass grouping (see [Challenges Conquered](#-challenges-conquered))
-- **Appwrite SDK bug workaround** using direct REST API for PATCH operations (see [Challenges Conquered](#-challenges-conquered))
-- **forwardRef** on animated components to silence React ref warnings in `AnimatePresence`
+- **شاشة POS** — قائمة أصناف بفئات ديناميكية، سلة، فاتورة ضريبية بلقطة مالية محفوظة مع الطلب.
+- **لوحة طلبات (Kanban)** — `New → Preparing → Ready → Completed` مع إلغاء يعيد مكونات الوصفة للمخزون.
+- **شاشة دفع** — فواتير غير مدفوعة/مدفوعة، نقدي/بطاقة، مرشحة لليوم الحالي.
+- **مخزون ووصفات** — خصم تلقائي للمكونات عند البيع، حركات `IN`/`OUT`/`ADJUST` مع دفتر حركة كامل، وتكلفة الوصفة.
+- **ولاء العملاء** — نقاط بالهاتف، دفتر نقاط (`points_transactions`)، استبدال يُرفض إذا زاد عن الرصيد.
+- **تقارير** — إيرادات (تقرأ `paidAmount` فلا تُحسب الفاتورة المخصومة بالكامل)، COGS من الحركات الفعلية، أرباح.
+- **طباعة** — فاتورة عميل + تذكرة مطبخ + تذكرة بار في نافذة معزولة بلا Node وCSP صارم.
+- **تقارير Telegram يومية** — إرسال مجدول بوقت محلي، مع إعادة محاولة تلقائية.
+- **منيو عام للعملاء** — صفحة QR عامة (`menu.engaz.tech`) تُدار من إعدادات التطبيق وتُنشر عبر الـ Worker.
+- **متعدد الفروع** — كل جهاز فرع واحد؛ كل استعلامات SQLite مفلترة بـ `branch_id` داخل العملية الرئيسية.
 
 ---
 
-## 🏛️ System Architecture & Core Logic
+## 🏛️ مبدأ الحسابات: حالة الطلب ≠ حالة الدفع
 
-### The Separation of Concerns Principle
+| المسار | القيم | الشاشة |
+|---|---|---|
+| مسار المطبخ (تشغيلي) | `New → Preparing → Ready → Completed` | Orders |
+| المسار المالي | `Unpaid → Paid` | Payment |
 
-> ⚠️ **This is the most important architectural decision in this system.**
-
-Most café POS systems make a critical accounting mistake: they treat *"order status"* and *"payment status"* as the same thing. BrewMaster solves this with a strict two-flow architecture:
-
-```
-┌─────────────────────────────────┐     ┌──────────────────────────────────┐
-│         KITCHEN FLOW            │     │          FINANCIAL FLOW           │
-│    (Operational / Workflow)     │     │       (Accounting / Revenue)      │
-│                                 │     │                                   │
-│   New ──► Preparing ──► Ready   │     │      Unpaid ────────► Paid        │
-│                                 │     │                                   │
-│  Managed by: Kitchen Staff      │     │  Managed by: Cashier              │
-│  Lives on:   Orders Page        │     │  Lives on:   Payment Page         │
-└─────────────────────────────────┘     └──────────────────────────────────┘
-```
-
-**Why this matters in the real world:**
-
-| Scenario | Naive POS | BrewMaster |
-|----------|-----------|------------|
-| Order delivered but not yet paid | Counted as revenue ❌ | Not counted as revenue ✅ |
-| Order paid but still being prepared | Missing from kitchen board ❌ | Visible on both screens ✅ |
-| End-of-day revenue report | Inflated / inaccurate ❌ | Strictly from `Paid` orders ✅ |
-
-> 💡 **Revenue is never recognized until an order's `paymentStatus` is `"paid"`** — regardless of its kitchen status. This mirrors standard hospitality accounting practice.
+الإيراد لا يُحتسب إلا من الطلبات `Paid`، ويقرأ المبلغ المحصل فعلاً (`paidAmount`) لا الإجمالي — ففاتورة دُفع جزء منها بنقاط ولاء لا تُقرأ كإيرادها الكامل. الضريبة والخصم يُخزنان كلقطة مع الطلب وقت إنشائه، فلا يُعاد حسابها بأثر رجعي.
 
 ---
 
-## 🧗 Challenges Conquered
+## 🚀 التشغيل
 
-### 1. Appwrite SDK v22 Bug — `t.isBigNumber is not a function`
+### المتطلبات
+- Node.js `24.16.0` (سطر 24.x المدعوم — انظر `.nvmrc`)
+- npm `11.x`
 
-While integrating Appwrite's Node.js SDK for document updates, a blocking runtime error surfaced deep inside the SDK internals:
-
-```
-TypeError: t.isBigNumber is not a function
-```
-
-**Investigation:** The bug was traced to Appwrite SDK v22's internal serialization of numeric fields using a misconfigured `bignumber.js` dependency — broken in certain Node/Vite environments.
-
-**Solution:** Rather than downgrading the entire SDK and losing Realtime capabilities, I **reverse-engineered the Appwrite REST API spec** and replaced all `databases.updateDocument()` calls with direct `fetch()` calls to the Appwrite REST endpoint, using the project's API key. The Realtime subscription (which is unaffected) was kept on the SDK. This gave us:
-- ✅ Fully working PATCH operations
-- ✅ Realtime sync preserved
-- ✅ Zero dependency changes
-
-```typescript
-// Direct REST PATCH — bypassing broken SDK method
-await fetch(`${APPWRITE_ENDPOINT}/databases/${DB_ID}/collections/${COL_ID}/documents/${docId}`, {
-  method: 'PATCH',
-  headers: { 'X-Appwrite-Project': PROJECT_ID, 'X-Appwrite-Key': API_KEY, 'Content-Type': 'application/json' },
-  body: JSON.stringify({ data: payload })
-});
-```
-
----
-
-### 2. Kanban Performance — Single-Pass `useMemo` Grouping
-
-The initial Kanban implementation used three separate `Array.filter()` calls to group orders by status (`new`, `preparing`, `ready`). With a large order list, this meant **three full iterations** of the array on every render cycle.
-
-**Solution:** Replaced the three filters with a single `useMemo` that performs **one pass** using `Array.reduce()`:
-
-```typescript
-const groupedOrders = useMemo(() => {
-  return orders.reduce((acc, order) => {
-    acc[order.status].push(order);
-    return acc;
-  }, { new: [], preparing: [], ready: [] } as GroupedOrders);
-}, [orders]);
-```
-
-**Result:** Rendering complexity dropped from `O(3n)` to `O(n)`, eliminating multi-filtering bottlenecks and making column re-renders surgical and isolated.
-
----
-
-## 🛠️ Tech Stack
-
-| Layer | Technology | Purpose |
-|-------|-----------|---------|
-| **Framework** | React 18 + TypeScript | Component architecture, type safety |
-| **Build Tool** | Vite 5 | Lightning-fast HMR and optimized production builds |
-| **Styling** | Tailwind CSS v3 | Utility-first dark-theme UI |
-| **Animations** | Framer Motion | Page transitions, card animations, modal UX |
-| **Backend / BaaS** | Appwrite | Database, Auth, Realtime subscriptions, File Storage |
-| **State** | React Context + Custom Hooks | Lightweight global state without Redux overhead |
-| **Deployment** | Netlify | CI/CD from GitHub, custom headers, SPA redirects |
-
----
-
-## 🚀 Getting Started
-
-### Prerequisites
-- Node.js `>= 18`
-- An [Appwrite](https://appwrite.io/) project (Cloud or Self-Hosted)
-
-### Installation
+### التثبيت
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/your-username/brewmaster-pos.git
-cd brewmaster-pos
-
-# 2. Install dependencies
+git clone https://github.com/hassanmamdouh461/system333.git
+cd system333
 npm install
 ```
 
-### Environment Setup
+### متغيرات البيئة
 
-Create a `.env` file in the project root:
-
-```env
-VITE_APPWRITE_ENDPOINT=https://cloud.appwrite.io/v1
-VITE_APPWRITE_PROJECT_ID=your_project_id
-VITE_APPWRITE_DATABASE_ID=your_database_id
-VITE_APPWRITE_ORDERS_COLLECTION_ID=your_orders_collection_id
-VITE_APPWRITE_MENU_COLLECTION_ID=your_menu_collection_id
-VITE_APPWRITE_API_KEY=your_server_api_key
-```
-
-### Seed Demo Data *(Optional)*
+انسخ القالب ثم املأ القيم (`.env` مدرج في `.gitignore`):
 
 ```bash
-# Populate the database with demo menu items and orders
-npx tsx scripts/seed-appwrite.ts
+cp .env.example .env
 ```
 
-### Run Development Server
+أهم المتغيرات (الشرح الكامل داخل القالب):
+
+| المتغير | الاستخدام |
+|---|---|
+| `VITE_CF_WORKER_URL` | عنوان عامل POS الإنتاجي |
+| `VITE_CF_WORKER_API_KEY` | مفتاح كتابة عامل POS — **يقرأه Electron من `.env` وقت التشغيل، لا يصل إلى أي حزمة متصفح** |
+| `VITE_REPORTS_WORKER_URL` | عنوان عامل التقارير |
+| `VITE_REPORTS_API_KEY` | مفتاح كتابة قاعدة التقارير — للعملية الرئيسية فقط |
+
+> ⚠️ أي متغير يبدأ بـ `VITE_` ويُشار إليه من `src/` يُدمج في الحزمة المبنية. حزمة الجذر تُنشر للعامة على `menu.engaz.tech`، لذا لا يجوز الرجوع إلى أي مفتاح من كود الواجهة. مصادر التطبيق لا تقرأ المفاتيح إطلاقاً.
+
+### التشغيل
 
 ```bash
+# واجهة الويب فقط (بلا Electron)
 npm run dev
+
+# تطبيق سطح المكتب (Vite + Electron معاً)
+npm run electron:dev
+
+# بناء إنتاجي للحزمة + تطبيق سطح المكتب
+npm run electron:build
 ```
 
-Open [http://localhost:5173](http://localhost:5173) in your browser.
+قاعدة البيانات المحلية تُنشأ تلقائياً في مجلد بيانات المستخدم (وضع WAL، مع migrations تُنفذ مرة واحدة).
+
+### اختصار سطح المكتب (Windows)
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File launcher\create-shortcut.ps1
+```
+
+يُنشئ أيقونة **Engaz POS** تشغّل `launcher\launch.vbs`: يثبّت المتطلبات أول مرة، يخدم بناء `dist/` المحلي، ثم يفتح نافذة Electron — أو المتصفح إن لم يتوفر. الأخطاء تظهر في رسالة، وكل تشغيل يُسجّل في `logs\launcher.log`.
+
+| الأمر | الأثر |
+| --- | --- |
+| `launcher\create-shortcut.ps1 -Mode Browser` | اختصار يفتح المتصفح بدل Electron |
+| `launcher\create-shortcut.ps1 -Remove` | حذف الاختصار |
+| `run.bat` | نفس المشغل بكولسول ظاهر للتنقيح |
 
 ---
 
-## 📁 Project Structure
+## 🧪 الاختبارات والفحوص
+
+```bash
+npm run lint          # ESLint (صفر تحذيرات)
+npm run typecheck     # tsc --noEmit
+npm test              # Vitest: وحدات الواجهة + عمال Cloudflare
+npm run test:electron-unit  # اختبارات SQLite معزولة (node:test)
+npm run test:tooling  # فحص أدوات البناء (بصمة الحزمة، مسح الأسرار)
+npm run test:native   # تشغيل Electron فعلياً + better-sqlite3
+```
+
+CI (`.github/workflows/ci.yml`) يشغل نفس المجموعات، إضافة إلى فحص منفصل للبوابة في `reports-site/` (بإصدار TypeScript أصرم).
+
+### لماذا Electron 29 ولماذا `npm audit --omit=dev`
+
+الإصدار مقفول على **29.4.6** عن قصد: `better-sqlite3` لا ينشر prebuild متوافقاً مع Electron 44 (ABI 149) على Windows، ولا تتوفر أدوات بناء أصيلة على أجهزة التشغيل، فالترقية تكسر الوحدة الأصلية لقاعدة البيانات وبالتالي كل التطبيق.
+
+النتيجة أن `npm audit` **الكامل** يُبلغ عن إشعارات في Electron وأدوات تغليفه، وهي أدوات تطوير لا تصل إلى الحزمة المُشغَّلة. لذلك تفحص الـ CI تبعيات التشغيل وحدها:
+
+```bash
+npm audit --omit=dev   # ما تستخدمه CI — صفر ثغرات
+```
+
+هذا دين تقني مقبول لا يُخفي مشكلة في الكود: الحزمة المبنية لا تحمل هذه التبعيات. الإغلاق الصحيح له هو ترقية Electron بعد توفر prebuild متوافق لـ `better-sqlite3`.
+
+---
+
+## 📁 بنية المشروع
 
 ```
 src/
-├── components/        # Reusable UI components (layout, orders, menu, payment)
-├── context/           # React Context providers (Auth, Data)
-├── hooks/             # Custom hooks (useOrders, useMenu, useAnalytics, ...)
-├── lib/               # Appwrite client configuration
-├── pages/             # Route-level page components
-├── services/          # Data access layer (ordersService, menuService)
-└── types/             # TypeScript interfaces and type definitions
+├── components/        # شاشات الواجهة (POS, menu, inventory, settings, ...)
+├── context/           # AuthContext (جلسة الجهاز), DataContext (بيانات مشتركة)
+├── hooks/             # useOrders, useMenu, useAnalytics, ...
+├── pages/             # مسارات (Orders, Payment, Reports, Inventory, PublicMenu, ...)
+├── repositories/      # طبقة الوصول للبيانات فوق جسر Electron IPC
+├── services/          # menuService, inventoryService, desktopBridge, workerClient
+├── types/             # عقود الأنواع (Order, MenuItem, Customer, ...)
+└── utils/             # حسابات المال، الضريبة، الولاء، الطباعة، التهيئة
+electron/              # العملية الرئيسية: قاعدة البيانات، المستودعات، المزامنة، الطباعة، Telegram
+cloudflare/            # عمال D1: عامل POS + عامل التقارير + اختباراتهما
+reports-site/          # بوابة إحصائيات المديرين (SPA مستقلة بتثبيت مستقل)
+launcher/              # مشغل Windows واختصار سطح المكتب
+scripts/               # أدوات البناء والاختبار
 ```
+
+بوابة التقارير منشورة على `reporting.engaz.tech` وعاملها على `api-reports.engaz.tech` — دليل النشر الكامل في [DEPLOY.md](./DEPLOY.md).
+
+---
+
+## 🔐 الأمان
+
+- جسر IPC واحد (`preload.cjs`)، `contextIsolation` + `sandbox`، ولا يصل للواجهة إلا ما تحتاجه.
+- كل مدخلات IPC تتحقق في `electron/validate.cjs` قبل الوصول لأي معامل SQL.
+- كلمات المرور تُخزن PBKDF2-SHA256 (210k تكرار، ملح لكل جهاز) — لا كلمة مرور افتراضية مشحونة.
+- مفاتيح الـ Workers تقرأها العملية الرئيسية من `.env` وقت التشغيل؛ حزمة الواجهة لا تحمل أي مفتاح.
+- نافذة الطباعة معزولة: بلا Node، بلا سكربتات، CSP يمنع أي مصدر خارجي.
+- حزم البوابات تُفحص آلياً قبل النشر بحثاً عن أي سر (`scripts/build-reports.mjs`).
 
 ---
 
 ## 📄 License
 
-This project is licensed under the **MIT License** — see the [LICENSE](./LICENSE) file for details.
-
----
-
-<div align="center">
-
-**Built with ☕ and TypeScript**
-
-*If this project helped you, consider giving it a ⭐*
-
-</div>
+This project is licensed under the **MIT License**.

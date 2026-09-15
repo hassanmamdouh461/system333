@@ -1,5 +1,33 @@
 const database = require('./database.cjs');
+const { DEFAULT_TAX_RATE, roundMoney } = require('./money.cjs');
 const { randomUUID } = require('crypto');
+
+/**
+ * What was actually paid for an order.
+ *
+ * Three call sites used to derive this differently: order creation subtracted redeemed points
+ * and rounded, the seed/upsert path used the grand total bare, and a SQL backfill subtracted
+ * points with a floor at zero but never rounded. The same order therefore reported two
+ * different paid amounts depending on whether it was created on this till, seeded from a
+ * backup, or pulled from the cloud — which is how a day's revenue could disagree with the
+ * sum of the orders in it.
+ *
+ * An explicit `paidAmount` always wins: it is what the till actually took. It is still
+ * floored at zero because a negative value summed straight into revenue (older client,
+ * hand-edited payload, restored backup).
+ */
+function derivePaidAmount(order, grandTotal) {
+  if (order.paidAmount != null) return Math.max(0, roundMoney(Number(order.paidAmount)));
+  if (order.paymentStatus !== 'Paid') return null;
+  return Math.max(0, roundMoney(grandTotal - (Number(order.pointsRedeemed) || 0)));
+}
+const { MAX_SYNC_ATTEMPTS } = database;
+
+// Monotonic per-row versions also cover multiple edits within one millisecond.
+// The monotonic-step rule lives in database.cjs: five copies of it meant a fix
+// had to be made five times, and missing one silently reintroduces a timestamp tie —
+// which is a lost write under last-writer-wins.
+const { nextUpdatedAt } = database;
 
 class OrderRepository {
   getDb() {
@@ -31,6 +59,8 @@ class OrderRepository {
       taxRate: row.taxRate != null ? row.taxRate : undefined,
       taxAmount: row.taxAmount != null ? row.taxAmount : undefined,
       grandTotal: row.grandTotal != null ? row.grandTotal : undefined,
+      // What the till collected; below grandTotal when loyalty points paid part of the bill
+      paidAmount: row.paidAmount != null ? row.paidAmount : undefined,
       createdAt: row.createdAt,
       updatedAt: row.updated_at || undefined,
       paidAt: row.paidAt || undefined,
@@ -38,27 +68,34 @@ class OrderRepository {
       pointsEarned: row.pointsEarned || 0,
       pointsRedeemed: row.pointsRedeemed || 0,
       branchId: row.branch_id || undefined,
+      cashierName: row.cashierName || undefined,
+      cashierAvatar: row.cashierAvatar || undefined,
       isSynced: Boolean(row.is_synced)
     };
   }
 
-  getOrders(branchId) {
-    const sqlite = this.getDb();
-    // Filter in SQL, not in JS (Issue 22); exclude soft-deleted rows (Issue 20)
-    let rows;
-    if (branchId && branchId !== 'manager') {
-      rows = sqlite.prepare('SELECT * FROM orders WHERE deleted_at IS NULL AND branch_id = ? ORDER BY CAST(orderNumber AS INTEGER) ASC').all(branchId);
-    } else {
-      rows = sqlite.prepare('SELECT * FROM orders WHERE deleted_at IS NULL ORDER BY CAST(orderNumber AS INTEGER) ASC').all();
+  resolveBranch(branchId) {
+    const active = this.getBranchId();
+    if (branchId !== undefined && branchId !== null && branchId !== active) {
+      throw new Error('Cannot access another branch');
     }
+    return branchId === null ? null : active;
+  }
+
+  getOrders(branchId) {
+    this.resolveBranch(branchId);
+    const rows = this.getDb().prepare(`
+      SELECT * FROM orders WHERE deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
+      ORDER BY CAST(orderNumber AS INTEGER) ASC
+    `).all(this.getBranchId());
     return rows.map(row => this.mapRow(row));
   }
 
   getOrder(id) {
-    const sqlite = this.getDb();
-    const row = sqlite.prepare('SELECT * FROM orders WHERE id = ?').get(id);
-    if (!row) return null;
-    return this.mapRow(row);
+    const row = this.getDb().prepare(`
+      SELECT * FROM orders WHERE id = ? AND deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
+    `).get(id, this.getBranchId());
+    return row ? this.mapRow(row) : null;
   }
 
   createOrder(order) {
@@ -66,13 +103,20 @@ class OrderRepository {
     const id = order.id || `ord-${randomUUID()}`;
     const createdAt = order.createdAt || new Date().toISOString();
     const now = new Date().toISOString();
-    const branchId = order.branchId || this.getBranchId();
+    const branchId = this.resolveBranch(order.branchId);
 
-    // Tax snapshot: store computed financial fields with the order itself (Issue 25)
+    // Tax snapshot: store computed financial fields with the order itself (Issue 25).
+    // The default rate must match settingsConfig.DEFAULT_TAX_RATE — a zero default here made
+    // the same row report different revenue depending on which layer summed it.
     const subtotal = order.subtotal != null ? Number(order.subtotal) : Number(order.totalAmount);
-    const taxRate = order.taxRate != null ? Number(order.taxRate) : 0;
-    const taxAmount = order.taxAmount != null ? Number(order.taxAmount) : 0;
-    const grandTotal = order.grandTotal != null ? Number(order.grandTotal) : subtotal + taxAmount;
+    const taxRate = order.taxRate != null ? Number(order.taxRate) : DEFAULT_TAX_RATE;
+    const taxAmount = order.taxAmount != null ? Number(order.taxAmount) : roundMoney(subtotal * taxRate);
+    const grandTotal = order.grandTotal != null ? Number(order.grandTotal) : roundMoney(subtotal + taxAmount);
+    // Collected cash can never be negative. Redeeming more points than the bill is worth is
+    // rejected at the till, but an order arriving with an over-redemption (older client,
+    // edited payload, restored backup) used to store a negative paidAmount, which the daily
+    // report then summed straight into revenue.
+    const paidAmount = derivePaidAmount(order, grandTotal);
 
     // Atomic daily counter inside the same transaction as the INSERT (Issue 23).
     // Counter is keyed by LOCAL date so it aligns with the local-time daily report (Issue 24).
@@ -85,14 +129,14 @@ class OrderRepository {
       }
 
       sqlite.prepare(`
-        INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, is_synced, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+        INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, paidAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, cashierName, cashierAvatar, is_synced, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
       `).run(
         id,
         orderNumber,
         order.tableId,
         JSON.stringify(order.items),
-        order.status,
+        order.status || 'Pending',
         order.paymentStatus || 'Unpaid',
         order.paymentMethod || null,
         order.totalAmount,
@@ -100,12 +144,15 @@ class OrderRepository {
         taxRate,
         taxAmount,
         grandTotal,
+        paidAmount,
         createdAt,
         order.paidAt || null,
         order.customerPhone || null,
         order.pointsEarned || 0,
         order.pointsRedeemed || 0,
         branchId,
+        order.cashierName || null,
+        order.cashierAvatar || null,
         now
       );
 
@@ -140,22 +187,34 @@ class OrderRepository {
       ...order,
       id,
       orderNumber,
+      status: order.status || 'Pending',
+      paymentStatus: order.paymentStatus || 'Unpaid',
+      paymentMethod: order.paymentMethod || undefined,
       createdAt,
       updatedAt: now,
       subtotal,
       taxRate,
       taxAmount,
       grandTotal,
+      totalAmount: grandTotal,
+      paidAmount: paidAmount != null ? paidAmount : undefined,
       customerPhone: order.customerPhone || undefined,
       pointsEarned: order.pointsEarned || 0,
       pointsRedeemed: order.pointsRedeemed || 0,
       branchId,
+      cashierName: order.cashierName || undefined,
+      cashierAvatar: order.cashierAvatar || undefined,
       isSynced: false
     };
   }
 
   updateOrder(id, data) {
     const sqlite = this.getDb();
+    const current = this.getOrder(id);
+    if (!current) return null;
+    if (data.branchId !== undefined && data.branchId !== (current.branchId ?? null)) {
+      throw new Error('Cannot move an order to another branch');
+    }
     const fields = [];
     const values = [];
 
@@ -170,71 +229,121 @@ class OrderRepository {
     if (data.taxRate !== undefined) { fields.push('taxRate = ?'); values.push(data.taxRate); }
     if (data.taxAmount !== undefined) { fields.push('taxAmount = ?'); values.push(data.taxAmount); }
     if (data.grandTotal !== undefined) { fields.push('grandTotal = ?'); values.push(data.grandTotal); }
+    if (data.paidAmount !== undefined) { fields.push('paidAmount = ?'); values.push(data.paidAmount); }
     if (data.createdAt !== undefined) { fields.push('createdAt = ?'); values.push(data.createdAt); }
     if (data.paidAt !== undefined) { fields.push('paidAt = ?'); values.push(data.paidAt); }
     if (data.customerPhone !== undefined) { fields.push('customerPhone = ?'); values.push(data.customerPhone); }
     if (data.pointsEarned !== undefined) { fields.push('pointsEarned = ?'); values.push(data.pointsEarned); }
     if (data.pointsRedeemed !== undefined) { fields.push('pointsRedeemed = ?'); values.push(data.pointsRedeemed); }
-    if (data.branchId !== undefined) { fields.push('branch_id = ?'); values.push(data.branchId); }
+    // Receipt identity is a creation snapshot, not the operator editing/paying later.
+    // Deliberate reset/import paths handle snapshots; generic updates never replace them.
+    if (fields.length === 0) return current;
 
-    // Always mark as unsynced and update timestamp on mutation
-    const now = new Date().toISOString();
+    const now = nextUpdatedAt(current.updatedAt);
     fields.push('updated_at = ?'); values.push(now);
-    fields.push('is_synced = 0');
+    fields.push('is_synced = 0', 'sync_attempts = 0', 'last_error = NULL');
 
-    if (fields.length === 0) return this.getOrder(id);
-
-    values.push(id);
+    values.push(id, this.getBranchId());
     sqlite.prepare(`
-      UPDATE orders SET ${fields.join(', ')} WHERE id = ?
+      UPDATE orders SET ${fields.join(', ')} WHERE id = ? AND deleted_at IS NULL
+        AND (branch_id = ? OR branch_id IS NULL)
     `).run(...values);
 
     return this.getOrder(id);
   }
 
+  /**
+   * Moves an order to a new status, adjusting stock when it crosses the cancelled boundary.
+   *
+   * The status write and the stock adjustment are one transaction. Previously the write
+   * committed first and the adjustment ran in its own transaction inside a try/catch that
+   * only logged — so a failure there left an order marked cancelled with its ingredients
+   * still deducted, and no record that the two had diverged.
+   */
   updateOrderStatus(id, status) {
     const sqlite = this.getDb();
-    const now = new Date().toISOString();
-
     const currentOrder = this.getOrder(id);
     if (!currentOrder) return null;
+    const now = nextUpdatedAt(currentOrder.updatedAt);
 
     const oldStatus = currentOrder.status;
+    if (oldStatus === status) return currentOrder;
 
-    sqlite.prepare('UPDATE orders SET status = ?, updated_at = ?, is_synced = 0 WHERE id = ?').run(status, now, id);
+    const inventoryRepository = require('./InventoryRepository.cjs');
+    const branchId = currentOrder.branchId || this.getBranchId();
 
-    // Check transitions for stock adjustments
-    if (status === 'Cancelled' && oldStatus !== 'Cancelled') {
-      try {
-        const inventoryRepository = require('./InventoryRepository.cjs');
-        inventoryRepository.restoreInventoryForOrder(id, currentOrder.branchId || this.getBranchId());
-      } catch (e) {
-        console.error('[OrderRepository] Failed to restore stock on cancellation:', e);
+    const runTx = sqlite.transaction(() => {
+      // sync_attempts is cleared so a later edit re-arms a row that had parked after
+      // repeated failures; without it the row would never leave this device.
+      sqlite.prepare(`
+        UPDATE orders
+        SET status = ?, updated_at = ?, is_synced = 0, sync_attempts = 0, last_error = NULL
+        WHERE id = ?
+      `).run(status, now, id);
+
+      if (status === 'Cancelled') {
+        // Cancelling returns the ingredients the order consumed.
+        inventoryRepository.restoreInventoryForOrder(id, branchId);
+      } else if (oldStatus === 'Cancelled') {
+        // Reviving a cancelled order consumes them again.
+        inventoryRepository.deductInventoryForOrder(id, currentOrder.items, branchId);
       }
-    } else if (oldStatus === 'Cancelled' && status !== 'Cancelled') {
-      try {
-        const inventoryRepository = require('./InventoryRepository.cjs');
-        inventoryRepository.deductInventoryForOrder(id, currentOrder.items, currentOrder.branchId || this.getBranchId());
-      } catch (e) {
-        console.error('[OrderRepository] Failed to re-deduct stock on activation:', e);
-      }
-    }
+    });
 
+    runTx();
     return this.getOrder(id);
   }
 
   completeOrderPayment(id, method) {
+    const currentOrder = this.getOrder(id);
+    if (!currentOrder) {
+      throw new Error(`Order ${id} not found or inaccessible in branch`);
+    }
+    if (currentOrder.status === 'Cancelled') {
+      throw new Error(`Cannot complete payment for cancelled order ${id}`);
+    }
+    // Idempotency: if already paid, do not re-stamp paidAt or alter history
+    if (currentOrder.paymentStatus === 'Paid') {
+      return currentOrder;
+    }
+
     const sqlite = this.getDb();
+    const branchId = this.getBranchId();
     const now = new Date().toISOString();
-    sqlite.prepare("UPDATE orders SET paymentStatus = 'Paid', paymentMethod = ?, paidAt = ?, updated_at = ?, is_synced = 0 WHERE id = ?").run(method, now, now, id);
-    return this.getOrder(id);
+    // Stamp what was collected at the moment of payment. Orders that reach this screen were
+    // created unpaid, so paidAmount was still null and revenue had nothing to read.
+    sqlite.prepare(`
+      UPDATE orders SET
+        paymentStatus = 'Paid',
+        paymentMethod = ?,
+        paidAt = ?,
+        -- Same derivation as derivePaidAmount(): round to the money scale, so a row completed
+        -- here matches one created with an explicit paidAmount to the cent.
+        paidAmount = COALESCE(paidAmount, MAX(0, ROUND(COALESCE(grandTotal, totalAmount) - COALESCE(pointsRedeemed, 0), 2))),
+        updated_at = ?,
+        is_synced = 0,
+        sync_attempts = 0,
+        last_error = NULL
+      WHERE id = ? AND paymentStatus != 'Paid' AND deleted_at IS NULL AND status != 'Cancelled'
+        AND (branch_id = ? OR branch_id IS NULL)
+    `).run(method, now, now, id, branchId);
+
+    const updated = this.getOrder(id);
+    if (!updated) {
+      throw new Error(`Failed to update order ${id} for payment`);
+    }
+    return updated;
   }
 
   deleteOrder(id) {
     const sqlite = this.getDb();
+    const branchId = this.getBranchId();
     // Soft delete with tombstone so the deletion syncs to the cloud (Issue 20)
     const now = new Date().toISOString();
-    sqlite.prepare('UPDATE orders SET deleted_at = ?, updated_at = ?, is_synced = 0 WHERE id = ?').run(now, now, id);
+    sqlite.prepare(`
+      UPDATE orders SET deleted_at = ?, updated_at = ?, is_synced = 0, sync_attempts = 0, last_error = NULL
+      WHERE id = ? AND (branch_id = ? OR branch_id IS NULL)
+    `).run(now, now, id, branchId);
   }
 
   resetOrders(defaults) {
@@ -243,11 +352,22 @@ class OrderRepository {
     const branchId = this.getBranchId();
 
     const runTransaction = sqlite.transaction((orders) => {
-      // Soft-delete existing orders so deletions propagate (Issue 20)
-      sqlite.prepare('UPDATE orders SET deleted_at = ?, updated_at = ?, is_synced = 0 WHERE deleted_at IS NULL').run(now, now);
+      // Soft-delete existing orders so deletions propagate (Issue 20).
+      //
+      // Scoped to this branch and shared rows, like every other write here: unscoped, a reset
+      // on one till also stamped another branch's local rows as deleted.
+      //
+      // The retry budget is cleared too. A row that had exhausted its attempts was parked and
+      // excluded from every push, so without this the tombstone never left the device — the
+      // reset looked like it worked while the cloud kept the old rows.
+      sqlite.prepare(`
+        UPDATE orders
+        SET deleted_at = ?, updated_at = ?, is_synced = 0, sync_attempts = 0, last_error = NULL
+        WHERE deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
+      `).run(now, now, branchId);
       const insert = sqlite.prepare(`
-        INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, is_synced, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+        INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, paidAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, cashierName, cashierAvatar, is_synced, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
         ON CONFLICT(id) DO UPDATE SET
           orderNumber = excluded.orderNumber,
           tableId = excluded.tableId,
@@ -256,7 +376,14 @@ class OrderRepository {
           paymentStatus = excluded.paymentStatus,
           paymentMethod = excluded.paymentMethod,
           totalAmount = excluded.totalAmount,
+          subtotal = excluded.subtotal,
+          taxRate = excluded.taxRate,
+          taxAmount = excluded.taxAmount,
+          grandTotal = excluded.grandTotal,
+          paidAmount = excluded.paidAmount,
           paidAt = excluded.paidAt,
+          cashierName = excluded.cashierName,
+          cashierAvatar = excluded.cashierAvatar,
           deleted_at = NULL,
           updated_at = excluded.updated_at,
           is_synced = 0
@@ -266,6 +393,13 @@ class OrderRepository {
       for (const order of orders) {
         const id = order.id || `ord-${randomUUID()}`;
         const createdAt = order.createdAt || now;
+        // Seed rows arrive as a bare pre-tax total, so build the snapshot here rather than
+        // leaving these columns null and forcing every reader down the legacy derive path.
+        const subtotal = order.subtotal != null ? Number(order.subtotal) : Number(order.totalAmount);
+        const taxRate = order.taxRate != null ? Number(order.taxRate) : DEFAULT_TAX_RATE;
+        const taxAmount = order.taxAmount != null ? Number(order.taxAmount) : roundMoney(subtotal * taxRate);
+        const grandTotal = order.grandTotal != null ? Number(order.grandTotal) : roundMoney(subtotal + taxAmount);
+        const paidAmount = derivePaidAmount(order, grandTotal);
         insert.run(
           id,
           order.orderNumber,
@@ -274,16 +408,37 @@ class OrderRepository {
           order.status,
           order.paymentStatus || 'Unpaid',
           order.paymentMethod || null,
-          order.totalAmount,
+          grandTotal,
+          subtotal,
+          taxRate,
+          taxAmount,
+          grandTotal,
+          paidAmount,
           createdAt,
           order.paidAt || null,
           order.customerPhone || null,
           order.pointsEarned || 0,
           order.pointsRedeemed || 0,
           branchId,
+          order.cashierName || null,
+          order.cashierAvatar || null,
           now
         );
-        created.push({ ...order, id, createdAt, updatedAt: now, branchId, isSynced: false });
+        created.push({
+          ...order,
+          id,
+          createdAt,
+          updatedAt: now,
+          totalAmount: grandTotal,
+          subtotal,
+          taxRate,
+          taxAmount,
+          grandTotal,
+          paidAmount: paidAmount != null ? paidAmount : undefined,
+          branchId,
+          cashierName: order.cashierName || undefined,
+          cashierAvatar: order.cashierAvatar || undefined,
+        });
       }
       return created;
     });
@@ -292,21 +447,39 @@ class OrderRepository {
   }
 
   getUnsyncedOrders() {
+    return this.getOrdersPendingSync();
+  }
+
+  getOrdersPendingSync() {
     const sqlite = this.getDb();
-    const rows = sqlite.prepare('SELECT * FROM orders WHERE is_synced = 0').all();
+    const branchId = this.getBranchId();
+    // Exclude rows parked after MAX_SYNC_ATTEMPTS consecutive failures so they don't
+    // keep failing the whole batch on every cycle. See database.markSyncFailure.
+    const rows = sqlite.prepare(`
+      SELECT * FROM orders
+      WHERE is_synced = 0 AND sync_attempts < ? AND (branch_id = ? OR branch_id IS NULL)
+      ORDER BY updated_at ASC
+      LIMIT 100
+    `).all(MAX_SYNC_ATTEMPTS, branchId);
     return rows.map(row => ({
       ...this.mapRow(row),
       deletedAt: row.deleted_at || undefined
     }));
   }
 
-  markOrdersSynced(ids) {
+  markOrdersSynced(ids, snapshots) {
     if (!ids || ids.length === 0) return;
     const sqlite = this.getDb();
-    const stmt = sqlite.prepare('UPDATE orders SET is_synced = 1, sync_attempts = 0, last_error = NULL WHERE id = ?');
+    const branchId = this.getBranchId();
+    const versions = snapshots === undefined ? null : new Map((snapshots || []).map(row => [row.id, row.updatedAt ?? row.updated_at ?? null]));
+    const stmt = sqlite.prepare(`
+      UPDATE orders SET is_synced = 1, sync_attempts = 0, last_error = NULL
+      WHERE id = ? AND (branch_id = ? OR branch_id IS NULL)${versions ? ' AND (updated_at IS ? OR updated_at IS NULL)' : ''}
+    `);
     const runTx = sqlite.transaction((idList) => {
       for (const id of idList) {
-        stmt.run(id);
+        if (versions && !versions.has(id)) continue;
+        stmt.run(id, branchId, ...(versions ? [versions.get(id)] : []));
       }
     });
     runTx(ids);
@@ -322,8 +495,8 @@ class OrderRepository {
     // Issue 17: ON CONFLICT only updates when the local row is synced AND the
     // incoming row is at least as new (last-write-wins by updated_at).
     const insert = sqlite.prepare(`
-      INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, is_synced, updated_at, deleted_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+      INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, paidAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, cashierName, cashierAvatar, is_synced, updated_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         orderNumber = excluded.orderNumber,
         tableId = excluded.tableId,
@@ -335,12 +508,15 @@ class OrderRepository {
         taxRate = excluded.taxRate,
         taxAmount = excluded.taxAmount,
         grandTotal = excluded.grandTotal,
+        paidAmount = excluded.paidAmount,
         items = excluded.items,
         paidAt = excluded.paidAt,
         customerPhone = excluded.customerPhone,
         pointsEarned = excluded.pointsEarned,
         pointsRedeemed = excluded.pointsRedeemed,
         branch_id = excluded.branch_id,
+        cashierName = excluded.cashierName,
+        cashierAvatar = excluded.cashierAvatar,
         updated_at = excluded.updated_at,
         deleted_at = excluded.deleted_at,
         is_synced = 1
@@ -350,9 +526,14 @@ class OrderRepository {
 
     const runTx = sqlite.transaction((orders) => {
       for (const order of orders) {
-        const orderBranchId = order.branch_id || 'default';
-        // Filter by branch_id if we are logged in as a specific branch (manager sees all)
-        if (branchId !== 'manager' && orderBranchId !== branchId) {
+        // A cloud row without a branch stays branchless (NULL = shared) exactly as it
+        // arrived. Substituting 'default' here re-scoped shared rows to a branch that
+        // only the 'default' till could read back.
+        const orderBranchId = order.branch_id || null;
+        // Filter by branch_id if we are logged in as a specific branch (manager sees all).
+        // A branchless (NULL) row is shared stock of the chain and reaches every till.
+        const isShared = orderBranchId === null;
+        if (branchId !== 'manager' && !isShared && orderBranchId !== branchId) {
           continue;
         }
 
@@ -375,12 +556,15 @@ class OrderRepository {
           order.taxRate != null ? Number(order.taxRate) : null,
           order.taxAmount != null ? Number(order.taxAmount) : null,
           order.grandTotal != null ? Number(order.grandTotal) : null,
+          order.paidAmount != null ? Number(order.paidAmount) : null,
           createdAt,
           order.paidAt || null,
           order.customerPhone || null,
           Number(order.pointsEarned) || 0,
           Number(order.pointsRedeemed) || 0,
           orderBranchId,
+          order.cashierName || null,
+          order.cashierAvatar || null,
           updatedAt,
           order.deleted_at || null
         );
@@ -392,28 +576,39 @@ class OrderRepository {
 
   getDailyReportStats() {
     const sqlite = this.getDb();
+    const branchId = this.getBranchId();
 
-    // Daily summary in LOCAL timezone (Issue 24) using stored grandTotal when
-    // available so the report matches the cashier screens exactly (Issue 25)
+    // Daily summary in LOCAL timezone (Issue 24). Revenue reads paidAmount so a bill settled
+    // partly with loyalty points is not reported at its full value, and paid orders are dated
+    // by paidAt to match the cashier screens — dating them by createdAt put a bill created
+    // before midnight and settled after it in the wrong day's report.
+    //
+    // Scoped to this branch (own rows plus rows shared by every branch) and excluding
+    // cancelled orders: this figure reaches the daily Telegram report, and an unscoped count
+    // there reported the whole chain's day as if it were one till's.
     const summary = sqlite.prepare(`
       SELECT
         COUNT(*) as totalOrders,
-        SUM(CASE WHEN paymentStatus = 'Paid' THEN COALESCE(grandTotal, totalAmount) ELSE 0 END) as totalRevenue,
+        SUM(CASE WHEN paymentStatus = 'Paid' THEN COALESCE(paidAmount, grandTotal, totalAmount) ELSE 0 END) as totalRevenue,
         SUM(CASE WHEN paymentStatus = 'Unpaid' THEN COALESCE(grandTotal, totalAmount) ELSE 0 END) as totalUnpaid,
-        SUM(CASE WHEN paymentMethod = 'Cash' AND paymentStatus = 'Paid' THEN COALESCE(grandTotal, totalAmount) ELSE 0 END) as cashRevenue,
-        SUM(CASE WHEN paymentMethod = 'Card' AND paymentStatus = 'Paid' THEN COALESCE(grandTotal, totalAmount) ELSE 0 END) as cardRevenue
+        SUM(CASE WHEN paymentMethod = 'Cash' AND paymentStatus = 'Paid' THEN COALESCE(paidAmount, grandTotal, totalAmount) ELSE 0 END) as cashRevenue,
+        SUM(CASE WHEN paymentMethod = 'Card' AND paymentStatus = 'Paid' THEN COALESCE(paidAmount, grandTotal, totalAmount) ELSE 0 END) as cardRevenue
       FROM orders
-      WHERE date(createdAt, 'localtime') = date('now', 'localtime')
+      WHERE date(COALESCE(paidAt, createdAt), 'localtime') = date('now', 'localtime')
         AND deleted_at IS NULL
-    `).get();
+        AND status != 'Cancelled'
+        AND (branch_id = ? OR branch_id IS NULL)
+    `).get(branchId);
 
     // Query items sold in local timezone
     const rows = sqlite.prepare(`
       SELECT items FROM orders
-      WHERE date(createdAt, 'localtime') = date('now', 'localtime')
+      WHERE date(COALESCE(paidAt, createdAt), 'localtime') = date('now', 'localtime')
         AND paymentStatus = 'Paid'
+        AND status != 'Cancelled'
         AND deleted_at IS NULL
-    `).all();
+        AND (branch_id = ? OR branch_id IS NULL)
+    `).all(branchId);
 
     const itemsMap = {};
     for (const row of rows) {
@@ -433,10 +628,10 @@ class OrderRepository {
     return {
       date: new Date().toLocaleDateString('en-CA'),
       totalOrders: summary.totalOrders || 0,
-      totalRevenue: summary.totalRevenue || 0,
-      totalUnpaid: summary.totalUnpaid || 0,
-      cashRevenue: summary.cashRevenue || 0,
-      cardRevenue: summary.cardRevenue || 0,
+      totalRevenue: roundMoney(summary.totalRevenue || 0),
+      totalUnpaid: roundMoney(summary.totalUnpaid || 0),
+      cashRevenue: roundMoney(summary.cashRevenue || 0),
+      cardRevenue: roundMoney(summary.cardRevenue || 0),
       itemsSold
     };
   }

@@ -1,24 +1,47 @@
-import React, { useState, useMemo } from 'react';
-import { Order, OrderStatus } from '../types/order';
+import { useState, useMemo, useEffect } from 'react';
+import { Order } from '../types/order';
 import { PaymentModal } from '../components/payment/PaymentModal';
 import { CreditCard, DollarSign, Search, Calculator } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useOrders } from '../hooks/useOrders';
 import { useLanguage } from '../context/LanguageContext';
-import { getTaxRate } from '../utils/settingsConfig';
+import { orderTotals, orderRevenue } from '../utils/orderTotals';
+
+/**
+ * Queue order for the cashier: ready first, then preparing, then new.
+ *
+ * A module-level constant rather than a value rebuilt each render, so the sort memo does not
+ * take it as a dependency and re-run on every keystroke.
+ */
+const STATUS_PRIORITY: Record<string, number> = { Ready: 1, Preparing: 2, New: 3, Completed: 4, Cancelled: 5 };
+
+const getTodayDateStr = () => new Date().toLocaleDateString('en-CA');
 
 export default function Payment() {
-  const { t, isRtl, language } = useLanguage();
+  const { t } = useLanguage();
   // Use local SQLite database - sync with Orders page
   const { orders: allOrders, error, completeWithPayment } = useOrders();
   const [selectedOrder, setSelectedOrder] = useState<Order | null>(null);
   const [isPaymentModalOpen, setIsPaymentModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
-  const [filterDate, setFilterDate] = useState('');
+  const [filterDate, setFilterDate] = useState<string>(getTodayDateStr);
   const [filterStartTime, setFilterStartTime] = useState('');
   const [filterEndTime, setFilterEndTime] = useState('');
 
   const [activeTab, setActiveTab] = useState<'pending' | 'paid'>('pending');
+
+  // Automatically roll over the date filter when midnight strikes if viewing today
+  useEffect(() => {
+    let lastKnownToday = getTodayDateStr();
+    const interval = setInterval(() => {
+      const currentToday = getTodayDateStr();
+      if (currentToday !== lastKnownToday) {
+        setFilterDate(prev => (prev === lastKnownToday ? currentToday : prev));
+        lastKnownToday = currentToday;
+      }
+    }, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   // Show all orders pending payment — regardless of kitchen status.
   // An order leaves this screen ONLY when paymentStatus becomes 'Paid'.
@@ -31,6 +54,14 @@ export default function Payment() {
     allOrders.filter(o => o.paymentStatus === 'Paid'),
   [allOrders]);
 
+  // Paid orders matching the selected date filter
+  const paidOrdersForDate = useMemo(() =>
+    paidOrders.filter(o => {
+      const orderDate = new Date(o.paidAt || o.createdAt).toLocaleDateString('en-CA');
+      return !filterDate || orderDate === filterDate;
+    }),
+  [paidOrders, filterDate]);
+
   const orders = activeTab === 'pending' ? pendingOrders : paidOrders;
 
   const handleOpenPayment = (order: Order) => {
@@ -38,29 +69,24 @@ export default function Payment() {
     setIsPaymentModalOpen(true);
   };
 
-  const handlePaymentComplete = async (orderId: string, method: 'Cash' | 'Card') => {
-    try {
-      await completeWithPayment(orderId, method);
-    } catch (err) {
-      console.error('Failed to complete payment:', err);
-      alert(t('Failed to complete payment'));
-    }
+  const handlePaymentComplete = async (orderId: string, method: 'Cash' | 'Card'): Promise<Order> => {
+    const updatedOrder = await completeWithPayment(orderId, method);
+    setSelectedOrder(current => current?.id === orderId ? updatedOrder : current);
+    return updatedOrder;
   };
-
-  // Ready first → Preparing → New (cashier sees most urgent orders at the top).
-  // Tie-break: oldest createdAt first (longest-waiting customer gets priority).
-  const STATUS_PRIORITY: Record<string, number> = { Ready: 1, Preparing: 2, New: 3, Completed: 4, Cancelled: 5 };
 
   const filteredOrders = useMemo(() => {
     const list = orders.filter(o => {
       const matchesSearch = o.tableId.toLowerCase().includes(searchTerm.toLowerCase()) ||
                             o.orderNumber.toLowerCase().includes(searchTerm.toLowerCase());
       
+      // Pending invoices remain visible until paid, regardless of the selected report date.
+      // Date/time filters apply only to the paid-history tab.
       const orderDate = new Date(o.paidAt || o.createdAt).toLocaleDateString('en-CA'); // YYYY-MM-DD local time
-      const matchesDate = !filterDate || orderDate === filterDate;
+      const matchesDate = activeTab === 'pending' || !filterDate || orderDate === filterDate;
       
       let matchesTime = true;
-      if (filterStartTime || filterEndTime) {
+      if (activeTab === 'paid' && (filterStartTime || filterEndTime)) {
         const orderDateObj = new Date(o.paidAt || o.createdAt);
         const orderMinutes = orderDateObj.getHours() * 60 + orderDateObj.getMinutes();
         
@@ -100,7 +126,7 @@ export default function Payment() {
   }, [orders, searchTerm, activeTab, filterDate, filterStartTime, filterEndTime]);
 
   // Show error state
-  if (error) {
+  if (error && allOrders.length === 0 && !isPaymentModalOpen) {
     return (
       <div className="flex items-center justify-center h-96">
         <div className="text-center">
@@ -114,7 +140,7 @@ export default function Payment() {
   const today = new Date().toDateString();
   const totalRevenue = allOrders
     .filter(o => o.paymentStatus === 'Paid' && new Date(o.paidAt || o.createdAt).toDateString() === today)
-    .reduce((sum, o) => sum + o.totalAmount * (1 + getTaxRate()), 0);
+    .reduce((sum, o) => sum + orderRevenue(o), 0);
 
   return (
     <div className="space-y-4 md:space-y-8">
@@ -131,7 +157,7 @@ export default function Payment() {
             <div>
                 <p className="text-[10px] md:text-xs text-gray-500 font-medium">{t("Today's Revenue (incl. tax)")}</p>
                 <p className="text-base md:text-lg font-bold text-gray-900">
-                  {totalRevenue.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}
+                  {totalRevenue.toFixed(2)} ج.م
                 </p>
             </div>
         </div>
@@ -163,7 +189,7 @@ export default function Payment() {
               : 'border-transparent text-gray-500 hover:text-gray-700'
           }`}
         >
-          {t('Paid Invoices')} ({paidOrders.length})
+          {t('Paid Invoices')} ({paidOrdersForDate.length})
           {activeTab === 'paid' && (
             <motion.div
               layoutId="activeTabUnderline"
@@ -177,21 +203,23 @@ export default function Payment() {
       <div className="flex flex-col xl:flex-row gap-3 items-stretch xl:items-center">
         {/* Search */}
         <div className="relative flex-1 max-w-full xl:max-w-md">
-          <Search className={`absolute top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 md:w-5 md:h-5 ${isRtl ? 'right-3' : 'left-3'}`} />
+          <Search className={"absolute top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 md:w-5 md:h-5 right-3"} />
           <input
+            aria-label={t('Search by Table or Order ID...')}
             type="text"
             placeholder={t('Search by Table or Order ID...')}
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            className={`w-full py-2.5 md:py-3 bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent shadow-sm text-sm md:text-base ${isRtl ? 'pr-9 md:pr-10 pl-4' : 'pl-9 md:pl-10 pr-4'}`}
+            className={"w-full py-2.5 md:py-3 bg-white border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent shadow-sm text-sm md:text-base pr-9 md:pr-10 pl-4"}
           />
         </div>
 
-        {/* Date and Time Range Filters */}
-        <div className="flex flex-wrap items-center gap-3">
+        {/* Pending invoices never expire; report filters only affect paid history. */}
+        {activeTab === 'paid' && <div className="flex flex-wrap items-center gap-3">
           {/* Date Calendar Picker */}
           <div className="flex items-center gap-2">
             <input
+              aria-label={t('Invoice Date')}
               type="date"
               value={filterDate}
               onChange={(e) => setFilterDate(e.target.value)}
@@ -203,6 +231,7 @@ export default function Payment() {
           <div className="flex items-center gap-2 bg-white px-3 py-2.5 md:py-3 border border-gray-200 rounded-xl shadow-sm text-sm md:text-base text-gray-700">
             <span className="text-gray-500 font-medium text-xs md:text-sm">{t('From Time')}:</span>
             <input
+              aria-label={t('From Time')}
               type="time"
               value={filterStartTime}
               onChange={(e) => setFilterStartTime(e.target.value)}
@@ -211,12 +240,27 @@ export default function Payment() {
             <span className="text-gray-300">|</span>
             <span className="text-gray-500 font-medium text-xs md:text-sm">{t('To Time')}:</span>
             <input
+              aria-label={t('To Time')}
               type="time"
               value={filterEndTime}
               onChange={(e) => setFilterEndTime(e.target.value)}
               className="bg-transparent border-none p-0 focus:outline-none text-gray-800 font-mono text-xs md:text-sm"
             />
           </div>
+
+          {/* Today Button shortcut when date filter is cleared or on another day */}
+          {filterDate !== getTodayDateStr() && (
+            <button
+              onClick={() => {
+                setFilterDate(getTodayDateStr());
+                setFilterStartTime('');
+                setFilterEndTime('');
+              }}
+              className="py-2.5 md:py-3 px-3 text-xs font-bold bg-mocha-50 text-mocha-700 hover:bg-mocha-100 rounded-xl border border-mocha-200 transition-colors shadow-sm active:scale-95"
+            >
+              {t('Today')}
+            </button>
+          )}
 
           {/* Clear Button */}
           {(filterDate || filterStartTime || filterEndTime) && (
@@ -226,12 +270,12 @@ export default function Payment() {
                 setFilterStartTime('');
                 setFilterEndTime('');
               }}
-              className="py-2.5 md:py-3 px-3 text-xs font-bold bg-red-50 text-red-650 hover:bg-red-100 rounded-xl border border-red-200 transition-colors shadow-sm active:scale-95"
+              className="py-2.5 md:py-3 px-3 text-xs font-bold bg-red-50 text-red-600 hover:bg-red-100 rounded-xl border border-red-200 transition-colors shadow-sm active:scale-95"
             >
               {t('Clear Filter')}
             </button>
           )}
-        </div>
+        </div>}
       </div>
 
       {/* Orders Grid */}
@@ -264,7 +308,7 @@ export default function Payment() {
                 {order.items.slice(0, 2).map((item, idx) => (
                    <div key={idx} className="flex justify-between text-sm text-gray-600">
                       <span>{item.quantity}x {t(item.name)}</span>
-                      <span>{(item.price * item.quantity).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                      <span>{(item.price * item.quantity).toFixed(2)} ج.م</span>
                    </div>
                 ))}
                 {order.items.length > 2 && (
@@ -272,7 +316,7 @@ export default function Payment() {
                 )}
                 <div className="border-t border-gray-100 pt-2 flex justify-between font-bold text-lg text-gray-900">
                    <span>{t('Total')}</span>
-                   <span>{(order.totalAmount * (1 + getTaxRate())).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                   <span>{orderTotals(order).grandTotal.toFixed(2)} ج.م</span>
                 </div>
               </div>
 
@@ -286,7 +330,7 @@ export default function Payment() {
               ) : (
                 <button
                   onClick={() => handleOpenPayment(order)}
-                  className="w-full py-3 bg-mocha-600 text-white rounded-xl font-semibold hover:bg-mocha-700 transition-colors flex items-center justify-center gap-2 shadow-lg shadow-gray-250"
+                  className="w-full py-3 bg-mocha-600 text-white rounded-xl font-semibold hover:bg-mocha-700 transition-colors flex items-center justify-center gap-2 shadow-lg shadow-gray-300"
                 >
                   <CreditCard size={18} /> {t('View Invoice')}
                 </button>
@@ -307,7 +351,7 @@ export default function Payment() {
 
       <PaymentModal
         isOpen={isPaymentModalOpen}
-        onClose={() => setIsPaymentModalOpen(false)}
+        onClose={() => { setIsPaymentModalOpen(false); setSelectedOrder(null); }}
         order={selectedOrder}
         onPaymentComplete={handlePaymentComplete}
       />

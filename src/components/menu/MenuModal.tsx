@@ -3,23 +3,39 @@ import { X, Plus, Trash2, Info } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MenuItem } from '../../types/menu';
 import { useLanguage } from '../../context/LanguageContext';
+import { useDialog } from '../../hooks/useDialog';
 import { inventoryService } from '../../services/inventoryService';
-import { InventoryItem } from '../../global';
+import { InventoryItem, RecipeIngredient } from '../../global';
+import { reportFailure } from '../../utils/reportFailure';
+import {
+  convertToBaseQuantity,
+  convertFromBaseQuantity,
+  getInitialDisplayUnitAndQty,
+} from '../../utils/unitConversion';
 
 interface MenuModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onSave: (item: Omit<MenuItem, 'id'> | MenuItem, recipeIngredients: any[]) => void;
+  onSave: (item: Omit<MenuItem, 'id'> | MenuItem, recipeIngredients: RecipeIngredient[]) => Promise<void>;
   initialData?: MenuItem | null;
   existingItems: MenuItem[];
 }
 
+interface MappedIngredientRow {
+  inventoryItemId: string;
+  quantity: number;
+  displayQuantity: number | string;
+  displayUnit: string;
+}
+
 export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems }: MenuModalProps) {
-  const { t } = useLanguage();
+  const { t, language } = useLanguage();
+  const [isSaving, setIsSaving] = useState(false);
+  const handleClose = () => { if (!isSaving) onClose(); };
+  const { panelRef, titleId, dialogProps } = useDialog<HTMLDivElement>({ onClose: handleClose, enabled: isOpen });
   const [activeTab, setActiveTab] = useState<'general' | 'recipe'>('general');
   const [inventoryItems, setInventoryItems] = useState<InventoryItem[]>([]);
-  const [mappedIngredients, setMappedIngredients] = useState<Array<{ inventoryItemId: string; quantity: number }>>([]);
-  const [loading, setLoading] = useState(false);
+  const [mappedIngredients, setMappedIngredients] = useState<MappedIngredientRow[]>([]);
 
   const [showNewCategoryInput, setShowNewCategoryInput] = useState(false);
   const [newCategoryName, setNewCategoryName] = useState('');
@@ -56,24 +72,28 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
 
   useEffect(() => {
     const loadRecipeAndInventory = async () => {
-      setLoading(true);
       try {
         const inv = await inventoryService.getAll();
         setInventoryItems(inv);
 
         if (initialData) {
           const recipe = await inventoryService.getMenuItemRecipe(initialData.id);
-          setMappedIngredients(recipe.map(r => ({
-            inventoryItemId: r.inventoryItemId,
-            quantity: r.quantity
-          })));
+          setMappedIngredients(recipe.map(r => {
+            const invItem = inv.find(i => i.id === r.inventoryItemId);
+            const baseUnit = invItem ? invItem.unit : 'piece';
+            const { displayQty, displayUnit } = getInitialDisplayUnitAndQty(r.quantity, baseUnit);
+            return {
+              inventoryItemId: r.inventoryItemId,
+              quantity: r.quantity,
+              displayQuantity: displayQty,
+              displayUnit: displayUnit,
+            };
+          }));
         } else {
           setMappedIngredients([]);
         }
       } catch (err) {
-        console.error('Failed to load recipe/inventory items:', err);
-      } finally {
-        setLoading(false);
+        console.error('[MenuModal] Failed to load the recipe and stock list:', err);
       }
     };
     
@@ -131,11 +151,79 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
 
   const addIngredientRow = () => {
     if (inventoryItems.length === 0) return;
-    setMappedIngredients(prev => [...prev, { inventoryItemId: inventoryItems[0].id, quantity: 0 }]);
+    const first = inventoryItems[0];
+    const { displayUnit } = getInitialDisplayUnitAndQty(0, first.unit);
+    setMappedIngredients(prev => [
+      ...prev,
+      {
+        inventoryItemId: first.id,
+        quantity: 0,
+        displayQuantity: '',
+        displayUnit,
+      },
+    ]);
   };
 
-  const updateIngredientRow = (index: number, itemId: string, qty: number) => {
-    setMappedIngredients(prev => prev.map((item, i) => i === index ? { inventoryItemId: itemId, quantity: qty } : item));
+  const handleItemChange = (index: number, newItemId: string) => {
+    const newItem = inventoryItems.find(i => i.id === newItemId);
+    const baseUnit = newItem ? newItem.unit : 'piece';
+    const { displayUnit } = getInitialDisplayUnitAndQty(0, baseUnit);
+
+    setMappedIngredients(prev => prev.map((item, i) => {
+      if (i !== index) return item;
+      const num = typeof item.displayQuantity === 'number'
+        ? item.displayQuantity
+        : parseFloat(item.displayQuantity as string) || 0;
+      const baseQty = convertToBaseQuantity(num, displayUnit, baseUnit);
+      return {
+        inventoryItemId: newItemId,
+        quantity: baseQty,
+        displayQuantity: item.displayQuantity,
+        displayUnit,
+      };
+    }));
+  };
+
+  const handleQuantityChange = (index: number, valStr: string) => {
+    setMappedIngredients(prev => prev.map((item, i) => {
+      if (i !== index) return item;
+      const invItem = inventoryItems.find(it => it.id === item.inventoryItemId);
+      const baseUnit = invItem ? invItem.unit : 'piece';
+      const num = parseFloat(valStr) || 0;
+      const baseQty = convertToBaseQuantity(num, item.displayUnit, baseUnit);
+      return {
+        ...item,
+        displayQuantity: valStr,
+        quantity: baseQty,
+      };
+    }));
+  };
+
+  const handleUnitChange = (index: number, newUnit: string) => {
+    setMappedIngredients(prev => prev.map((item, i) => {
+      if (i !== index) return item;
+      const invItem = inventoryItems.find(it => it.id === item.inventoryItemId);
+      const baseUnit = invItem ? invItem.unit : 'piece';
+      const currentVal = typeof item.displayQuantity === 'number'
+        ? item.displayQuantity
+        : parseFloat(item.displayQuantity as string) || 0;
+
+      const baseQty = convertToBaseQuantity(currentVal, item.displayUnit, baseUnit);
+      const newDisplayVal = currentVal > 0
+        ? convertFromBaseQuantity(baseQty, baseUnit, newUnit)
+        : item.displayQuantity;
+
+      const roundedVal = typeof newDisplayVal === 'number'
+        ? Math.round(newDisplayVal * 1000) / 1000
+        : newDisplayVal;
+
+      return {
+        ...item,
+        displayUnit: newUnit,
+        displayQuantity: roundedVal,
+        quantity: baseQty,
+      };
+    }));
   };
 
   const removeIngredientRow = (index: number) => {
@@ -155,6 +243,8 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (isSaving) return;
+    setIsSaving(true);
     try {
       const menuCategory = showNewCategoryInput ? newCategoryName.trim() : formData.category;
       if (!menuCategory) {
@@ -168,7 +258,12 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
         : 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?w=400';
       const finalImage = defaultImage;
 
-      const validIngredients = mappedIngredients.filter(ing => ing.quantity > 0);
+      const validIngredients: RecipeIngredient[] = mappedIngredients
+        .filter(ing => ing.quantity > 0)
+        .map(ing => ({
+          inventoryItemId: ing.inventoryItemId,
+          quantity: ing.quantity,
+        }));
 
       await onSave({
         ...formData,
@@ -181,7 +276,9 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
       onClose();
     } catch (err) {
       console.error('Failed to save menu item:', err);
-      alert(t('Failed to save item. Please try again.'));
+      reportFailure(t('Failed to save item. Please try again.'), err);
+    } finally {
+      setIsSaving(false);
     }
   };
 
@@ -194,46 +291,48 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          onClick={onClose}
+          onClick={handleClose}
           className="absolute inset-0 bg-black/60 backdrop-blur-sm"
         />
         
         <motion.div
-          initial={{ opacity: 0, scale: 0.95, y: 20 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.95, y: 20 }}
-          className="bg-white rounded-2xl w-full max-w-lg shadow-xl relative z-10 overflow-hidden"
+          ref={panelRef}
+          {...dialogProps}
+          initial={{ scale: 0.95, opacity: 0 }}
+          animate={{ scale: 1, opacity: 1 }}
+          exit={{ scale: 0.95, opacity: 0 }}
+          className="relative bg-white rounded-2xl shadow-xl w-full max-w-xl overflow-hidden z-10 my-8"
         >
-          <div className="px-6 py-4 border-b border-gray-100 flex justify-between items-center bg-gray-50/50">
-            <h2 className="text-xl font-bold text-gray-900">
+          <div className="flex justify-between items-center p-6 border-b border-gray-100">
+            <h2 id={titleId} className="text-xl font-bold text-gray-900">
               {initialData ? t('Edit Item') : t('Add New Item')}
             </h2>
-            <button 
-              onClick={onClose}
-              className="p-2 hover:bg-gray-100 rounded-full transition-colors text-gray-500"
+            <button
+              onClick={handleClose}
+              className="text-gray-400 hover:text-gray-500 transition-colors p-1 rounded-lg hover:bg-gray-50"
             >
               <X size={20} />
             </button>
           </div>
 
-          <div className="flex border-b border-gray-100 bg-gray-50/20">
+          <div className="flex border-b border-gray-100">
             <button
               type="button"
               onClick={() => setActiveTab('general')}
-              className={`flex-1 py-3 text-center text-sm font-semibold border-b-2 transition-all ${
+              className={`flex-1 py-3 text-sm font-semibold text-center border-b-2 transition-colors ${
                 activeTab === 'general'
-                  ? 'border-mocha-700 text-mocha-800 bg-white'
+                  ? 'border-caramel text-caramel bg-mocha-50/20'
                   : 'border-transparent text-gray-500 hover:text-gray-900 hover:bg-gray-50/30'
               }`}
             >
-              {t('Item Details')}
+              {t('Item Details') || 'تفاصيل الصنف'}
             </button>
             <button
               type="button"
               onClick={() => setActiveTab('recipe')}
-              className={`flex-1 py-3 text-center text-sm font-semibold border-b-2 transition-all ${
+              className={`flex-1 py-3 text-sm font-semibold text-center border-b-2 transition-colors ${
                 activeTab === 'recipe'
-                  ? 'border-mocha-700 text-mocha-800 bg-white'
+                  ? 'border-caramel text-caramel bg-mocha-50/20'
                   : 'border-transparent text-gray-500 hover:text-gray-900 hover:bg-gray-50/30'
               }`}
             >
@@ -246,8 +345,9 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
               {activeTab === 'general' ? (
                 <>
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">{t('Item Name')}</label>
+                    <label htmlFor="menu-item-name" className="block text-sm font-medium text-gray-700 mb-1">{t('Item Name')}</label>
                     <input
+                      id="menu-item-name"
                       type="text"
                       required
                       value={formData.name}
@@ -258,8 +358,9 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
                   </div>
 
                   <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">{t('Description')}</label>
+                    <label htmlFor="menu-item-description" className="block text-sm font-medium text-gray-700 mb-1">{t('Description')}</label>
                     <textarea
+                      id="menu-item-description"
                       rows={3}
                       value={formData.description}
                       onChange={(e) => setFormData({ ...formData, description: e.target.value })}
@@ -270,8 +371,9 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
 
                   <div className="grid grid-cols-3 gap-3">
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">{t('Price') || 'السعر'}</label>
+                      <label htmlFor="menu-item-price" className="block text-sm font-medium text-gray-700 mb-1">{t('Price') || 'السعر'}</label>
                       <input
+                        id="menu-item-price"
                         type="number"
                         step="0.01"
                         required
@@ -283,8 +385,9 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">{t('Category') || 'قسم المنيو'}</label>
+                      <label htmlFor="menu-item-category" className="block text-sm font-medium text-gray-700 mb-1">{t('Item Category (POS Bar)') || 'تصنيف الصنف (شريط الكاشير)'}</label>
                       <select
+                        id="menu-item-category"
                         value={showNewCategoryInput ? 'CREATE_NEW' : formData.category}
                         onChange={handleCategoryChange}
                         className="w-full px-3 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent transition-all bg-white text-sm"
@@ -297,8 +400,9 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
                     </div>
 
                     <div>
-                      <label className="block text-sm font-medium text-gray-700 mb-1">{t('Preparation Destination') || 'مكان التحضير (الكاشير)'}</label>
+                      <label htmlFor="menu-item-destination" className="block text-sm font-medium text-gray-700 mb-1">{t('Preparation Destination (Receipt Print)') || 'جهة التحضير (طباعة البون والفاتورة)'}</label>
                       <select
+                        id="menu-item-destination"
                         value={preparation}
                         onChange={(e) => setPreparation(e.target.value)}
                         className="w-full px-3 py-2 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent transition-all bg-white text-sm font-bold text-mocha-800"
@@ -311,10 +415,11 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
 
                   {showNewCategoryInput && (
                     <div className="animate-fadeIn">
-                      <label className="block text-sm font-medium text-gray-700 mb-1">
+                      <label htmlFor="menu-item-new-category" className="block text-sm font-medium text-gray-700 mb-1">
                         {t('New Category Name') || 'اسم القسم الجديد'}
                       </label>
                       <input
+                        id="menu-item-new-category"
                         type="text"
                         required
                         placeholder={t('e.g. Tea, Desserts') || 'مثال: شاي، حلويات'}
@@ -352,32 +457,54 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
                   ) : (
                     <div className="space-y-2 max-h-[220px] overflow-y-auto pr-1">
                       {mappedIngredients.map((ing, idx) => {
-                        const currentInvItem = inventoryItems.find(i => i.id === ing.inventoryItemId);
                         return (
                           <div key={idx} className="flex gap-2 items-center bg-gray-50 p-2 rounded-xl border border-gray-100">
                             <select
-                               value={ing.inventoryItemId}
-                               onChange={(e) => updateIngredientRow(idx, e.target.value, ing.quantity)}
-                               className="flex-1 px-3 py-1.5 rounded-lg border border-gray-200 text-xs focus:outline-none bg-white font-medium"
+                              aria-label={t('Add Ingredient')}
+                              value={ing.inventoryItemId}
+                              onChange={(e) => handleItemChange(idx, e.target.value)}
+                              className="flex-1 min-w-0 px-2.5 py-1.5 rounded-lg border border-gray-200 text-xs focus:outline-none bg-white font-medium truncate"
                             >
                               {inventoryItems.map(item => (
                                 <option key={item.id} value={item.id}>{t(item.name) || item.name}</option>
                               ))}
                             </select>
 
-                            <div className="flex items-center gap-1.5 w-24">
+                            <div className="flex items-center gap-1.5 shrink-0">
                               <input
+                                aria-label={t('Quantity Used')}
                                 type="number"
-                                step="0.001"
+                                step="any"
+                                min="0"
+                                dir="ltr"
                                 required
-                                value={ing.quantity || ''}
-                                onChange={(e) => updateIngredientRow(idx, ing.inventoryItemId, parseFloat(e.target.value) || 0)}
-                                className="w-full px-2 py-1.5 rounded-lg border border-gray-200 text-xs focus:outline-none text-center font-bold"
+                                value={ing.displayQuantity}
+                                onChange={(e) => handleQuantityChange(idx, e.target.value)}
+                                className="w-20 px-2 py-1.5 rounded-lg border border-gray-200 text-xs focus:outline-none text-center font-bold"
                                 placeholder="0"
                               />
-                              <span className="text-[10px] text-gray-400 font-semibold whitespace-nowrap">
-                                {currentInvItem ? t(currentInvItem.unit) : ''}
-                              </span>
+                              <select
+                                value={ing.displayUnit}
+                                onChange={(e) => handleUnitChange(idx, e.target.value)}
+                                aria-label={t('Unit')}
+                                className="px-2 py-1.5 rounded-lg border border-gray-200 text-xs focus:outline-none bg-white font-bold text-mocha-800 cursor-pointer shadow-xs min-w-[78px]"
+                              >
+                                <optgroup label={language === 'ar' ? 'أوزان' : 'Weights'}>
+                                  <option value="g">{language === 'ar' ? 'جرام (g)' : 'g'}</option>
+                                  <option value="kg">{language === 'ar' ? 'كجم (kg)' : 'kg'}</option>
+                                </optgroup>
+                                <optgroup label={language === 'ar' ? 'سوائل' : 'Volumes'}>
+                                  <option value="ml">{language === 'ar' ? 'مل (ml)' : 'ml'}</option>
+                                  <option value="liter">{language === 'ar' ? 'لتر (L)' : 'liter'}</option>
+                                  <option value="cup">{language === 'ar' ? 'كوب' : 'cup'}</option>
+                                  <option value="shot">{language === 'ar' ? 'شوت' : 'shot'}</option>
+                                </optgroup>
+                                <optgroup label={language === 'ar' ? 'قطع ووحدات' : 'Count'}>
+                                  <option value="piece">{language === 'ar' ? 'قطعة' : 'piece'}</option>
+                                  <option value="portion">{language === 'ar' ? 'حصة' : 'portion'}</option>
+                                  <option value="can">{language === 'ar' ? 'علبة' : 'can'}</option>
+                                </optgroup>
+                              </select>
                             </div>
 
                             <button
@@ -396,12 +523,12 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
                   <div className="bg-mocha-50/50 rounded-xl p-3 border border-mocha-100 flex flex-col gap-1.5 text-xs text-mocha-900 mt-2">
                     <div className="flex justify-between items-center font-medium">
                       <span>{t('Recipe Cost')}:</span>
-                      <span className="font-bold text-gray-800">EGP {calculatedCost.toFixed(2)}</span>
+                      <span className="font-bold text-gray-800">{calculatedCost.toFixed(2)} ج.م</span>
                     </div>
                     <div className="flex justify-between items-center font-medium">
                       <span>{t('Potential Margin')}:</span>
                       <span className={`font-bold ${marginStats.profit >= 0 ? 'text-green-600' : 'text-red-500'}`}>
-                        EGP {marginStats.profit.toFixed(2)} ({marginStats.percentage.toFixed(0)}%)
+                        {marginStats.profit.toFixed(2)} ج.م ({marginStats.percentage.toFixed(0)}%)
                       </span>
                     </div>
                   </div>
@@ -409,19 +536,21 @@ export function MenuModal({ isOpen, onClose, onSave, initialData, existingItems 
               )}
             </div>
 
-            <div className="flex gap-3 pt-4 border-t border-gray-100 mt-6">
+            <div className="flex gap-3 pt-6 border-t border-gray-100 mt-6">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleClose}
                 className="flex-1 px-4 py-2 rounded-xl border border-gray-200 text-gray-700 font-medium hover:bg-gray-50 transition-colors"
               >
                 {t('Cancel')}
               </button>
               <button
                 type="submit"
-                className="flex-1 px-4 py-2 rounded-xl bg-mocha-700 text-white font-medium hover:bg-mocha-800 shadow-lg shadow-mocha-500/20 transition-colors"
+                disabled={isSaving}
+                aria-busy={isSaving}
+                className="flex-1 px-4 py-2 rounded-xl bg-mocha-700 text-white font-medium hover:bg-mocha-800 shadow-lg shadow-mocha-500/20 transition-colors disabled:opacity-50"
               >
-                {initialData ? t('Save Changes') : t('Create Item')}
+                {t('Save Changes')}
               </button>
             </div>
           </form>

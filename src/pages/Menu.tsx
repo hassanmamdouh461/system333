@@ -1,32 +1,61 @@
 import React, { useState } from 'react';
 import { Plus, Search } from 'lucide-react';
-import { MenuItem, CATEGORIES } from '../types/menu';
+import { MenuItem } from '../types/menu';
 import { MenuItemCard } from '../components/menu/MenuItemCard';
 import { MenuModal } from '../components/menu/MenuModal';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useMenu } from '../hooks/useMenu';
 import { useLanguage } from '../context/LanguageContext';
+import { reportFailure } from '../utils/reportFailure';
+import { RecipeIngredient } from '../global';
 
 export default function Menu() {
   const { t, isRtl } = useLanguage();
   // Use local SQLite database for data persistence
-  const { items, loading, error, addItem, updateItem, deleteItem, toggleAvailability } = useMenu();
+  const { items, error, addItem, updateItem, deleteItem, toggleAvailability } = useMenu();
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [searchQuery, setSearchQuery] = useState('');
   
   // Modal State
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
+  // Keep partial-create identity without resetting the modal's unsaved recipe.
+  const createdItemId = React.useRef<string | null>(null);
 
-  // Admin menu page: filter by preparation destination only (Bar / Kitchen)
+  // Menu categories: Only categories that actually contain at least 1 item
   const dynamicCategories = React.useMemo(() => {
-    return ['All', 'Bar', 'Kitchen'];
-  }, []);
+    const catCounts = new Map<string, number>();
+
+    items.forEach(item => {
+      if (!item.category) return;
+      const parts = item.category.split('|');
+      const menuCat = parts[0]?.trim();
+      if (menuCat && menuCat !== 'All' && menuCat !== 'Kitchen' && menuCat !== 'Bar') {
+        catCounts.set(menuCat, (catCounts.get(menuCat) || 0) + 1);
+      }
+    });
+
+    const activeCats = Array.from(catCounts.entries())
+      .filter(([_, count]) => count > 0)
+      .map(([cat]) => cat);
+
+    if (activeCats.length === 0) {
+      return ['All'];
+    }
+
+    return ['All', ...activeCats];
+  }, [items]);
+
+  React.useEffect(() => {
+    if (selectedCategory !== 'All' && !dynamicCategories.includes(selectedCategory)) {
+      setSelectedCategory('All');
+    }
+  }, [dynamicCategories, selectedCategory]);
 
   const filteredItems = items.filter(item => {
     const parts = item.category ? item.category.split('|') : [];
-    const prepDest = parts[1] || parts[0] || '';
-    const matchesCategory = selectedCategory === 'All' || prepDest === selectedCategory;
+    const menuCat = parts[0]?.trim() || '';
+    const matchesCategory = selectedCategory === 'All' || menuCat === selectedCategory;
     
     const nameTranslated = t(item.name).toLowerCase();
     const descTranslated = t(item.description || '').toLowerCase();
@@ -47,7 +76,7 @@ export default function Menu() {
       await toggleAvailability(id);
     } catch (error) {
       console.error('Failed to toggle status:', error);
-      alert(t('Failed to update item availability'));
+      reportFailure(t('Failed to update item availability'), error);
     }
   };
 
@@ -57,51 +86,46 @@ export default function Menu() {
         await deleteItem(id);
       } catch (error) {
         console.error('Failed to delete item:', error);
-        alert(t('Failed to delete item'));
+        reportFailure(t('Failed to delete item'), error);
       }
     }
   };
 
   const handleEdit = (item: MenuItem) => {
+    createdItemId.current = null;
     setEditingItem(item);
     setIsModalOpen(true);
   };
 
   const handleAddNew = () => {
+    createdItemId.current = null;
     setEditingItem(null);
     setIsModalOpen(true);
   };
 
-  const handleSave = async (itemData: MenuItem | Omit<MenuItem, 'id'>, recipeIngredients: any[]) => {
-    try {
-      let savedItemId = '';
-      if ('id' in itemData) {
-        // Edit existing
-        const { id, ...data } = itemData;
-        await updateItem(id, data);
-        savedItemId = id;
-      } else {
-        // Add new
-        const newItem = await addItem(itemData);
-        if (newItem) {
-          savedItemId = newItem.id;
-        }
-      }
-      
-      if (savedItemId && recipeIngredients) {
-        const { inventoryService } = await import('../services/inventoryService');
-        await inventoryService.saveMenuRecipe(savedItemId, recipeIngredients);
-      }
-      
-      setIsModalOpen(false);
-    } catch (error) {
-      console.error('Failed to save item:', error);
-      alert(t('Failed to save item'));
+  const handleSave = async (itemData: MenuItem | Omit<MenuItem, 'id'>, recipeIngredients: RecipeIngredient[]) => {
+    let savedItemId: string;
+    if ('id' in itemData) {
+      const { id, ...data } = itemData;
+      await updateItem(id, data);
+      savedItemId = id;
+    } else if (createdItemId.current) {
+      savedItemId = createdItemId.current;
+      await updateItem(savedItemId, itemData);
+    } else {
+      const newItem = await addItem(itemData);
+      if (!newItem?.id) throw new Error('Failed to create menu item');
+      savedItemId = newItem.id;
+      createdItemId.current = savedItemId;
     }
+
+    const { inventoryService } = await import('../services/inventoryService');
+    await inventoryService.saveMenuRecipe(savedItemId, recipeIngredients);
+    // Let MenuModal close only after both saves succeed; failures must reach its catch.
   };
 
-  // Show error state
-  if (error) {
+  // A mutation error must not unmount the modal and discard the user's edits.
+  if (error && !isModalOpen) {
     return (
       <div className="flex items-center justify-center h-96">
         <div className="text-center">
@@ -130,17 +154,17 @@ export default function Menu() {
       </div>
 
       {/* Filters & Search */}
-      <div className="bg-white p-2 md:p-3 rounded-2xl shadow-sm border border-gray-100 flex flex-col gap-2 sticky top-0 z-10 backdrop-blur-xl bg-white/95">
-        {/* Categories - Horizontal scroll on mobile */}
-        <div className="flex items-center gap-1.5 overflow-x-auto hide-scrollbar pb-0.5">
-          {dynamicCategories.map(category => (
+      <div className="bg-white p-2.5 md:p-3.5 rounded-2xl shadow-sm border border-gray-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 sticky top-0 z-10 backdrop-blur-xl bg-white/95">
+        {/* Categories - Only show when more than 1 category exists */}
+        <div className="flex items-center gap-1.5 md:gap-2 overflow-x-auto hide-scrollbar pb-0.5">
+          {dynamicCategories.length > 1 && dynamicCategories.map(category => (
             <button
               key={category}
               onClick={() => setSelectedCategory(category)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-medium whitespace-nowrap transition-colors ${
+              className={`px-4 py-2 rounded-xl text-xs md:text-sm font-bold whitespace-nowrap transition-all border ${
                 selectedCategory === category
-                  ? 'bg-mocha-700 text-white'
-                  : 'bg-mocha-100 text-mocha-800 hover:bg-mocha-200'
+                  ? 'bg-mocha-600 text-white border-mocha-700 shadow-sm'
+                  : 'bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100'
               }`}
             >
               {t(category) || category}
@@ -149,22 +173,23 @@ export default function Menu() {
         </div>
 
         {/* Search */}
-        <div className="relative w-full">
+        <div className="relative w-full sm:w-72">
           <Search className={`absolute top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4 ${isRtl ? 'right-3' : 'left-3'}`} />
           <input
+            aria-label={t('Search items...')}
             type="text"
             placeholder={t('Search items...')}
             value={searchQuery}
             onChange={(e) => setSearchQuery(e.target.value)}
-            className={`w-full py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-caramel focus:border-transparent text-sm ${isRtl ? 'pr-9 pl-4' : 'pl-9 pr-4'}`}
+            className={`w-full py-2 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-mocha-500 focus:border-transparent text-sm font-semibold ${isRtl ? 'pr-9 pl-4' : 'pl-9 pr-4'}`}
           />
         </div>
       </div>
 
-      {/* Menu Grid — 2 cols on mobile, 3 on tablet, 4 on desktop */}
+      {/* Menu Grid — responsive layout filling horizontal space */}
       <motion.div 
         layout
-        className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-6"
+        className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5 gap-4 md:gap-5"
       >
         <AnimatePresence>
           {filteredItems.map(item => (

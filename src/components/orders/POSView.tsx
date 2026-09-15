@@ -1,12 +1,18 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { useState, useMemo, useEffect, useRef, useCallback } from 'react';
+import { useAuth } from '../../context/AuthContext';
 import { getTaxRate } from '../../utils/settingsConfig';
-import { MenuItem, CATEGORIES } from '../../types/menu';
+import { buildOrderTotals, roundMoney } from '../../utils/orderTotals';
+import { MenuItem } from '../../types/menu';
 import { OrderItem, Order } from '../../types/order';
 import { useLanguage } from '../../context/LanguageContext';
-import { Coffee, Trash2, Plus, Minus, CreditCard, DollarSign, Check, XCircle, Printer, Search } from 'lucide-react';
+import { Coffee, Trash2, Plus, Minus, CreditCard, DollarSign, Check, XCircle, Printer, Search, AlertCircle } from 'lucide-react';
 import { clsx } from 'clsx';
 import { printCustomerReceipt } from '../../utils/printReceipts';
+import { playKeypadClick, playAddItemSound, playPaymentSuccessChime, playWarningSound } from '../../utils/soundEffects';
+import { getTables, removeTable } from '../../utils/tablesConfig';
+import { TablesConfigModal } from '../settings/TablesConfigModal';
+import { Cashier } from '../../global';
+import { UserRound, UserRoundPlus, UserRoundCheck, X, Camera } from 'lucide-react';
 
 interface POSViewProps {
   menuItems: MenuItem[];
@@ -16,16 +22,19 @@ interface POSViewProps {
     paymentStatus: 'Paid' | 'Unpaid',
     paymentMethod?: 'Cash' | 'Card',
     paidAmount?: number,
-    customerPhone?: string,
-    pointsEarned?: number,
-    pointsRedeemed?: number,
-    customerName?: string
+    cashierName?: string,
+    cashierAvatar?: string
   ) => Promise<Order | null>;
   estimatedOrderNumber: string;
 }
 
 export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSViewProps) {
-  const { t, isRtl, language } = useLanguage();
+  const { t, isRtl } = useLanguage();
+  const { branch } = useAuth();
+  const branchId = branch?.branchId;
+  const [isSaving, setIsSaving] = useState(false);
+  const savingRef = useRef(false);
+  const [saveError, setSaveError] = useState('');
   
   const [invoiceItems, setInvoiceItems] = useState<OrderItem[]>(() => {
     try {
@@ -50,10 +59,207 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
   const [tableId, setTableId] = useState<string>(() => {
     return localStorage.getItem('pos_tableId') || '';
   });
+  const [tables, setTablesList] = useState<string[]>(() => getTables());
+  const [isEditTablesMode, setIsEditTablesMode] = useState(false);
+  const [isTablesModalOpen, setIsTablesModalOpen] = useState(false);
+
+  // ─── Cashier selection ─────────────────────────────────────────────────────
+  const [cashiers, setCashiers] = useState<Cashier[]>([]);
+  // Persist only an identity hint. Names/photos must come from the current branch's DB.
+  const [activeCashier, setActiveCashier] = useState<Cashier | null>(null);
+  const selectedCashierId = useRef<string | null>(null);
+  const cashierFetchId = useRef(0);
+  const currentBranch = useRef(branchId);
+  currentBranch.current = branchId;
+
+  const selectCashier = useCallback((cashier: Cashier | null) => {
+    selectedCashierId.current = cashier?.id ?? null;
+    setActiveCashier(cashier);
+    if (cashier) {
+      localStorage.setItem('pos_activeCashier', JSON.stringify({ id: cashier.id, branchId }));
+    } else {
+      localStorage.removeItem('pos_activeCashier');
+    }
+  }, [branchId]);
+
+  const [isCashierModalOpen, setIsCashierModalOpen] = useState(false);
+  const [newCashierName, setNewCashierName] = useState('');
+
+  const refreshCashiers = useCallback(async () => {
+    if (!window.electronAPI?.getCashiers) return;
+    const fetchId = ++cashierFetchId.current;
+    try {
+      const list = await window.electronAPI.getCashiers();
+      if (fetchId !== cashierFetchId.current || currentBranch.current !== branchId) return;
+      setCashiers(list);
+
+      let targetId = selectedCashierId.current;
+      if (!targetId) {
+        try {
+          const savedRaw = localStorage.getItem('pos_activeCashier');
+          if (savedRaw) {
+            const parsed = JSON.parse(savedRaw);
+            if (parsed && typeof parsed === 'object' && parsed.id) {
+              if (!parsed.branchId || parsed.branchId === branchId) {
+                targetId = parsed.id;
+              }
+            }
+          }
+        } catch {
+          // ignore error
+        }
+      }
+
+      if (list.length === 0) {
+        selectCashier(null);
+      } else if (targetId) {
+        const found = list.find(c => c.id === targetId);
+        if (found) {
+          selectCashier(found);
+        } else {
+          selectCashier(null);
+        }
+      } else {
+        selectCashier(null);
+      }
+    } catch (err) {
+      console.error('Failed to load cashiers:', err);
+    }
+  }, [branchId, selectCashier]);
+
+  useEffect(() => {
+    refreshCashiers();
+  }, [refreshCashiers]);
+
+  // ─── Cashier avatar ─────────────────────────────────────────────────────────
+  const [newCashierAvatar, setNewCashierAvatar] = useState<string | undefined>(undefined);
+
+  // Shrink the picked photo to a small square JPEG data URL so it stays cheap to store
+  // and print; the raw phone-camera file is multi-MB and would bloat SQLite and receipts.
+  const resizeImageFile = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onerror = () => reject(new Error('read failed'));
+      reader.onload = () => {
+        const img = new Image();
+        img.onerror = () => reject(new Error('decode failed'));
+        img.onload = () => {
+          const canvas = document.createElement('canvas');
+          canvas.width = 96;
+          canvas.height = 96;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) { reject(new Error('canvas unavailable')); return; }
+          ctx.drawImage(img, 0, 0, 96, 96);
+          resolve(canvas.toDataURL('image/jpeg', 0.82));
+        };
+        img.src = reader.result as string;
+      };
+      reader.readAsDataURL(file);
+    });
+  };
+
+  const handlePickAvatar = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      setNewCashierAvatar(await resizeImageFile(file));
+    } catch (err) {
+      console.error('Failed to process cashier photo:', err);
+      showToast(t('Invalid photo'), 'error');
+    }
+  };
+
+  const handleSetAvatar = async (cashierId: string, file: File | undefined) => {
+    if (!file || !window.electronAPI?.setCashierAvatar) return;
+    try {
+      const avatar = await resizeImageFile(file);
+      const updated = await window.electronAPI.setCashierAvatar(cashierId, avatar);
+      setCashiers(prev => prev.map(c => (c.id === cashierId ? updated : c)));
+      if (selectedCashierId.current === cashierId) {
+        selectCashier(updated);
+      }
+    } catch (err) {
+      console.error(err);
+      showToast(t('Could not save photo'), 'error');
+    }
+  };
+
+  const handleAddCashier = async () => {
+    const name = newCashierName.trim();
+    if (!name) return;
+    if (name.length > 60) {
+      showToast(t('Cashier name must be at most 60 characters'), 'error');
+      return;
+    }
+    if (!window.electronAPI?.createCashier) return;
+    try {
+      const created = await window.electronAPI.createCashier(name, newCashierAvatar);
+      setCashiers(prev => [...prev, created].sort((a, b) => a.name.localeCompare(b.name)));
+      selectCashier(created);
+      setNewCashierName('');
+      setNewCashierAvatar(undefined);
+      setIsCashierModalOpen(false);
+      playKeypadClick();
+    } catch (err) {
+      console.error(err);
+      playWarningSound();
+      showToast(t('Failed to add cashier'), 'error');
+    }
+  };
+
+  const handleDeleteCashier = async (id: string) => {
+    if (!window.electronAPI?.deleteCashier) return;
+    try {
+      await window.electronAPI.deleteCashier(id);
+      if (selectedCashierId.current === id) {
+        selectCashier(null);
+      }
+      setCashiers(prev => {
+        const remaining = prev.filter(c => c.id !== id);
+        if (remaining.length === 0) {
+          selectCashier(null);
+        }
+        return remaining;
+      });
+    } catch (err) {
+      console.error(err);
+    }
+  };
   
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
   const [searchQuery, setSearchQuery] = useState<string>('');
-  const [successMessage, setSuccessMessage] = useState<string | null>(null);
+  const [toastText, setToastText] = useState<string>('');
+  const [toastTone, setToastTone] = useState<'success' | 'error'>('success');
+  const [isToastVisible, setIsToastVisible] = useState(false);
+  const toastTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  /**
+   * `tone` exists because this toast is also the error channel: "Failed to save order",
+   * "Invalid photo", "Order saved but printing failed" all arrived styled as a green tick, so
+   * a cashier read a failure as a confirmation and moved to the next customer.
+   */
+  const showToast = (msg: string, tone: 'success' | 'error' = 'success') => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToastText(msg);
+    setToastTone(tone);
+    setIsToastVisible(true);
+    toastTimeoutRef.current = setTimeout(() => {
+      setIsToastVisible(false);
+    }, 1300);
+  };
+
+  const dismissToast = () => {
+    if (toastTimeoutRef.current) {
+      clearTimeout(toastTimeoutRef.current);
+      toastTimeoutRef.current = null;
+    }
+    setIsToastVisible(false);
+  };
+
+  useEffect(() => {
+    return () => {
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     localStorage.setItem('pos_invoiceItems', JSON.stringify(invoiceItems));
@@ -79,12 +285,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     localStorage.setItem('pos_tableId', tableId);
   }, [tableId]);
 
-  const [isLoyaltyModalOpen, setIsLoyaltyModalOpen] = useState(false);
-  const [loyaltyPhone, setLoyaltyPhone] = useState('');
-  const [loyaltyName, setLoyaltyName] = useState('');
-  const [existingCustomer, setExistingCustomer] = useState<any>(null);
-  const [redeemPoints, setRedeemPoints] = useState(false);
-  const [pendingCheckoutAction, setPendingCheckoutAction] = useState<'save' | 'print'>('save');
+
 
   const handleSetOrderMode = (mode: 'Dine-in' | 'Takeaway') => {
     setOrderMode(mode);
@@ -96,22 +297,53 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     }
   };
 
-  // Available categories for cashier: only All, Bar (بار), Kitchen (مطبخ)
+  // Available categories for cashier: Only categories that actually contain at least 1 available item
   const categories = useMemo(() => {
-    return ['All', 'Bar', 'Kitchen'];
-  }, []);
+    const availableItems = menuItems.filter(
+      item => item.available !== false && (item.available as unknown) !== 0
+    );
+    const catCounts = new Map<string, number>();
+
+    availableItems.forEach(item => {
+      if (!item.category) return;
+      // item.category is stored as "categoryName|preparationDestination"
+      const parts = item.category.split('|');
+      const menuCat = parts[0]?.trim();
+      if (menuCat) {
+        catCounts.set(menuCat, (catCounts.get(menuCat) || 0) + 1);
+      }
+    });
+
+    const activeCats = Array.from(catCounts.entries())
+      .filter(([_, count]) => count > 0)
+      .map(([cat]) => cat);
+
+    if (activeCats.length === 0) {
+      return ['All'];
+    }
+
+    return ['All', ...activeCats];
+  }, [menuItems]);
+
+  useEffect(() => {
+    if (selectedCategory !== 'All' && !categories.includes(selectedCategory)) {
+      setSelectedCategory('All');
+    }
+  }, [categories, selectedCategory]);
 
   // Filtered menu items
   const filteredMenuItems = useMemo(() => {
-    const available = menuItems.filter(item => item.available);
+    const available = menuItems.filter(
+      item => item.available !== false && (item.available as unknown) !== 0
+    );
     
-    // Filter by preparation destination (part after '|')
+    // Filter by item category (part before '|')
     const categoryFiltered = selectedCategory === 'All' 
       ? available 
       : available.filter(item => {
           const parts = item.category ? item.category.split('|') : [];
-          const prepDest = parts[1] || parts[0] || '';
-          return prepDest === selectedCategory;
+          const menuCat = parts[0]?.trim() || '';
+          return menuCat === selectedCategory;
         });
       
     // Next, filter by search query (Arabic & English support)
@@ -131,14 +363,15 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     });
   }, [menuItems, selectedCategory, searchQuery, t]);
 
-  // Total invoice amount
-  const totalAmount = useMemo(() => {
-    return invoiceItems.reduce((sum, item) => sum + item.price * item.quantity, 0);
-  }, [invoiceItems]);
-
+  // Invoice money. This must go through the same helper that writes the snapshot stored
+  // with the order, not a second floating-point pipeline: the two used to disagree by a
+  // cent, and the stray cent then printed a phantom loyalty-discount line on a bill that
+  // was paid in full.
   const taxRate = getTaxRate();
-  const taxAmount = useMemo(() => totalAmount * taxRate, [totalAmount, taxRate]);
-  const grandTotal = useMemo(() => totalAmount + taxAmount, [totalAmount, taxAmount]);
+  const { grandTotal } = useMemo(
+    () => buildOrderTotals(invoiceItems, taxRate),
+    [invoiceItems, taxRate]
+  );
 
   // Items count
   const itemsCount = useMemo(() => {
@@ -149,11 +382,41 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
   const changeAmount = useMemo(() => {
     const received = parseFloat(receivedAmount);
     if (isNaN(received) || received <= grandTotal) return 0;
-    return received - grandTotal;
+    return roundMoney(received - grandTotal);
   }, [receivedAmount, grandTotal]);
+
+  // Map of item quantities already added to invoice
+  const cartItemCounts = useMemo(() => {
+    const map: Record<string, number> = {};
+    for (const item of invoiceItems) {
+      map[item.id] = (map[item.id] || 0) + item.quantity;
+    }
+    return map;
+  }, [invoiceItems]);
+
+  // Smart tender cash buttons based on grandTotal
+  const smartCashButtons = useMemo(() => {
+    if (grandTotal <= 0) return [10, 20, 50, 100, 200, 500];
+    const rounded = Math.ceil(grandTotal);
+    const exact = Number(grandTotal.toFixed(2));
+    const set = new Set<number>();
+    set.add(exact);
+    set.add(rounded);
+    [10, 20, 50, 100, 200, 500].forEach(base => {
+      const val = Math.ceil(rounded / base) * base;
+      if (val >= rounded) set.add(val);
+    });
+    if (rounded < 50) set.add(50);
+    if (rounded < 100) set.add(100);
+    if (rounded < 200) set.add(200);
+    if (rounded < 500) set.add(500);
+    return Array.from(set).sort((a, b) => a - b).slice(0, 6);
+  }, [grandTotal]);
 
   // Add item to invoice
   const handleAddItem = (menuItem: MenuItem) => {
+    dismissToast();
+    playAddItemSound();
     setInvoiceItems(prev => {
       const existing = prev.find(item => item.id === menuItem.id);
       if (existing) {
@@ -176,6 +439,7 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
 
   // Adjust item quantity
   const handleAdjustQuantity = (itemId: string, amount: number) => {
+    playKeypadClick();
     setInvoiceItems(prev => {
       return prev
         .map(item => {
@@ -191,11 +455,13 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
 
   // Remove item from invoice
   const handleRemoveItem = (itemId: string) => {
+    playKeypadClick();
     setInvoiceItems(prev => prev.filter(item => item.id !== itemId));
   };
 
   // Keypad presses
   const handleKeypadPress = (val: string) => {
+    playKeypadClick();
     setReceivedAmount(prev => {
       if (val === 'C') return '0';
       if (val === '.') {
@@ -207,16 +473,15 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     });
   };
 
-  // Quick cash buttons
+  // Quick cash buttons (sets tendered amount directly for fast cashier flow)
   const handleQuickCash = (amount: number) => {
-    setReceivedAmount(prev => {
-      const current = parseFloat(prev) || 0;
-      return String(current + amount);
-    });
+    playKeypadClick();
+    setReceivedAmount(String(amount));
   };
 
   // Reset current invoice
   const handleReset = () => {
+    playKeypadClick();
     setInvoiceItems([]);
     setReceivedAmount('0');
     setPaymentMethod('Cash');
@@ -230,16 +495,9 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
     localStorage.removeItem('pos_tableId');
   };
 
-  // Save and place order
-  const handleSaveOrder = () => {
-    triggerCheckout('save');
-  };
-
-  const handlePrintAndPay = () => {
-    triggerCheckout('print');
-  };
-
-  const triggerCheckout = (action: 'save' | 'print') => {
+  // Save and place order directly
+  const handleSaveOrder = async () => {
+    if (savingRef.current) return;
     if (invoiceItems.length === 0) {
       alert(t('Please add items to invoice first'));
       return;
@@ -250,125 +508,132 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
       return;
     }
 
-    setPendingCheckoutAction(action);
-    setLoyaltyPhone('');
-    setLoyaltyName('');
-    setExistingCustomer(null);
-    setRedeemPoints(false);
-    setIsLoyaltyModalOpen(true);
-  };
-
-  const handlePhoneChange = async (phone: string) => {
-    // Only numbers allowed, max 11 digits
-    const cleaned = phone.replace(/\D/g, '').slice(0, 11);
-    setLoyaltyPhone(cleaned);
-    if (cleaned.length === 11) {
-      try {
-        const cust = await window.electronAPI.getCustomerByPhone(cleaned);
-        setExistingCustomer(cust);
-        if (cust) {
-          setLoyaltyName(cust.name);
-        } else {
-          setLoyaltyName('');
-        }
-      } catch (err) {
-        console.error(err);
-      }
-    } else {
-      setExistingCustomer(null);
-      setLoyaltyName('');
-    }
-  };
-
-  const handleConfirmLoyalty = async () => {
-    let customerPhone: string | undefined = undefined;
-    let pointsEarned = 0;
-    let pointsRedeemed = 0;
-
-    const trimmedPhone = loyaltyPhone.trim();
-    if (trimmedPhone) {
-      if (trimmedPhone.length !== 11) {
-        alert(t('Phone number must be exactly 11 digits'));
-        return;
-      }
-      customerPhone = trimmedPhone;
-
-      if (redeemPoints && existingCustomer) {
-        pointsRedeemed = Math.min(existingCustomer.points, grandTotal);
-      }
-
-      const remainingAmount = Math.max(0, grandTotal - pointsRedeemed);
-      pointsEarned = Math.floor(remainingAmount / 50);
-      // Loyalty points are applied atomically with the order in the main
-      // process (Issue 26) — no separate saveCustomer call here.
-    }
-
-    setIsLoyaltyModalOpen(false);
-
-    // Proceed with checkout
-    const customerName = loyaltyName.trim() || undefined;
-    if (pendingCheckoutAction === 'save') {
-      await executeSaveOrder(customerPhone, pointsEarned, pointsRedeemed, customerName);
-    } else {
-      await executePrintAndPay(customerPhone, pointsEarned, pointsRedeemed, customerName);
-    }
-  };
-
-  const handleSkipLoyalty = async () => {
-    setIsLoyaltyModalOpen(false);
-    if (pendingCheckoutAction === 'save') {
-      await executeSaveOrder();
-    } else {
-      await executePrintAndPay();
-    }
-  };
-
-  const executeSaveOrder = async (customerPhone?: string, pointsEarned?: number, pointsRedeemed?: number, customerName?: string) => {
+    savingRef.current = true;
+    setIsSaving(true);
+    setSaveError('');
     try {
       const finalTableId = orderMode === 'Takeaway' ? 'Takeaway' : `${t('Table')} ${tableId}`;
-      const paidAmt = paymentStatus === 'Paid' ? (grandTotal - (pointsRedeemed || 0)) : undefined;
-      await onCreateOrder(finalTableId, invoiceItems, paymentStatus, paymentMethod, paidAmt, customerPhone, pointsEarned, pointsRedeemed, customerName);
+      const paidAmt = paymentStatus === 'Paid' ? grandTotal : undefined;
+      const createdOrder = await onCreateOrder(
+        finalTableId,
+        invoiceItems,
+        paymentStatus,
+        paymentMethod,
+        paidAmt,
+        activeCashier?.name,
+        activeCashier?.avatar
+      );
+
+      if (!createdOrder) {
+        const msg = t('Failed to save order');
+        setSaveError(msg);
+        playWarningSound();
+        showToast(msg, 'error');
+        return;
+      }
 
       handleReset();
-      setSuccessMessage(t('Successfully saved order'));
-      setTimeout(() => setSuccessMessage(null), 3000);
-    } catch (err) {
+      playPaymentSuccessChime();
+      showToast(t('Successfully saved order'));
+    } catch (err: unknown) {
       console.error(err);
-      alert('Failed to save order');
+      playWarningSound();
+      const msg = (err as Error)?.message || t('Failed to save order');
+      setSaveError(msg);
+      showToast(msg, 'error');
+    } finally {
+      savingRef.current = false;
+      setIsSaving(false);
     }
   };
 
-  const executePrintAndPay = async (customerPhone?: string, pointsEarned?: number, pointsRedeemed?: number, customerName?: string) => {
+  // Print receipt and save directly
+  const handlePrintAndPay = async () => {
+    if (savingRef.current) return;
+    if (invoiceItems.length === 0) {
+      alert(t('Please add items to invoice first'));
+      return;
+    }
+
+    if (orderMode === 'Dine-in' && !tableId.trim()) {
+      alert(t('Please select table number first'));
+      return;
+    }
+
+    savingRef.current = true;
+    setIsSaving(true);
+    setSaveError('');
+    let createdOrder: Order | null = null;
     try {
       const finalTableId = orderMode === 'Takeaway' ? 'Takeaway' : `${t('Table')} ${tableId}`;
       const finalPaymentStatus = 'Paid';
-      const paidAmt = grandTotal - (pointsRedeemed || 0);
+      const paidAmt = grandTotal;
 
-      // Create order
-      const newOrder = await onCreateOrder(finalTableId, invoiceItems, finalPaymentStatus, paymentMethod, paidAmt, customerPhone, pointsEarned, pointsRedeemed, customerName);
+      createdOrder = await onCreateOrder(
+        finalTableId,
+        invoiceItems,
+        finalPaymentStatus,
+        paymentMethod,
+        paidAmt,
+        activeCashier?.name,
+        activeCashier?.avatar
+      );
 
-      if (newOrder) {
-        printCustomerReceipt(newOrder, language);
+      if (!createdOrder) {
+        const msg = t('Failed to save order');
+        setSaveError(msg);
+        playWarningSound();
+        showToast(msg, 'error');
+        return;
       }
 
       handleReset();
-      setSuccessMessage(t('Successfully saved order'));
-      setTimeout(() => setSuccessMessage(null), 3050);
-    } catch (err) {
+      playPaymentSuccessChime();
+      showToast(t('Successfully saved order'));
+    } catch (err: unknown) {
       console.error(err);
-      alert('Failed to process print and save');
+      playWarningSound();
+      const msg = (err as Error)?.message || t('Failed to process print and save');
+      setSaveError(msg);
+      showToast(msg, 'error');
+      return;
+    } finally {
+      savingRef.current = false;
+      setIsSaving(false);
+    }
+
+    if (createdOrder) {
+      try {
+        await printCustomerReceipt(createdOrder, activeCashier?.avatar);
+      } catch (printErr) {
+        console.error('Print failed:', printErr);
+        showToast(t('Order saved but printing failed'), 'error');
+      }
     }
   };
 
   return (
-    <div className="flex flex-col lg:flex-row gap-4 h-full overflow-hidden text-gray-800">
+    <div className="flex flex-col lg:flex-row gap-2 md:gap-2.5 h-full w-full overflow-hidden text-gray-800">
       
-      {/* 1. LEFT COLUMN: Payments & Calculator (Width 28%) - Only visible for Takeaway */}
+      {/* 1. LEFT COLUMN: Payments & Calculator (Width 26-27%) - Only visible for Takeaway */}
       {orderMode === 'Takeaway' && (
-        <div className="w-full lg:w-[28%] lg:h-full bg-white p-2 md:p-2.5 rounded-2xl border border-gray-200/80 shadow-sm flex flex-col justify-between overflow-hidden pos-calculator">
+        <div className="w-full lg:w-[27%] xl:w-[26%] lg:h-full bg-white p-2.5 rounded-2xl border border-gray-200/80 shadow-sm flex flex-col justify-between overflow-hidden pos-calculator">
           <div className="overflow-y-auto hide-scrollbar flex-1 pr-0.5 flex flex-col justify-start gap-2 h-full">
-            <h2 className="font-extrabold text-xs md:text-sm text-mocha-800 border-b border-gray-100 pb-1.5 shrink-0">
+            <h2 className="font-extrabold text-xs md:text-sm text-mocha-800 border-b border-gray-100 pb-1.5 shrink-0 flex items-center justify-between">
               <span className="font-sans">{t('Payment & Invoice')}</span>
+              {grandTotal > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    playKeypadClick();
+                    setReceivedAmount(grandTotal.toFixed(2));
+                  }}
+                  className="text-[10px] text-mocha-700 bg-mocha-50 hover:bg-mocha-100 border border-mocha-200 px-2 py-0.5 rounded-lg font-bold transition-all"
+                  title={t('Exact')}
+                >
+                  {t('Exact')} ({grandTotal.toFixed(2)})
+                </button>
+              )}
             </h2>
             
             {/* Total Due & Received Amount Input */}
@@ -399,17 +664,27 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
               </div>
             </div>
 
-            {/* Quick Cash Buttons */}
+            {/* Dynamic Smart Cash Buttons */}
             <div className="grid grid-cols-3 gap-1.5 shrink-0">
-              {[10, 20, 50, 100, 200, 500].map(amt => (
-                <button
-                  key={amt}
-                  onClick={() => handleQuickCash(amt)}
-                  className="bg-gray-100 hover:bg-gray-200 active:scale-95 transition-all text-xs md:text-sm font-black text-gray-800 py-1.5 rounded-xl border border-gray-200 shadow-sm"
-                >
-                  {amt}
-                </button>
-              ))}
+              {smartCashButtons.map(amt => {
+                const isExact = grandTotal > 0 && Math.abs(amt - grandTotal) < 0.001;
+                const isRound = grandTotal > 0 && Math.abs(amt - Math.ceil(grandTotal)) < 0.001 && !isExact;
+                return (
+                  <button
+                    key={amt}
+                    onClick={() => handleQuickCash(amt)}
+                    className={`active:scale-95 transition-all text-xs md:text-sm font-black py-1.5 rounded-xl border shadow-sm ${
+                      parseFloat(receivedAmount) === amt 
+                        ? 'bg-mocha-700 text-white border-mocha-800 shadow-mocha-500/30' 
+                        : 'bg-gray-100 hover:bg-gray-200 text-gray-800 border-gray-200'
+                    }`}
+                  >
+                    {amt}
+                    {isExact && <span className="text-[9px] block text-emerald-600 font-bold">ضبط</span>}
+                    {isRound && <span className="text-[9px] block text-caramel">تقريب</span>}
+                  </button>
+                );
+              })}
             </div>
 
             {/* Keypad */}
@@ -463,45 +738,68 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
 
           {/* Action Button Row */}
           <div className="space-y-1.5 mt-2 pt-1.5 border-t border-gray-100 shrink-0">
+            {saveError && (
+              <div className="text-center text-xs text-red-600 font-bold bg-red-50 p-1.5 rounded-xl border border-red-200">
+                {saveError}
+              </div>
+            )}
             <button
               onClick={handlePrintAndPay}
-              className="w-full bg-emerald-600 hover:bg-emerald-700 text-white font-black py-1.5 rounded-xl border border-emerald-700 transition-all active:scale-95 text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm"
+              disabled={invoiceItems.length === 0 || isSaving}
+              className={clsx(
+                "w-full font-black py-1.5 rounded-xl border transition-all text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm",
+                invoiceItems.length === 0 || isSaving
+                  ? "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed shadow-none"
+                  : "bg-emerald-600 hover:bg-emerald-700 text-white border-emerald-700 active:scale-95 shadow-emerald-600/20"
+              )}
             >
               <Printer size={14} />
-              <span className="font-sans">{t('Print & Pay')}</span>
+              <span className="font-sans">{isSaving ? t('Saving...') : t('Print & Pay')}</span>
             </button>
             
             <div className="grid grid-cols-2 gap-1.5">
               <button
                 onClick={handleReset}
-                className="bg-red-50 hover:bg-red-100 text-red-600 font-black py-1.5 rounded-xl border border-red-200 transition-all active:scale-95 text-xs sm:text-sm text-center"
+                disabled={isSaving}
+                className={clsx(
+                  "font-black py-1.5 rounded-xl border transition-all text-xs sm:text-sm text-center",
+                  isSaving
+                    ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
+                    : "bg-red-50 hover:bg-red-100 text-red-600 border-red-200 active:scale-95"
+                )}
               >
                 <span className="font-sans">{t('Clear / Reset')}</span>
               </button>
               <button
                 onClick={handleSaveOrder}
-                className="bg-mocha-600 hover:bg-mocha-700 text-white font-black py-1.5 rounded-xl border border-mocha-700 transition-all active:scale-95 text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm"
+                disabled={invoiceItems.length === 0 || isSaving}
+                className={clsx(
+                  "font-black py-1.5 rounded-xl border transition-all text-xs sm:text-sm text-center flex items-center justify-center gap-1.5 shadow-sm",
+                  invoiceItems.length === 0 || isSaving
+                    ? "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed shadow-none"
+                    : "bg-mocha-600 hover:bg-mocha-700 text-white border-mocha-700 active:scale-95 shadow-mocha-600/20"
+                )}
               >
                 <Check size={14} />
-                <span className="font-sans">{t('Save Invoice')}</span>
+                <span className="font-sans">{isSaving ? t('Saving...') : t('Save Invoice')}</span>
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* 2. CENTER COLUMN: Product Grid & Category Filters (Width 2/4) */}
-      <div className="flex-1 lg:h-full bg-white p-4 rounded-2xl border border-gray-200/80 shadow-sm flex flex-col overflow-hidden">
+      {/* 2. CENTER COLUMN: Product Grid & Category Filters */}
+      <div className="flex-1 lg:h-full bg-white p-2.5 md:p-3 rounded-2xl border border-gray-200/80 shadow-sm flex flex-col overflow-hidden">
         {/* Category Selector & Search */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-gray-100 shrink-0">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-2 border-b border-gray-100 shrink-0">
           {/* Categories */}
-          <div className="flex gap-2 overflow-x-auto hide-scrollbar">
-            {categories.map(cat => (
+          <div className="flex gap-1.5 md:gap-2 overflow-x-auto hide-scrollbar">
+            {categories.length > 1 && categories.map(cat => (
               <button
                 key={cat}
                 onClick={() => setSelectedCategory(cat)}
                 className={clsx(
-                  "px-5 py-2.5 rounded-xl text-sm md:text-base font-black whitespace-nowrap transition-all border",
+                  "px-4 py-2 rounded-xl text-xs md:text-sm font-black whitespace-nowrap transition-all border",
                   selectedCategory === cat
                     ? "bg-mocha-600 text-white border-mocha-700 shadow-sm"
                     : "bg-gray-50 text-gray-600 border-gray-200 hover:bg-gray-100"
@@ -534,41 +832,59 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
         </div>
 
         {/* Products Grid */}
-        <div className="flex-1 overflow-y-auto mt-4 pr-1 custom-scrollbar">
-          {successMessage && (
-            <div className="bg-green-50 text-green-700 border border-green-200 rounded-xl p-3 mb-4 font-bold text-center text-xs animate-bounce">
-              {successMessage}
-            </div>
-          )}
+        <div className="flex-1 overflow-y-auto mt-2.5 pr-1 custom-scrollbar">
           {filteredMenuItems.length === 0 ? (
             <div className="flex flex-col items-center justify-center h-full text-gray-400 py-12">
               <Coffee size={50} className="stroke-1 mb-2" />
               <p className="text-sm md:text-base font-bold">{t('No items')}</p>
             </div>
           ) : (
-            <div className="grid grid-cols-3 sm:grid-cols-4 xl:grid-cols-4 gap-3">
-              {filteredMenuItems.map(item => (
-                <button
-                  key={item.id}
-                  onClick={() => handleAddItem(item)}
-                  className="bg-gray-50 hover:bg-gray-100 active:scale-95 transition-all p-2.5 rounded-xl border border-gray-200/60 hover:border-gray-300 shadow-sm flex flex-col justify-between items-start text-start h-24 sm:h-26 relative overflow-hidden group"
-                >
-                  <span className="font-bold text-sm sm:text-base md:text-[16px] text-gray-900 group-hover:text-mocha-700 font-sans leading-snug pt-0.5">{t(item.name)}</span>
-                  <div className="w-full flex justify-between items-center z-10 mt-1">
-                    <span className="font-mono text-base sm:text-lg md:text-xl font-black text-mocha-800">{item.price.toFixed(2)} <span className="text-[10px] sm:text-xs text-gray-400 font-sans font-bold">{isRtl ? 'ج.م' : 'EGP'}</span></span>
-                    <span className="bg-mocha-50 text-mocha-600 text-sm sm:text-base px-2.5 py-0.5 rounded-lg border border-mocha-200 group-hover:bg-mocha-600 group-hover:text-white transition-colors font-black">+</span>
-                  </div>
-                  {/* Subtle hover icon decoration */}
-                  <Coffee size={32} className="absolute -right-2 -bottom-2 text-gray-200/20 group-hover:text-mocha-200/10 transition-all pointer-events-none" />
-                </button>
-              ))}
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-4 2xl:grid-cols-5 gap-2 md:gap-2.5">
+              {filteredMenuItems.map(item => {
+                const inCart = cartItemCounts[item.id] || 0;
+                return (
+                  <button
+                    key={item.id}
+                    onClick={() => handleAddItem(item)}
+                    className={`active:scale-95 transition-all p-2.5 rounded-xl border shadow-sm flex flex-col justify-between items-start text-start h-28 relative overflow-hidden group ${
+                      inCart > 0 
+                        ? 'bg-amber-50/60 border-caramel/60 shadow-gold-sm ring-1 ring-caramel/30' 
+                        : 'bg-gray-50 hover:bg-gray-100 border-gray-200/60 hover:border-gray-300'
+                    }`}
+                  >
+                    {/* In-cart count badge */}
+                    {inCart > 0 && (
+                      <span className="absolute top-2 left-2 bg-gradient-to-r from-caramel to-mocha-600 text-white font-black text-[11px] px-2 py-0.5 rounded-full shadow-sm z-20">
+                        {inCart}×
+                      </span>
+                    )}
+                    <span className="w-full font-bold text-xs sm:text-sm text-gray-900 group-hover:text-mocha-700 font-sans leading-normal line-clamp-2">
+                      {t(item.name)}
+                    </span>
+                    <div className="w-full flex justify-between items-center z-10 mt-auto pt-1 gap-1">
+                      <span className="font-mono text-xs sm:text-sm md:text-base font-black text-mocha-800 tabular-nums whitespace-nowrap">
+                        {item.price.toFixed(2)} <span className="text-[10px] sm:text-xs text-gray-400 font-sans font-bold">{isRtl ? 'ج.م' : 'EGP'}</span>
+                      </span>
+                      <span className={`w-7 h-7 sm:w-8 sm:h-8 flex items-center justify-center rounded-lg border transition-colors font-black text-sm shrink-0 ${
+                        inCart > 0
+                          ? 'bg-caramel text-white border-caramel'
+                          : 'bg-mocha-50 text-mocha-600 border-mocha-200 group-hover:bg-mocha-600 group-hover:text-white'
+                      }`}>
+                        +
+                      </span>
+                    </div>
+                    {/* Subtle hover icon decoration */}
+                    <Coffee size={32} className="absolute -right-2 -bottom-2 text-gray-200/20 group-hover:text-mocha-200/10 transition-all pointer-events-none" />
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>
       </div>
 
-      {/* 3. RIGHT COLUMN: Current Bill & Summary (Width 23%) */}
-      <div className="w-full lg:w-[23%] lg:h-full bg-white p-3 md:p-3.5 rounded-2xl border border-gray-200/80 shadow-sm flex flex-col justify-between overflow-hidden">
+      {/* 3. RIGHT COLUMN: Current Bill & Summary (Width 25-26%) */}
+      <div className="w-full lg:w-[26%] xl:w-[25%] lg:h-full bg-white p-2.5 md:p-3 rounded-2xl border border-gray-200/80 shadow-sm flex flex-col justify-between overflow-hidden">
         <div className="flex-1 flex flex-col overflow-hidden">
           <h2 className="font-extrabold text-base md:text-lg text-mocha-800 border-b border-gray-100 pb-2 shrink-0">{t('Invoice Details')}</h2>
           
@@ -594,10 +910,73 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
             </button>
           </div>
 
+          {/* Cashier Selector */}
+          <button
+            type="button"
+            onClick={() => { playKeypadClick(); refreshCashiers(); setIsCashierModalOpen(true); }}
+            className={clsx(
+              "mt-3 w-full px-3 py-2.5 rounded-xl border-2 flex items-center justify-between gap-2 transition-all shrink-0",
+              activeCashier
+                ? "bg-emerald-50 border-emerald-300 text-emerald-800 hover:bg-emerald-100"
+                : "bg-amber-50 border-amber-300 text-amber-800 hover:bg-amber-100"
+            )}
+            title={t('Select Cashier')}
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              {activeCashier?.avatar ? (
+                <img src={activeCashier.avatar} alt={activeCashier.name} className="w-9 h-9 rounded-full object-cover border-2 border-current shrink-0" />
+              ) : activeCashier ? <UserRoundCheck size={18} className="shrink-0" /> : <UserRound size={18} className="shrink-0" />}
+              <span className="flex flex-col items-start leading-tight min-w-0">
+                <span className="text-[10px] font-bold uppercase opacity-70">{t('Cashier')}</span>
+                <span className="font-black text-sm truncate">
+                  {activeCashier ? activeCashier.name : t('Select Cashier')}
+                </span>
+              </span>
+            </span>
+            <UserRoundPlus size={16} className="shrink-0 opacity-60" />
+          </button>
+
           {/* Table ID Selector (Only visible for Dine-in) */}
           {orderMode === 'Dine-in' && (
             <div className="mt-3 shrink-0 space-y-2 border-b border-gray-100 pb-3">
-              <label className="text-sm text-gray-600 font-extrabold">{t('Table')}</label>
+              <div className="flex items-center justify-between">
+                <label className="text-sm text-gray-600 font-extrabold">{t('Table')}</label>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => setIsEditTablesMode(!isEditTablesMode)}
+                    className={clsx(
+                      "text-xs font-bold px-2 py-1 rounded-lg flex items-center gap-1 transition-all",
+                      isEditTablesMode
+                        ? "bg-red-600 text-white shadow-sm"
+                        : "text-gray-500 bg-gray-100 hover:bg-gray-200"
+                    )}
+                    title={isEditTablesMode ? t('Done') : t('Delete / Edit Tables')}
+                  >
+                    {isEditTablesMode ? (
+                      <>
+                        <Check size={13} />
+                        <span>{t('Done')}</span>
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 size={13} />
+                        <span>{t('Delete')}</span>
+                      </>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setIsTablesModalOpen(true)}
+                    className="text-xs font-bold px-2 py-1 rounded-lg bg-mocha-50 text-mocha-700 hover:bg-mocha-100 flex items-center gap-1 transition-all"
+                    title={t('Manage Tables')}
+                  >
+                    <Plus size={13} />
+                    <span>{t('Add Table')}</span>
+                  </button>
+                </div>
+              </div>
+
               <input
                 type="text"
                 value={tableId}
@@ -605,21 +984,56 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
                 placeholder={t('Enter Table Number')}
                 className="w-full px-4 py-2.5 bg-gray-50 border border-gray-300 rounded-xl font-extrabold text-base md:text-lg focus:outline-none focus:border-mocha-600 focus:ring-2 focus:ring-mocha-100"
               />
-              <div className="flex flex-wrap gap-1.5">
-                {['1', '2', '3', '4', '5', '6', '7', '8', '9', '10'].map(num => (
+
+              {isEditTablesMode && (
+                <p className="text-xs text-red-600 font-bold bg-red-50 p-1.5 rounded-lg border border-red-100 text-center animate-fade-in">
+                  {t('Click on any table to delete it')}
+                </p>
+              )}
+
+              <div className="flex flex-wrap gap-1.5 items-center">
+                {tables.map(tbl => (
                   <button
-                    key={num}
-                    onClick={() => setTableId(num)}
+                    key={tbl}
+                    type="button"
+                    onClick={() => {
+                      if (isEditTablesMode) {
+                        const updated = removeTable(tbl);
+                        setTablesList(updated);
+                        if (tableId === tbl) setTableId('');
+                      } else {
+                        setTableId(tbl);
+                      }
+                    }}
                     className={clsx(
                       "px-3.5 py-2 text-sm md:text-base font-extrabold rounded-xl border transition-all shadow-sm",
-                      tableId === num
-                        ? "bg-mocha-600 text-white border-mocha-700"
-                        : "bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100"
+                      isEditTablesMode
+                        ? "bg-red-50 text-red-600 border-red-200 hover:bg-red-600 hover:text-white"
+                        : tableId === tbl
+                          ? "bg-mocha-600 text-white border-mocha-700"
+                          : "bg-gray-50 text-gray-700 border-gray-200 hover:bg-gray-100"
                     )}
                   >
-                    T{num}
+                    {isEditTablesMode ? (
+                      <span className="flex items-center gap-1">
+                        <span>{tbl.startsWith('T') || tbl.startsWith('ط') ? tbl : `T${tbl}`}</span>
+                        <Trash2 size={12} className="shrink-0" />
+                      </span>
+                    ) : (
+                      tbl.startsWith('T') || tbl.startsWith('ط') ? tbl : `T${tbl}`
+                    )}
                   </button>
                 ))}
+
+                {/* Quick Add Button */}
+                <button
+                  type="button"
+                  onClick={() => setIsTablesModalOpen(true)}
+                  className="px-3 py-2 text-sm font-extrabold rounded-xl border-2 border-dashed border-gray-300 text-gray-400 hover:text-mocha-600 hover:border-mocha-400 hover:bg-mocha-50/50 flex items-center justify-center transition-all"
+                  title={t('Add Table')}
+                >
+                  <Plus size={16} />
+                </button>
               </div>
             </div>
           )}
@@ -708,125 +1122,190 @@ export function POSView({ menuItems, onCreateOrder, estimatedOrderNumber }: POSV
             <div className="grid grid-cols-2 gap-1.5 pt-1">
               <button
                 onClick={handleReset}
-                className="bg-red-50 hover:bg-red-100 text-red-600 font-black py-2 rounded-xl border border-red-200 transition-all active:scale-95 text-xs md:text-sm text-center"
+                disabled={isSaving}
+                className={clsx(
+                  "font-black py-2 rounded-xl border transition-all text-xs md:text-sm text-center",
+                  isSaving
+                    ? "bg-gray-100 text-gray-400 border-gray-200 cursor-not-allowed"
+                    : "bg-red-50 hover:bg-red-100 text-red-600 border-red-200 active:scale-95"
+                )}
               >
                 {t('Clear / Reset')}
               </button>
               <button
                 onClick={handleSaveOrder}
-                className="bg-mocha-600 hover:bg-mocha-700 text-white font-black py-2 rounded-xl border border-mocha-700 transition-all active:scale-95 text-xs md:text-sm text-center flex items-center justify-center gap-1 shadow-sm"
+                disabled={invoiceItems.length === 0 || isSaving}
+                className={clsx(
+                  "font-black py-2 rounded-xl border transition-all text-xs md:text-sm text-center flex items-center justify-center gap-1 shadow-sm",
+                  invoiceItems.length === 0 || isSaving
+                    ? "bg-gray-200 text-gray-400 border-gray-300 cursor-not-allowed shadow-none"
+                    : "bg-mocha-600 hover:bg-mocha-700 text-white border-mocha-700 active:scale-95 shadow-mocha-600/20"
+                )}
               >
                 <Check size={14} />
-                {t('Save Invoice')}
+                {isSaving ? t('Saving...') : t('Save Invoice')}
               </button>
+            </div>
+          )}
+          {saveError && (
+            <div className="mt-1 text-center text-xs text-red-600 font-bold bg-red-50 p-1.5 rounded-xl border border-red-200">
+              {saveError}
             </div>
           )}
         </div>
 
       </div>
 
-      {/* ─── Customer Loyalty Points Modal ─── */}
-      <AnimatePresence>
-        {isLoyaltyModalOpen && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.95, y: 20 }}
-              animate={{ opacity: 1, scale: 1, y: 0 }}
-              exit={{ opacity: 0, scale: 0.95, y: 20 }}
-              className="bg-white rounded-3xl p-6 shadow-2xl border border-gray-100 max-w-md w-full relative overflow-hidden"
-            >
-              <div className="absolute top-0 left-0 right-0 h-2 bg-gradient-to-r from-mocha-500 to-caramel" />
-              
-              <div className="mb-6 mt-2">
-                <h3 className="text-xl font-bold text-gray-900 text-left">{t('Register New Customer')}</h3>
-                <p className="text-xs text-gray-400 mt-1 text-left">
-                  {t('Enter customer phone number to accumulate or redeem loyalty points.')}
+      <TablesConfigModal
+        isOpen={isTablesModalOpen}
+        onClose={() => setIsTablesModalOpen(false)}
+        onTablesChange={(newTables) => setTablesList(newTables)}
+      />
+
+      {/* Cashier Selection Modal: pick who is on the till, or add a new name */}
+      {isCashierModalOpen && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/50 backdrop-blur-sm"
+          onClick={() => setIsCashierModalOpen(false)}
+        >
+          <div
+            className="bg-white rounded-2xl shadow-xl w-full max-w-sm overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="flex items-center justify-between px-4 py-3 border-b border-gray-100">
+              <h3 className="font-black text-mocha-800 text-base flex items-center gap-2">
+                <UserRound size={18} />
+                {t('Select Cashier')}
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsCashierModalOpen(false)}
+                className="text-gray-400 hover:text-gray-700 transition-colors"
+              >
+                <X size={18} />
+              </button>
+            </div>
+
+            <div className="p-4 space-y-3 max-h-[50vh] overflow-y-auto">
+              {activeCashier && (
+                <button
+                  type="button"
+                  onClick={() => { selectCashier(null); setIsCashierModalOpen(false); }}
+                  className="w-full px-3 py-2 rounded-xl border-2 border-amber-300 bg-amber-50 text-amber-800 font-bold text-sm hover:bg-amber-100 transition-all"
+                >
+                  {t('Clear selection')}
+                </button>
+              )}
+
+              {cashiers.length === 0 && !activeCashier && (
+                <p className="text-center text-gray-400 text-sm font-bold py-2">
+                  {t('No cashiers yet — add the first one below')}
                 </p>
+              )}
+
+              <div className="space-y-1.5">
+                {cashiers.map(c => (
+                  <div key={c.id} className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => { selectCashier(c); setIsCashierModalOpen(false); playKeypadClick(); }}
+                      className={clsx(
+                        "flex-1 px-3 py-2.5 rounded-xl border-2 font-black text-sm text-start transition-all flex items-center gap-2",
+                        activeCashier?.id === c.id
+                          ? "bg-emerald-50 border-emerald-400 text-emerald-800"
+                          : "bg-gray-50 border-gray-200 text-gray-700 hover:bg-mocha-50 hover:border-mocha-300"
+                      )}
+                    >
+                      {c.avatar ? (
+                        <img src={c.avatar} alt={c.name} className="w-8 h-8 rounded-full object-cover shrink-0" />
+                      ) : activeCashier?.id === c.id ? <UserRoundCheck size={16} className="shrink-0" /> : <UserRound size={16} className="shrink-0 opacity-40" />}
+                      <span className="truncate">{c.name}</span>
+                    </button>
+                    <label
+                      className="px-2 py-2.5 rounded-xl text-gray-300 hover:text-mocha-600 hover:bg-mocha-50 transition-all shrink-0 cursor-pointer"
+                      title={t('Change photo')}
+                    >
+                      <Camera size={16} />
+                      <input
+                        type="file"
+                        accept="image/*"
+                        className="hidden"
+                        onChange={(e) => handleSetAvatar(c.id, e.target.files?.[0])}
+                      />
+                    </label>
+                    <button
+                      type="button"
+                      onClick={() => handleDeleteCashier(c.id)}
+                      className="px-2 py-2.5 rounded-xl text-gray-300 hover:text-red-600 hover:bg-red-50 transition-all shrink-0"
+                      title={t('Delete')}
+                    >
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                ))}
               </div>
 
-              <div className="space-y-4">
-                {/* Phone Input */}
-                <div className="space-y-1">
-                  <label className="text-xs font-semibold text-gray-500 block text-left">{t('Phone Number')}</label>
-                  <input
-                    type="tel"
-                    placeholder={t('Enter customer phone')}
-                    value={loyaltyPhone}
-                    onChange={(e) => handlePhoneChange(e.target.value)}
-                    className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-caramel text-left font-mono"
-                    autoFocus
-                  />
-                </div>
-
-                {/* Name Input (Visible ONLY when phone is exactly 11 digits) */}
-                {loyaltyPhone.length === 11 && (
-                  <motion.div
-                    initial={{ opacity: 0, height: 0 }}
-                    animate={{ opacity: 1, height: 'auto' }}
-                    className="space-y-1"
-                  >
-                    <label className="text-xs font-semibold text-gray-500 block text-left">{t('Customer Name')}</label>
-                    <input
-                      type="text"
-                      placeholder={t('Customer Name')}
-                      value={loyaltyName}
-                      onChange={(e) => setLoyaltyName(e.target.value)}
-                      className="w-full px-4 py-3 bg-gray-50 border border-gray-200 rounded-xl focus:outline-none focus:ring-2 focus:ring-caramel text-left"
-                      disabled={!!existingCustomer}
-                    />
-                  </motion.div>
-                )}
-
-
-
-                {/* Points Redemption Info */}
-                {existingCustomer && (
-                  <motion.div
-                    initial={{ opacity: 0, scale: 0.98 }}
-                    animate={{ opacity: 1, scale: 1 }}
-                    className="p-4 bg-mocha-50/50 rounded-2xl border border-mocha-100 flex flex-col gap-2"
-                  >
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-gray-650 font-medium">{t('Points Balance')}:</span>
-                      <span className="font-bold text-mocha-800">{existingCustomer.points} {t('Points')}</span>
-                    </div>
-                    {existingCustomer.points > 0 && (
-                      <label className="flex items-center gap-2 mt-2 cursor-pointer select-none">
-                        <input
-                          type="checkbox"
-                          checked={redeemPoints}
-                          onChange={(e) => setRedeemPoints(e.target.checked)}
-                          className="w-4 h-4 rounded text-mocha-650 focus:ring-mocha-500 border-gray-300"
-                        />
-                        <span className="text-xs font-semibold text-gray-700">
-                          {t('Redeem Points')} ({Math.min(existingCustomer.points, grandTotal).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'} {t('discount')})
-                        </span>
-                      </label>
+              <div className="border-t border-gray-100 pt-3 space-y-2">
+                <label className="text-xs text-gray-500 font-extrabold uppercase">{t('Add New Cashier')}</label>
+                <div className="flex gap-1.5">
+                  <label className="w-10 h-10 rounded-xl border-2 border-dashed border-gray-300 flex items-center justify-center shrink-0 cursor-pointer hover:border-mocha-400 hover:bg-mocha-50/50 transition-all overflow-hidden">
+                    {newCashierAvatar ? (
+                      <img src={newCashierAvatar} alt="" className="w-full h-full object-cover" />
+                    ) : (
+                      <Camera size={16} className="text-gray-400" />
                     )}
-                  </motion.div>
-                )}
+                    <input
+                      type="file"
+                      accept="image/*"
+                      className="hidden"
+                      onChange={(e) => handlePickAvatar(e.target.files?.[0])}
+                    />
+                  </label>
+                  <input
+                    type="text"
+                    value={newCashierName}
+                    onChange={(e) => setNewCashierName(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === 'Enter') handleAddCashier(); }}
+                    placeholder={t('Cashier name')}
+                    maxLength={60}
+                    className="flex-1 px-3 py-2 bg-gray-50 border border-gray-300 rounded-xl font-bold text-sm focus:outline-none focus:border-mocha-600 focus:ring-2 focus:ring-mocha-100"
+                  />
+                  <button
+                    type="button"
+                    onClick={handleAddCashier}
+                    disabled={!newCashierName.trim()}
+                    className="px-3 py-2 rounded-xl bg-mocha-600 text-white font-black text-sm hover:bg-mocha-700 disabled:opacity-40 disabled:cursor-not-allowed transition-all flex items-center gap-1 shrink-0"
+                  >
+                    <Plus size={16} />
+                  </button>
+                </div>
               </div>
-
-              {/* Actions */}
-              <div className="flex gap-3 mt-8">
-                <button
-                  onClick={handleSkipLoyalty}
-                  className="flex-1 py-3 border border-gray-200 text-gray-500 rounded-2xl font-bold hover:bg-gray-50 transition-colors"
-                >
-                  {t('Skip')}
-                </button>
-                <button
-                  onClick={handleConfirmLoyalty}
-                  className="flex-1 py-3 bg-mocha-700 hover:bg-mocha-800 text-white rounded-2xl font-bold transition-all shadow-lg shadow-mocha-200 active:scale-[0.98]"
-                >
-                  {t('Confirm')}
-                </button>
-              </div>
-            </motion.div>
+            </div>
           </div>
-        )}
-      </AnimatePresence>
+        </div>
+      )}
 
+      {/* Floating Toast Notification (Non-intrusive) */}
+      <div
+        className={clsx(
+          "fixed bottom-6 start-6 z-50 flex items-center gap-2 px-3.5 py-2 rounded-xl shadow-lg border text-xs sm:text-sm font-bold transition-all duration-300 pointer-events-none select-none",
+          // A failure must not look like a confirmation: the cashier glances at it for a
+          // fraction of a second and decides whether to move on.
+          toastTone === 'error'
+            ? "bg-red-600/95 text-white border-red-500/40 shadow-red-950/20 backdrop-blur-sm"
+            : "bg-emerald-600/95 text-white border-emerald-500/40 shadow-emerald-950/20 backdrop-blur-sm",
+          isToastVisible
+            ? "opacity-100 translate-y-0 scale-100"
+            : "opacity-0 translate-y-2 scale-95"
+        )}
+        role="status"
+        aria-live={toastTone === 'error' ? 'assertive' : 'polite'}
+      >
+        {toastTone === 'error'
+          ? <AlertCircle size={16} className="shrink-0 stroke-[2.5]" />
+          : <Check size={16} className="shrink-0 stroke-[2.5]" />}
+        <span className="font-sans">{toastText}</span>
+      </div>
     </div>
   );
 }

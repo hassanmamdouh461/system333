@@ -1,0 +1,500 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { AuthError, clearSession, deleteBranch, fetchSnapshot, readSession, saveBranch } from './api';
+import { LoginScreen } from './LoginScreen';
+import { AnalyticsTab } from './AnalyticsTab';
+import { InventoryTab } from './InventoryTab';
+import { CustomersTab } from './CustomersTab';
+import { MenuTab } from './MenuTab';
+import { SettingsTab } from './SettingsTab';
+import { Icon } from './ui';
+import {
+  branchLabel,
+  branchNames,
+  toBranchPayload,
+  type BranchInput,
+  type BranchRow,
+} from './branches';
+import {
+  DEFAULT_SETTINGS,
+  readSettings,
+  resolveTheme,
+  writeSettings,
+  type PortalSettings,
+} from './settings';
+import {
+  ALL_BRANCHES,
+  PERIOD_LABELS,
+  PERIOD_ORDER,
+  branchOptions,
+  formatCount,
+  formatTime,
+  inBranch,
+  inPeriod,
+  isPaid,
+  orderLines,
+  summarizeSales,
+  summarizeStock,
+  toNum,
+  type CustomerRow,
+  type InventoryRow,
+  type MenuItemRow,
+  type OrderRow,
+  type Period,
+  type StockMovementRow,
+} from './analytics';
+
+type Tab = 'analytics' | 'menu' | 'inventory' | 'customers' | 'settings';
+
+const TABS: { id: Tab; label: string; icon: string }[] = [
+  { id: 'analytics', label: 'الإحصائيات', icon: 'trend' },
+  { id: 'menu', label: 'القائمة', icon: 'menu' },
+  { id: 'inventory', label: 'المخزون', icon: 'stock' },
+  { id: 'customers', label: 'العملاء', icon: 'users' },
+  { id: 'settings', label: 'الإعدادات', icon: 'settings' },
+];
+
+const DARK_QUERY = '(prefers-color-scheme: dark)';
+
+export default function App() {
+  const [token, setToken] = useState<string | null>(() => readSession()?.token ?? null);
+  const [orders, setOrders] = useState<OrderRow[]>([]);
+  const [customers, setCustomers] = useState<CustomerRow[]>([]);
+  const [inventory, setInventory] = useState<InventoryRow[]>([]);
+  const [menuItems, setMenuItems] = useState<MenuItemRow[]>([]);
+  const [movements, setMovements] = useState<StockMovementRow[]>([]);
+  const [branchRows, setBranchRows] = useState<BranchRow[]>([]);
+
+  const [settings, setSettings] = useState<PortalSettings>(() => readSettings(localStorage));
+  const [tab, setTab] = useState<Tab>('analytics');
+  const [period, setPeriod] = useState<Period>(settings.defaultPeriod);
+  const [branch, setBranch] = useState<string>(settings.defaultBranch);
+
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [truncated, setTruncated] = useState<string[]>([]);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [prefersDark, setPrefersDark] = useState(() => window.matchMedia(DARK_QUERY).matches);
+
+  // Monotonic token per request: a slow poll must not overwrite a newer manual refresh.
+  const requestId = useRef(0);
+
+  const updateSettings = useCallback((patch: Partial<PortalSettings>) => {
+    setSettings((current) => {
+      const next = { ...current, ...patch };
+      writeSettings(next, localStorage);
+      return next;
+    });
+  }, []);
+
+  /** Follows the scope pickers when the viewer asked for their choice to be remembered. */
+  const rememberScope = useCallback(
+    (patch: Partial<Pick<PortalSettings, 'defaultBranch' | 'defaultPeriod'>>) => {
+      if (settings.rememberScope) updateSettings(patch);
+    },
+    [settings.rememberScope, updateSettings]
+  );
+
+  const resetSettings = useCallback(() => {
+    setSettings(DEFAULT_SETTINGS);
+    writeSettings(DEFAULT_SETTINGS, localStorage);
+    setBranch(DEFAULT_SETTINGS.defaultBranch);
+    setPeriod(DEFAULT_SETTINGS.defaultPeriod);
+  }, []);
+
+  const activeTheme = resolveTheme(settings.theme, prefersDark);
+
+  // The palette and row spacing live on the root element so every panel, table and chart
+  // inherits them from one place instead of each component knowing about themes.
+  useEffect(() => {
+    const root = document.documentElement;
+    root.dataset.theme = activeTheme;
+    root.dataset.density = settings.density;
+  }, [activeTheme, settings.density]);
+
+  // Only matters while the theme is `system`, but the listener is cheap and unconditional
+  // subscription keeps the switch instant when the viewer changes back to it.
+  useEffect(() => {
+    const query = window.matchMedia(DARK_QUERY);
+    const onChange = (event: MediaQueryListEvent) => setPrefersDark(event.matches);
+    query.addEventListener('change', onChange);
+    return () => query.removeEventListener('change', onChange);
+  }, []);
+
+  const signOut = useCallback(() => {
+    clearSession();
+    setToken(null);
+    setOrders([]);
+    setCustomers([]);
+    setInventory([]);
+    setMenuItems([]);
+    setMovements([]);
+        setBranchRows([]);
+        setTruncated([]);
+        setLastUpdated(null);
+  }, []);
+
+  const loadData = useCallback(
+    async (activeToken: string, options: { silent?: boolean } = {}) => {
+      const id = ++requestId.current;
+      if (!options.silent) setLoading(true);
+      try {
+        const snapshot = await fetchSnapshot(activeToken);
+        if (id !== requestId.current) return;
+        setOrders(snapshot.orders as unknown as OrderRow[]);
+        setCustomers(snapshot.customers as unknown as CustomerRow[]);
+        setInventory(snapshot.inventory as unknown as InventoryRow[]);
+        setMenuItems(snapshot.menuItems as unknown as MenuItemRow[]);
+        setMovements(snapshot.movements as unknown as StockMovementRow[]);
+        setBranchRows(snapshot.branches as unknown as BranchRow[]);
+        setTruncated(Object.keys(snapshot.truncated || {}));
+        setLastUpdated(new Date(snapshot.serverTime));
+        setError(null);
+      } catch (e) {
+        if (id !== requestId.current) return;
+        // An expired token is not an error to display; it means signing in again.
+        if (e instanceof AuthError) {
+          signOut();
+          return;
+        }
+        setError((e as Error).message || 'تعذر تحميل البيانات');
+      } finally {
+        // Cleared by whichever request is newest when it settles, regardless of whether it
+        // was silent. Clearing only for non-silent requests hangs the spinner: a background
+        // poll bumps the request id, so the request that raised the flag stops being the
+        // newest and never clears it, and the silent one never intended to.
+        if (id === requestId.current) setLoading(false);
+      }
+    },
+    [signOut]
+  );
+
+  useEffect(() => {
+    if (token) loadData(token);
+  }, [token, loadData]);
+
+  // Live polling. A hidden tab is not polled: a portal left open overnight would otherwise
+  // keep hitting the worker for a screen nobody is reading.
+  useEffect(() => {
+    if (!token || !settings.autoRefresh) return;
+
+    const tick = () => {
+      if (document.visibilityState === 'visible') loadData(token, { silent: true });
+    };
+    const timer = window.setInterval(tick, settings.refreshSeconds * 1000);
+    document.addEventListener('visibilitychange', tick);
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', tick);
+    };
+  }, [token, settings.autoRefresh, settings.refreshSeconds, loadData]);
+
+  const branches = useMemo(
+    () => branchOptions(orders, inventory, customers),
+    [orders, inventory, customers]
+  );
+
+  /**
+   * Branch ids to offer, including a selected one the snapshot no longer contains. A `select`
+   * whose value is missing from its options renders blank, which would read as "no branch"
+   * while the filter is in fact still applied.
+   *
+   * Registered branches are included too, so a newly added branch is selectable before its
+   * first sale gives it a row anywhere else.
+   */
+  const branchChoices = useMemo(() => {
+    const ids = new Set(branches);
+    for (const row of branchRows) if (row.id) ids.add(row.id);
+    for (const id of [branch, settings.defaultBranch]) {
+      if (id && id !== ALL_BRANCHES) ids.add(id);
+    }
+    return [...ids].sort();
+  }, [branches, branchRows, branch, settings.defaultBranch]);
+
+  const names = useMemo(() => branchNames(branchRows), [branchRows]);
+
+  /**
+   * Ids that mirrored rows carry but the registry has no record of: a till that synced before
+   * anyone named it. They stay visible in the branches card so the manager can name them
+   * instead of finding a bare slug in every filter.
+   */
+  const unregisteredBranchIds = useMemo(() => {
+    const registered = new Set(branchRows.map((row) => row.id));
+    return [...new Set(branches)].filter((id) => !registered.has(id));
+  }, [branches, branchRows]);
+
+  /** Order count per branch over the selected scope, shown next to each branch. */
+  const ordersByBranch = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const order of orders.filter((o) => inPeriod(o.createdAt, period))) {
+      const id = order.branch_id || '';
+      if (!id) continue;
+      totals.set(id, (totals.get(id) ?? 0) + 1);
+    }
+    return totals;
+  }, [orders, period]);
+
+  /**
+   * Saves a branch and adopts the registry the worker returns, rather than re-reading the
+   * whole snapshot: the reply is already authoritative, and the poll would take up to a
+   * minute to show a branch the manager just added.
+   */
+  const handleSaveBranch = useCallback(
+    async (input: BranchInput) => {
+      if (!token) throw new Error('انتهت الجلسة، يرجى تسجيل الدخول مرة أخرى');
+      const rows = await saveBranch(token, toBranchPayload(input));
+      setBranchRows(rows as unknown as BranchRow[]);
+    },
+    [token]
+  );
+
+  /**
+   * Soft-deletes a branch and adopts the registry the worker returns. If the manager was
+   * scoping the dashboard to this branch, the filter is widened back to "all branches" so
+   * the screen does not render a selection with no options behind it.
+   */
+  const handleDeleteBranch = useCallback(
+    async (id: string) => {
+      if (!token) throw new Error('انتهت الجلسة، يرجى تسجيل الدخول مرة أخرى');
+      const rows = await deleteBranch(token, id);
+      setBranchRows(rows as unknown as BranchRow[]);
+      if (branch === id) {
+        setBranch(ALL_BRANCHES);
+        rememberScope({ defaultBranch: ALL_BRANCHES });
+      }
+    },
+    [token, branch, rememberScope]
+  );
+
+  const scopedOrders = useMemo(
+    () => orders.filter((o) => inBranch(o.branch_id, branch) && inPeriod(o.createdAt, period)),
+    [orders, branch, period]
+  );
+
+  const scopedInventory = useMemo(
+    () => inventory.filter((i) => inBranch(i.branch_id, branch)),
+    [inventory, branch]
+  );
+
+  const scopedMenuItems = useMemo(
+    () => menuItems.filter((m) => inBranch(m.branch_id, branch)),
+    [menuItems, branch]
+  );
+
+  const scopedCustomers = useMemo(
+    () => customers.filter((c) => inBranch(c.branch_id, branch)),
+    [customers, branch]
+  );
+
+  const newCustomerCount = useMemo(
+    () => scopedCustomers.filter((c) => inPeriod(c.createdAt, period)).length,
+    [scopedCustomers, period]
+  );
+
+  const sales = useMemo(
+    () => summarizeSales(scopedOrders, movements, inventory),
+    [scopedOrders, movements, inventory]
+  );
+
+  const stock = useMemo(() => summarizeStock(scopedInventory, sales), [scopedInventory, sales]);
+
+  /** Quantity sold per product name, for the menu tab and the menu export. */
+  const soldByName = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const order of scopedOrders.filter(isPaid)) {
+      for (const line of orderLines(order)) {
+        totals.set(line.name, (totals.get(line.name) ?? 0) + line.quantity);
+      }
+    }
+    return totals;
+  }, [scopedOrders]);
+
+  const availableCount = scopedMenuItems.filter((item) => toNum(item.available) === 1).length;
+
+  if (!token) {
+    return <LoginScreen onAuthenticated={setToken} />;
+  }
+
+  return (
+    <div className="shell">
+      <header className="topbar">
+        <div className="topbar-titles">
+          <div className="brand-row">
+            <h1>لوحة تحكم المدير العام</h1>
+            <span className={`live-pill${settings.autoRefresh ? '' : ' is-paused'}`}>
+              <span className="live-dot" aria-hidden="true" />
+              {settings.autoRefresh ? 'مباشر' : 'التحديث موقوف'}
+            </span>
+          </div>
+          <p>مراقبة إيرادات ومبيعات كافة الفروع المتصلة بقاعدة البيانات المركزية</p>
+        </div>
+
+        <div className="topbar-actions">
+          <select
+            className="control"
+            aria-label="الفرع"
+            value={branch}
+            onChange={(event) => {
+              setBranch(event.target.value);
+              rememberScope({ defaultBranch: event.target.value });
+            }}
+          >
+            <option value={ALL_BRANCHES}>كل الفروع</option>
+            {branchChoices.map((id) => (
+              <option key={id} value={id}>
+                {branchLabel(id, names)}
+              </option>
+            ))}
+          </select>
+
+          <select
+            className="control"
+            aria-label="الفترة الزمنية"
+            value={period}
+            onChange={(event) => {
+              setPeriod(event.target.value as Period);
+              rememberScope({ defaultPeriod: event.target.value as Period });
+            }}
+          >
+            {PERIOD_ORDER.map((option) => (
+              <option key={option} value={option}>
+                {PERIOD_LABELS[option]}
+              </option>
+            ))}
+          </select>
+
+          <button
+            type="button"
+            className="control"
+            onClick={() => updateSettings({ autoRefresh: !settings.autoRefresh })}
+            title={settings.autoRefresh ? 'إيقاف التحديث التلقائي' : 'تشغيل التحديث التلقائي'}
+            aria-pressed={settings.autoRefresh}
+          >
+            {settings.autoRefresh ? 'إيقاف التحديث' : 'تشغيل التحديث'}
+          </button>
+
+          <button
+            type="button"
+            className="control"
+            onClick={() => token && loadData(token)}
+            disabled={loading}
+            title="تحديث الآن"
+          >
+            {loading ? 'جارٍ التحديث…' : 'تحديث'}
+          </button>
+
+          <button type="button" className="control primary" onClick={() => window.print()}>
+            طباعة
+          </button>
+
+          <button type="button" className="control" onClick={signOut}>
+            خروج
+          </button>
+        </div>
+      </header>
+
+      <nav className="tabbar" role="tablist" aria-label="أقسام اللوحة">
+        {TABS.map((entry) => (
+          <button
+            key={entry.id}
+            role="tab"
+            aria-selected={tab === entry.id}
+            className={tab === entry.id ? 'tab is-active' : 'tab'}
+            onClick={() => setTab(entry.id)}
+          >
+            <span className="tab-icon" aria-hidden="true">
+              <Icon name={entry.icon} />
+            </span>
+            {entry.label}
+          </button>
+        ))}
+      </nav>
+
+      {error && (
+        <p className="banner is-error" role="alert">
+          {error}
+        </p>
+      )}
+
+      {truncated.length > 0 && (
+        <p className="banner is-warning" role="status">
+          هذه الأرقام أقل من الحقيقي: لم تُحمّل كل الصفوف
+          {truncated.includes('orders') ? ' (الطلبات)' : ''}
+          {truncated.includes('movements') ? ' (حركات المخزون)' : ''}.
+          {' '}استخدم نطاقًا زمنيًا أضيق أو فلتر فرع للحصول على إجمالي دقيق.
+        </p>
+      )}
+
+      <p className="scope-line">
+        <span>
+          {branch === ALL_BRANCHES ? 'كل الفروع' : branchLabel(branch, names)} —{' '}
+          {PERIOD_LABELS[period]}
+        </span>
+        <span className="muted">
+          {lastUpdated
+            ? `آخر تحديث ${formatTime(lastUpdated)} · ${formatCount(scopedOrders.length)} طلب`
+            : 'لم يتم التحديث بعد'}
+        </span>
+      </p>
+
+      {tab === 'analytics' && (
+        <AnalyticsTab
+          orders={scopedOrders}
+          sales={sales}
+          stock={stock}
+          menuItemCount={scopedMenuItems.length}
+          availableCount={availableCount}
+          customerCount={scopedCustomers.length}
+          newCustomerCount={newCustomerCount}
+          periodLabel={PERIOD_LABELS[period]}
+          branchNames={names}
+        />
+      )}
+
+      {tab === 'menu' && <MenuTab menuItems={scopedMenuItems} soldByName={soldByName} />}
+
+      {tab === 'inventory' && (
+        <InventoryTab inventory={scopedInventory} stock={stock} branchNames={names} />
+      )}
+
+      {tab === 'customers' && (
+        <CustomersTab
+          customers={scopedCustomers}
+          orders={scopedOrders.filter(isPaid)}
+          newCustomerCount={newCustomerCount}
+        />
+      )}
+
+      {tab === 'settings' && (
+        <SettingsTab
+          settings={settings}
+          onChange={updateSettings}
+          onReset={resetSettings}
+          branches={branchChoices}
+          branchRows={branchRows}
+          unregisteredBranchIds={unregisteredBranchIds}
+          ordersByBranch={ordersByBranch}
+          onSaveBranch={handleSaveBranch}
+          onDeleteBranch={handleDeleteBranch}
+          branch={branch}
+          period={period}
+          lastUpdated={lastUpdated}
+          activeTheme={activeTheme}
+          onSignOut={signOut}
+          scope={{
+            orders: scopedOrders,
+            menuItems: scopedMenuItems,
+            inventory: scopedInventory,
+            customers: scopedCustomers,
+            soldByName,
+            branchNames: names,
+          }}
+        />
+      )}
+
+      <footer className="footer">
+        <span className="muted">reporting.engaz.tech</span>
+        <span className="muted">قاعدة بيانات مركزية · قراءة فقط</span>
+      </footer>
+    </div>
+  );
+}

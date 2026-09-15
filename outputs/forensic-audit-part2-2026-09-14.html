@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Engaz — التدقيق التشريحي · الجزء الثاني (السطح المتبقي)</title>
+<style>
+  :root{--bg:#0b0f17;--panel:#121826;--panel2:#161d2e;--line:#243049;--tx:#e6ecf7;
+        --tx2:#9fb0cc;--tx3:#6b7d9c;--crit:#ff4d6d;--high:#ff8a3d;--med:#ffd166;
+        --low:#5ec8f2;--ok:#3ddc97;}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);
+       font-family:"Segoe UI",Tahoma,"Noto Naskh Arabic",Arial,sans-serif;line-height:1.85;font-size:15px}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 22px 80px}
+  h1{font-size:27px;margin:0 0 6px}
+  .sub{color:var(--tx3);font-size:13px;margin-bottom:26px}
+  h2{font-size:20px;margin:40px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:24px 0 8px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  code,.f{font-family:"Cascadia Mono",Consolas,monospace;font-size:12.5px;direction:ltr;display:inline-block}
+  .f{background:#0d1422;border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#8fd0ff}
+  pre{background:#080c14;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;
+      direction:ltr;text-align:left;font-family:"Cascadia Mono",Consolas,monospace;font-size:12.5px;line-height:1.6}
+  pre .cm{color:#5f7593}pre .add{color:#3ddc97}pre .del{color:#ff6b81}pre .st{color:#ffd166}
+  .tag{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11.5px;font-weight:700;margin-left:6px}
+  .t-crit{background:rgba(255,77,109,.15);color:var(--crit);border:1px solid rgba(255,77,109,.4)}
+  .t-high{background:rgba(255,138,61,.15);color:var(--high);border:1px solid rgba(255,138,61,.4)}
+  .t-med{background:rgba(255,209,102,.13);color:var(--med);border:1px solid rgba(255,209,102,.35)}
+  .t-low{background:rgba(94,200,242,.13);color:var(--low);border:1px solid rgba(94,200,242,.35)}
+  .t-ok{background:rgba(61,220,151,.13);color:var(--ok);border:1px solid rgba(61,220,151,.35)}
+  ul{margin:8px 0;padding-right:20px}li{margin:5px 0}
+  .impact{background:#1a1120;border-right:3px solid var(--crit);padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0}
+  .good{background:#0f1e19;border-right:3px solid var(--ok);padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0}
+  .chain{background:#1a1508;border-right:3px solid var(--med);padding:12px 16px;border-radius:0 8px 8px 0;margin:12px 0}
+  .chain b{color:var(--med)}
+  .muted{color:var(--tx3);font-size:13px}
+  .kv{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0}.kv b{color:var(--tx2);min-width:86px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>الجزء الثاني — استكمال التدقيق التشريحي</h1>
+<div class="sub">
+  تغطية السطح الذي لم يُفحص في الجزء الأول: شاشات الدفع والتقارير والمخزون والقائمة العامة،
+  طبقة الإعدادات، ملفات النشر <span class="f">wrangler*.toml</span> و<span class="f">deploy-reports.ps1</span>،
+  وحسابات الربح بين التطبيق والبوابة. القراءة فقط — لم يُعدَّل أي كود.
+</div>
+
+<!-- ═══ F16 ═══ -->
+<h2>F16 <span class="tag t-high">عالي</span> — تعليق رسمي في ملف النشر يأمر بخبز مفتاح الكتابة داخل حزمة البوابة العامة</h2>
+<div class="card">
+  <div class="kv"><b>الموقع:</b> <span class="f">wrangler-reports.toml</span> (آخر سطرين) مقابل <span class="f">scripts/build-reports.mjs:48</span> و<span class="f">reports-site/vite.config.ts</span></div>
+
+<pre><span class="del"># wrangler-reports.toml — آخر سطرين في الملف
+# The shared secret the desktop POS sends as X-API-Key, and that the reports portal
+# bakes in as VITE_REPORTS_API_KEY. Set it with: npx wrangler secret put REPORTS_API_KEY</span>
+</pre>
+
+  <p>هذا التعليق <b>يناقض ثلاثة مواضع في نفس المشروع</b> صُمِّمت خصيصًا لمنع هذا الفعل:</p>
+  <ul>
+    <li><span class="f">scripts/build-reports.mjs:48</span> يضع <span class="f">VITE_REPORTS_API_KEY</span>
+        في قائمة <b>الأسرار الفخّ</b> (sentinel): يضبطه على قيمة عشوائية قبل البناء،
+        ثم <b>يفشل البناء صراحةً</b> إذا ظهرت القيمة في أي ملف ناتج
+        (<span class="f">:26-29</span>).</li>
+    <li><span class="f">reports-site/vite.config.ts</span>: <span class="f">envPrefix: ['VITE_REPORTS_WORKER_URL']</span>
+        — لا يُكشف أي متغيّر آخر للبundle أصلًا.</li>
+    <li><span class="f">src/services/workerClient.ts:8-12</span> و<span class="f">mockApiService.cjs:311-318</span>
+        يشرحان أن الحزمة نفسها تُنشر على <span class="f">menu.engaz.tech</span>،
+        فأي <span class="f">VITE_*</span> فيها منشور لكل زائر.</li>
+  </ul>
+
+  <div class="chain">
+    <b>وهذا هو السبب الجذري للثغرة الحرجة F1 — سلسلة سببية كاملة:</b><br>
+    1. التعليق يأمر المشغّل بوضع <span class="f">VITE_REPORTS_API_KEY</span> في <span class="f">.env</span>.<br>
+    2. البناء الحديث يرفض ذلك (فحص الـ sentinel)، فيبدو للمشغّل أن "المتغيّر يكسر البناء".<br>
+    3. النتيجة: المتغيّر <b>لم يُضبط أبدًا</b>.<br>
+    4. و<span class="f">mockApiService.cjs:49</span> يقرأ <span class="f">VITE_REPORTS_API_KEY</span> من
+       <b>ملف <span class="f">.env</span> الجذري نفسه</b> بوصفه المصدر الوحيد لـ
+       <span class="f">REPORTS_WORKER_KEY</span>.<br>
+    5. فتصبح <span class="f">REPORTS_WORKER_KEY = ''</span> → مرآة التقارير تموت صامتة.
+  </div>
+
+  <p><b>تعاضد في الأسماء يضاعف الخطر:</b> نفس الاسم <span class="f">VITE_REPORTS_API_KEY</span>
+  له غرضان متناقضان في نفس الملف — "سر يجب ألا يُخبز" (منظور البناء) و"مفتاح يقرأه الديسكتوب"
+  (منظور المزامنة). أي تدوير أو تحديث للسر سيقع في هذا الفخ مجددًا.</p>
+
+  <div class="impact"><b>السيناريو الأسوأ:</b> مشغّل يتبع التعليق حرفيًا وينشر الحزمة بمسار بناء
+  لا يمرّ بفحص الـ sentinel → مفتاح الكتابة على قاعدة التقارير يصبح متاحًا لأي زائر يفتح
+  أدوات المطوّر على <span class="f">menu.engaz.tech</span>، فيستطيع تزوير كل تقارير السلسلة.</div>
+
+  <h3>الإصلاح</h3>
+<pre><span class="cm"># BEFORE — wrangler-reports.toml</span>
+<span class="del"># The shared secret the desktop POS sends as X-API-Key, and that the reports portal
+# bakes in as VITE_REPORTS_API_KEY. Set it with: npx wrangler secret put REPORTS_API_KEY</span>
+
+<span class="cm"># AFTER — افصل الاسمين وصحّح التوجيه</span>
+<span class="add"># Write key. Held ONLY by the desktop POS main process, never by any browser bundle.
+#   npx wrangler secret put REPORTS_API_KEY
+#   then set the same value as ENGAZ_REPORTS_API_KEY (preferred) or VITE_REPORTS_API_KEY
+#   in the ROOT .env — the desktop reads it from there at runtime.
+#
+# The portal (reporting.engaz.tech) MUST NOT hold this key. It is a static site: the
+# portal build fails on purpose if VITE_REPORTS_API_KEY reaches its bundle
+# (scripts/build-reports.mjs). Viewers authenticate with REPORTS_VIEWER_PASSWORD and
+# receive a short-lived read-only token instead.</span>
+
+<span class="cm">// AFTER — mockApiService.cjs:49 : اقبل الاسمين، وقدّم المتغيّر غير المُضمَّن</span>
+<span class="add">// إنجاز_مفتاح_التقارير يتقدّم على VITE_ لأن VITE_REPORTS_API_KEY محجوز اسميًا
+// لفحص الـ sentinel في بناء البوابة، وخلط الاسمين هو ما أخفى غياب المفتاح.</span>
+</pre>
+</div>
+
+<!-- ═══ F17 ═══ -->
+<h2>F17 <span class="tag t-med">متوسط</span> — عامل نقاط البيع هو الوحيد المنشور على <span class="f">workers.dev</span></h2>
+<div class="card">
+  <div class="kv"><b>الموقع:</b> <span class="f">wrangler.toml:11</span> مقابل <span class="f">wrangler-reports.toml:19</span> و<span class="f">wrangler-reports-site.toml:15</span></div>
+
+<pre><span class="del"># wrangler.toml:11
+workers_dev = true</span>
+
+<span class="cm"># wrangler-reports.toml:15-19 — والمبرر مكتوب صراحةً</span>
+<span class="add"># Off, and deliberately so. With workers_dev on, this worker is also published at
+# engaz-reports-proxy.&lt;subdomain&gt;.workers.dev — a second public URL bound to the same D1
+# database, outside every rule scoped to api-reports.engaz.tech (Access policies, WAF and
+# rate-limit rules) and outside anything watching that hostname.</span>
+
+<span class="cm"># wrangler-reports-site.toml — نفس المنطق للبوابة</span>
+<span class="add">workers_dev = false</span>
+</pre>
+
+  <p><b>التحليل:</b> العاملان اللذان يحملان بيانات أقل حساسية (التقارير والبوابة) مُعطَّلٌ
+  نشرهما على <span class="f">workers.dev</span> <em>بتعليل أمني صريح</em>. أما العامل الذي يملك
+  <b>كل الطلبات والعملاء والمخزون وأرصدة الولاء</b> — فهو الوحيد المنشور على
+  <span class="f">engaz-d1-proxy.hassanmamdouh461.workers.dev</span>.</p>
+  <p>هذا ليس تناقضًا نظريًا: السجلات الفعلية تُظهر أن الجهاز يتصل بذلك المضيف
+  (<span class="f">[D1 Sync API] Configured Worker URL: https://engaz-d1-proxy...</span>)،
+  وأن مضيفًا آخر على نفس النطاق (<span class="f">brewmaster-d1-proxy...</span>) كان مستخدمًا قبل ساعات.</p>
+  <div class="impact"><b>السيناريو الأسوأ:</b> نطاق <span class="f">workers.dev</span> عام لأي شخص يعرف الاسم.
+  لا Access policy ولا WAF ولا قاعدة معدّل مرتبطة به — وكل ما يحميه هو المفتاح المشترك،
+  وهو بالضبط الثغرة F4. النتيجتان تضربان معًا.</div>
+  <h3>الإصلاح</h3>
+<pre><span class="cm"># AFTER — wrangler.toml: انقل العامل إلى مضيف مخصوص ثم أوقف workers.dev</span>
+<span class="add">workers_dev = false
+routes = [
+  { pattern = "api-pos.engaz.tech/*", zone_name = "engaz.tech" },
+]</span>
+<span class="cm"># ملاحظة: يتطلب تحديث engaz_d1_worker_url في إعدادات كل جهاز،
+# وworkerHostPolicy.POS_HOSTS يجب أن يضم المضيف الجديد قبل النشر
+# وإلا رُفضت كل الطلبات (assertWorkerHostAllowed).</span>
+</pre>
+  <p class="muted">تحقّقتُ: <span class="f">workerHostPolicy.cjs:22-23</span> يسمح بـ
+  <span class="f">engaz-d1-proxy...workers.dev</span> و<span class="f">api.engaz.tech</span> فقط.
+  أي مضيف جديد يجب أن يُضاف هناك أولًا — خطوة سهلة النسيان وتُسقط المزامنة بالكامل.</p>
+</div>
+
+<!-- ═══ F18 ═══ -->
+<h2>F18 <span class="tag t-low">منخفض</span> — شفرة ميتة في نظام الاعتماد + مفتاح إعدادات غير مستخدم</h2>
+<div class="card">
+  <div class="kv"><b>الموقع:</b> <span class="f">src/utils/settingsConfig.ts:60-91</span> · <span class="f">electron/main.cjs:197, 211</span></div>
+  <p><b>التحليل:</b> بحث شامل في <span class="f">src/</span> عن
+  <span class="f">getAdminCredentials</span> / <span class="f">setAdminCredentials</span> /
+  <span class="f">AdminCredentials</span> → <b>صفر مستدعٍ خارج ملف التعريف نفسه</b>.
+  مسار تسجيل الدخول الفعلي (<span class="f">AuthContext.tsx:102-128</span>) يستخدم
+  <span class="f">getBranchConfig()</span> حصريًا.</p>
+  <p>مع ذلك، المفتاح <span class="f">engaz_admin_creds</span> موجود في قائمتين حسّاستين في
+  <span class="f">main.cjs</span>: قائمة السماح (<span class="f">:197</span>) وقائمة
+  "يُكتب ولا يُقرأ" (<span class="f">:211</span>). سطح هجوم صغير بلا فائدة.</p>
+  <h3>الإصلاح</h3>
+<pre><span class="cm">// AFTER — احذف getAdminCredentials / setAdminCredentials / AdminCredentials، ثم:</span>
+<span class="del">  /^engaz_admin_creds$/,        // من SETTINGS_WHITELIST وSETTINGS_WRITE_ONLY</span>
+<span class="cm">// وأضف اختبارًا يمنع إعادة إدخال مفتاح بلا مستدعٍ:</span>
+<span class="add">it('every whitelisted setting key is read or written somewhere in src/', () => { ... });</span>
+</pre>
+</div>
+
+<!-- ═══ F19 ═══ -->
+<h2>F19 <span class="tag t-low">منخفض</span> — تعريفان مختلفان لصافي الربح بين الديسكتوب والبوابة</h2>
+<div class="card">
+  <div class="kv"><b>الموقع:</b> <span class="f">src/utils/reportMath.ts:36</span> مقابل <span class="f">reports-site/src/analytics.ts:221</span></div>
+<pre><span class="del">// reportMath.ts:36 — الديسكتوب يفرض أرضية صفر
+export function computeNetProfit(revenue, taxAmount, cogs) {
+  return Math.max(0, roundMoney(revenue - taxAmount - cogs));   // لا يعرض خسارة أبدًا
+}</span>
+
+<span class="del">// analytics.ts:221 — البوابة لا تفرض أرضية
+const netProfit = revenue - tax - cogs;                          // قد يكون سالبًا</span>
+</pre>
+  <p><b>التحليل:</b> فترة خاسرة (مثلاً تكلفة مكوّنات أعلى من سعر البيع) ستُعرض
+  في تطبيق الكاشير كـ <b>0</b>، وفي بوابة المدير كـ <b>رقم سالب</b>.
+  تعليق <span class="f">reportMath.ts</span> يبرّر ذلك: "رقم سالب على بطاقة ربح يُقرأ
+  كمشكلة في البيانات لا كخسارة" — لكن النتيجة أن المدير والكاشير يريان ربحًا مختلفًا
+  لنفس اليوم، ولا يوجد أي مؤشر على الشاشة يفسّر الفرق.</p>
+  <p>فرقٌ ثانٍ في نفس النمط: <span class="f">analytics.ts:214</span> يجمع الضريبة من
+  <span class="f">order.taxAmount</span>، بينما <span class="f">reportMath</span> يستقبل
+  <span class="f">taxAmount</span> محسوبًا من طرف المستدعي — أي أن المرجع الوحيد هو
+  اللقطة المخزّنة مع الطلب، وهو صحيح، لكنه يعني أن <b>أي صف قديم بلا لقطة ضريبية يُحسب بصفر ضريبة</b>
+  (<span class="f">toNum(null) → 0</span>) فيُضخِّم الربح الصافي.</p>
+  <h3>الإصلاح</h3>
+<pre><span class="cm">// AFTER — عرّف المصدر مرة واحدة وشاركه (cloudflare/shared/money.js أو utils/orderTotals)</span>
+<span class="add">export function netProfit(revenue: number, tax: number, cogs: number): number {
+  return roundMoney(revenue - tax - cogs);           // قيمة واحدة، بلا أرضية
+}
+// العرض يقرر: بطاقة الكاشير تعرض max(0, value) + وسم "خسارة" عند السالب،
+// والبوابة تعرض القيمة الحقيقية. قرار العرض لا ينتمي إلى طبقة الحساب.</span>
+
+<span class="cm">// AFTER — ارفض الصفوف بلا لقطة ضريبية بدل حسابها صفرًا</span>
+<span class="add">orderTax(order) {
+  const t = Number(order.taxAmount);
+  return Number.isFinite(t) ? roundMoney(t) : null;   // null = "مجهول"، يُعرض للمدير
+}</span>
+</pre>
+</div>
+
+<!-- ═══ F20 ═══ -->
+<h2>F20 <span class="tag t-low">منخفض</span> — نسب طرق الدفع قد لا تجموعها 100% + إعادة جلب مكرّرة</h2>
+<div class="card">
+<pre><span class="del">// reportMath.ts:110-112
+cashPercentage: totalAmount &gt; 0 ? Math.round((cashAmount / totalAmount) * 100) : 0,
+cardPercentage: totalAmount &gt; 0 ? Math.round((cardAmount / totalAmount) * 100) : 0,</span>
+<span class="cm">// 50.5 / 49.5 → Math.round مرتين → 51 + 50 = 101%</span>
+<span class="add">// AFTER — استخدم أكبر باقي (largest remainder) أو احسب الثاني بالطرح
+const cashPct = Math.round((cashAmount / totalAmount) * 100);
+cardPercentage: 100 - cashPct,</span>
+
+<span class="del">// menuService.ts:88 — عند الفشل يستدعي getAll() الذي يُجري نفس الطلب مجددًا في المتصفح
+const fallbackItems = await this.getAll();   // نفس /read/public-menu مرة ثانية</span>
+<span class="add">// AFTER — لا تُعد المحاولة على نفس نقطة النهاية
+return { menuItems: [], config: null, unavailable: true };</span>
+</pre>
+</div>
+
+<!-- ═══ تحققات إيجابية ═══ -->
+<h2>ما تحقّقتُ منه في هذا الجزء وهو سليم (ولا يحتاج عملًا)</h2>
+<div class="card">
+  <div class="good">
+    <b>تحقّق كامل من استعادة الإعدادات.</b> كنتُ أشتبه في انحراف معدّل الضريبة بين
+    <span class="f">localStorage</span> وSQLite (لأن <span class="f">getTaxRate()</span> يقرأ localStorage فقط).
+    التتبع أثبت العكس: <span class="f">src/main.tsx:8-18</span> يستدعي
+    <span class="f">electronAPI.getSettings()</span> ويملأ localStorage <b>قبل</b>
+    <span class="f">createRoot().render()</span>. لا انحراف. كما أن
+    <span class="f">StoreConfig.taxRate</span> يُفوَّض إلى <span class="f">setTaxRate</span>
+    (<span class="f">settingsConfig.ts:237</span>) فلا يوجد مصدران متنافسان.
+  </div>
+  <div class="good">
+    <b>حماية ممتازة من الدفع المزدوج في الواجهة.</b>
+    <span class="f">PaymentModal.tsx:22-31</span> يحتفظ بخريطة
+    <span class="f">pending</span> مُفتاحها معرّف الطلب، فإعادة النقر على "تأكيد الدفع"
+    تعيد نفس الـ <span class="f">Promise</span> ولا تُنشئ كتابة ثانية، مع
+    <span class="f">submittingRef</span> و<span class="f">activeRef</span> لحالة الإغلاق.
+    ويقابله <span class="f">savingRef</span> في <span class="f">POSView.tsx:36</span>.
+    وهذا — مع <span class="f">completeOrderPayment</span> الذي يرفض الطلب المدفوع مسبقًا
+    (<span class="f">OrderRepository.cjs:283</span>) ومع شرط
+    <span class="f">paymentStatus != 'Paid'</span> في UPDATE — يجعل مسار التحصيل
+    <b>عاطلًا عن التكرار (idempotent) فعليًا</b> على مستوى التطبيق.
+  </div>
+  <div class="good">
+    <b>لا يكتب الرندرر أي مفتاح.</b> <span class="f">menuService.ts:52-68</span> و<span class="f">:73-88</span>
+    يستدعيان <span class="f">/read/public-menu</span> بلا ترويسة مصادقة، وكل عمليات الكتابة
+    تمرّ بـ <span class="f">requireDesktop()</span>. النشر يمرّ بالـ IPC
+    (<span class="f">menu:publish-config</span>) لأنه يحتاج مفتاحًا — تمامًا كما صُمِّم.
+  </div>
+  <div class="good">
+    <b>ملفات النشر سليمة هيكليًا.</b>
+    <span class="f">reports-site/empty-worker.js</span> المشار إليه في
+    <span class="f">wrangler-reports-site.toml</span> موجود فعليًا،
+    وملاحظة ترتيب <span class="f">routes</span> قبل <span class="f">[assets]</span> موثّقة correctly —
+    فخّ TOML حقيقي تم تجنّبه. و<span class="f">deploy-reports.ps1</span> يصحّح مسارات
+    <span class="f">main</span>/<span class="f">assets.directory</span> إلى مسارات مطلقة
+    بعد نسخ الإعداد إلى <span class="f">%TEMP%</span> — وهي مشكلة حقيقية كان يمكن أن تُنتج
+    نشرًا فارغًا.
+  </div>
+</div>
+
+<h2>ملحق — الأثر على خطة العمل</h2>
+<div class="card">
+  <table style="width:100%;border-collapse:collapse;font-size:13.5px">
+    <tr><th style="border:1px solid var(--line);padding:9px;text-align:right;background:var(--panel2)">#</th><th style="border:1px solid var(--line);padding:9px;text-align:right;background:var(--panel2)">يُدرج في</th><th style="border:1px solid var(--line);padding:9px;text-align:right;background:var(--panel2)">الإجراء</th></tr>
+    <tr><td style="border:1px solid var(--line);padding:9px">F16</td><td style="border:1px solid var(--line);padding:9px"><b>P0</b> — مع F1</td><td style="border:1px solid var(--line);padding:9px">تصحيح تعليق <span class="f">wrangler-reports.toml</span> وفصل اسم المتغيّر؛ هذا هو مدخل إصلاح F1 لا العَرَض</td></tr>
+    <tr><td style="border:1px solid var(--line);padding:9px">F17</td><td style="border:1px solid var(--line);padding:9px"><b>P1</b> — مع F4</td><td style="border:1px solid var(--line);padding:9px">مضيف مخصوص لعامل نقاط البيع + <span class="f">workers_dev = false</span> + إضافة المضيف إلى <span class="f">workerHostPolicy.POS_HOSTS</span></td></tr>
+    <tr><td style="border:1px solid var(--line);padding:9px">F19</td><td style="border:1px solid var(--line);padding:9px"><b>P2</b></td><td style="border:1px solid var(--line);padding:9px">توحيد تعريف صافي الربح ومعالجة الضريبة المجهولة</td></tr>
+    <tr><td style="border:1px solid var(--line);padding:9px">F18, F20</td><td style="border:1px solid var(--line);padding:9px"><b>P3</b> — مع F14</td><td style="border:1px solid var(--line);padding:9px">حذف الشفرة الميتة، تصحيح النسب المئوية، إزالة إعادة الجلب المكرّرة</td></tr>
+  </table>
+  <p class="muted" style="margin-top:14px">
+    الجزءان معًا يغطيان كامل الشجرة المطلوبة: <span class="f">electron/</span>،
+    <span class="f">src/</span>، <span class="f">reports-site/</span>،
+    <span class="f">cloudflare/</span>، <span class="f">scripts/</span>،
+    <span class="f">launcher/</span>، <span class="f">.github/</span>،
+    وملفات <span class="f">wrangler*.toml</span> و<span class="f">deploy-reports.ps1</span>.
+    20 مشكلة موثّقة، كل واحدة برقم ملف وسطر، وبدليل من الكود أو من سجلات التشغيل الفعلية.
+  </p>
+</div>
+
+<p class="muted" style="margin-top:30px;border-top:1px solid var(--line);padding-top:14px">
+  الفرع <span class="f">fix/comprehensive-audit-remediation</span> · 14 سبتمبر 2026 ·
+  تدقيق قراءة فقط: لم يُعدَّل أي كود، ولا أي قاعدة بيانات، ولا أي إعداد منشور.
+</p>
+
+</div>
+</body>
+</html>

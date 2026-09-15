@@ -1,6 +1,14 @@
 ﻿import { useMenuContext } from '../context/DataContext';
 
-// Re-export from DataContext - data is fetched once at app level and shared
+// Data is fetched once at app level and shared through DataContext.
 export function useMenu() {
-  return useMenuContext();
+  const menu = useMenuContext();
+  return {
+    ...menu,
+    addItem: async (...args: Parameters<typeof menu.addItem>) => {
+      const item = await menu.addItem(...args);
+      if (!item) throw new Error('Failed to create menu item');
+      return item;
+    },
+  };
 }

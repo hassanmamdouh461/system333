@@ -1,0 +1,57 @@
+name = "engaz-d1-proxy"
+main = "cloudflare/d1-proxy-worker.js"
+compatibility_date = "2025-01-01"
+
+# ── CUTOVER: read this before deploying ───────────────────────────────────────────────
+# This worker holds every order, customer, stock level and loyalty balance in the business.
+# It used to be published on its Cloudflare-provided *.workers.dev URL, which anyone on the
+# internet can reach by name and which sits outside every Access policy, WAF rule and rate
+# limit scoped to engaz.tech — while both less sensitive workers (the reports API and the
+# reporting portal) had workers_dev deliberately switched off for exactly that reason.
+#
+# It now answers on api-pos.engaz.tech only. api.engaz.tech is deliberately NOT used: that
+# hostname is already serving another service, and claiming its route would take it down.
+#
+# Order of operations — doing these out of order is an outage.
+#
+# The previous instruction was to point every device at the new host BEFORE deploying. That
+# is backwards: the hostname does not resolve until the route exists, so every device
+# repointed first would go offline at once and stay there until the deploy landed. Create and
+# verify the new destination first, then move devices onto it.
+#
+# Full procedure with rollback: docs/CUTOVER_RUNBOOK.md
+#
+#   1. Create the api-pos.engaz.tech DNS record (proxied).
+#   2. Deploy. Both hostnames answer; the database is the same one.
+#   3. Verify /health and one real sync on the new host.
+#   4. Move devices in small batches. ONLY binaries built with the current
+#      electron/workerHostPolicy.cjs allowlist can be moved — an older install refuses the
+#      new host, so a rebuild is required for those.
+#   5. When every device is migrated, remove LEGACY_WORKERS_DEV_URL from the allowlist and
+#      delete the old worker.
+#
+# Rollback is a per-device setting change, not a redeploy, which is why step 2 is safe.
+workers_dev = false
+
+routes = [
+  { pattern = "api-pos.engaz.tech/*", zone_name = "engaz.tech" },
+]
+
+# Cloudflare D1 database used by the desktop POS (writes) and the manager portal (reads).
+# The binding name must stay `DB` -- the worker reads env.DB.
+#
+# This database was created on 2026-09-14 to back the POS sync that the legacy
+# brewmaster-d1-proxy could no longer serve (different contract, returned HTTP 400
+# "Missing sql or batch"). The id is now in source because the database is the worker.
+[[d1_databases]]
+binding = "DB"
+database_name = "engaz-pos-db"
+database_id = "6e8450b3-2b08-46f2-8b80-a85ccce6b21f"
+
+# Local dev origins are refused unless this is explicitly "true". The worker reads it, so
+# without the declaration the setting could never be turned on for a dev deployment.
+[vars]
+ALLOW_DEV_ORIGINS = "false"
+
+# Secrets are never in this file. Set once per environment:
+#   npx wrangler secret put WORKER_API_KEY

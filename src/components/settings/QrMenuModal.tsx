@@ -1,18 +1,70 @@
-import React, { useState } from 'react';
+import { useState } from 'react';
 import { X, Copy, Check, Printer, Download, QrCode } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useLanguage } from '../../context/LanguageContext';
+import { useDialog } from '../../hooks/useDialog';
+import { menuBrandingService } from '../../services/menuBrandingService';
 
 interface QrMenuModalProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
+/**
+ * Escapes owner-typed text before it is written into the print document. `document.write`
+ * builds real markup, so an apostrophe or an angle bracket in a restaurant name would break
+ * the page it is printed on.
+ */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Renders nothing while closed so the dialog body — and its focus management — mounts
+ * and unmounts with the dialog itself.
+ */
 export function QrMenuModal({ isOpen, onClose }: QrMenuModalProps) {
+  return (
+    <AnimatePresence>
+      {isOpen && <QrMenuModalBody onClose={onClose} />}
+    </AnimatePresence>
+  );
+}
+
+function QrMenuModalBody({ onClose }: { onClose: () => void }) {
   const { t } = useLanguage();
+  const { panelRef, titleId, dialogProps } = useDialog<HTMLDivElement>({ onClose });
   const [copied, setCopied] = useState(false);
-  
-  const publicMenuUrl = 'https://tyt-seven.vercel.app/#/public-menu';
+
+  // The printed stand carries the owner's own identity from the menu panel. It used to print
+  // "Engaz" and an English coffee tagline on every customer's table, whatever the business was.
+  const [{ storeName, subtitle }] = useState(() => {
+    const config = menuBrandingService.getLocalConfig();
+    return {
+      storeName: config.storeName || 'قائمة الطعام والأسعار',
+      subtitle: config.subtitle,
+    };
+  });
+
+  const [domainInput, setDomainInput] = useState<string>(() => {
+    return localStorage.getItem('engaz_menu_domain') || (import.meta.env.VITE_PUBLIC_MENU_URL as string) || 'https://menu.engaz.tech';
+  });
+
+  const cleanDomain = domainInput.trim().replace(/\/+$/, '');
+  const publicMenuUrl = cleanDomain.includes('#/public-menu') 
+    ? cleanDomain 
+    : `${cleanDomain}/#/public-menu`;
+
+  const handleDomainChange = (val: string) => {
+    setDomainInput(val);
+    localStorage.setItem('engaz_menu_domain', val);
+  };
+
   const qrCodeImageUrl = `https://api.qrserver.com/v1/create-qr-code/?size=350x350&data=${encodeURIComponent(publicMenuUrl)}`;
 
   const handleCopyLink = async () => {
@@ -32,7 +84,7 @@ export function QrMenuModal({ isOpen, onClose }: QrMenuModalProps) {
       const url = window.URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
-      a.download = 'brewmaster-menu-qr.png';
+      a.download = 'engaz-menu-qr.png';
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -50,7 +102,7 @@ export function QrMenuModal({ isOpen, onClose }: QrMenuModalProps) {
     printWindow.document.write(`
       <html>
         <head>
-          <title>Print Menu QR Code - BrewMaster</title>
+          <title>${escapeHtml(storeName)}</title>
           <style>
             body {
               font-family: system-ui, -apple-system, sans-serif;
@@ -75,19 +127,18 @@ export function QrMenuModal({ isOpen, onClose }: QrMenuModalProps) {
               box-shadow: 0 10px 15px -3px rgba(0,0,0,0.05);
             }
             .logo {
-              font-size: 36px;
+              direction: rtl;
+              font-size: 32px;
               font-weight: 800;
               margin-bottom: 4px;
               color: #6B4E31;
-              letter-spacing: -0.5px;
             }
             .tagline {
-              font-size: 16px;
+              direction: rtl;
+              font-size: 15px;
               color: #8B6843;
               margin-bottom: 30px;
               font-weight: 600;
-              text-transform: uppercase;
-              letter-spacing: 1px;
             }
             .qr-wrapper {
               background: white;
@@ -119,24 +170,18 @@ export function QrMenuModal({ isOpen, onClose }: QrMenuModalProps) {
               margin-bottom: 6px;
               font-size: 19px;
             }
-            .english {
-              font-weight: 500;
-              font-size: 15px;
-              color: #8B6843;
-            }
           </style>
         </head>
         <body>
           <div class="container">
-            <div class="logo">BrewMaster</div>
-            <div class="tagline">✦ Premium Coffee & Treats ✦</div>
+            <div class="logo">${escapeHtml(storeName)}</div>
+            ${subtitle ? `<div class="tagline">${escapeHtml(subtitle)}</div>` : ''}
             <div class="qr-wrapper">
               <img class="qr-img" src="${qrCodeImageUrl}" alt="QR Code" />
             </div>
             <div class="divider"></div>
             <div class="instructions">
               <div class="arabic">امسح الرمز لتصفح المنيو والأسعار</div>
-              <div class="english">Scan QR Code to view menu & availability</div>
             </div>
           </div>
           <script>
@@ -154,94 +199,110 @@ export function QrMenuModal({ isOpen, onClose }: QrMenuModalProps) {
   };
 
   return (
-    <AnimatePresence>
-      {isOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
-          {/* Backdrop */}
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            onClick={onClose}
-            className="fixed inset-0 bg-black/60 backdrop-blur-sm"
-          />
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+      {/* Backdrop */}
+      <motion.div
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        exit={{ opacity: 0 }}
+        onClick={onClose}
+        className="fixed inset-0 bg-black/60 backdrop-blur-sm"
+      />
 
-          <motion.div
-            initial={{ opacity: 0, scale: 0.9, y: 15 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.9, y: 15 }}
-            className="relative w-full max-w-md bg-white rounded-3xl overflow-hidden shadow-2xl border border-mocha-100 z-10 p-6 flex flex-col items-center"
-          >
-            {/* Close Button */}
-            <button
-              onClick={onClose}
-              className="absolute top-4 right-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
-            >
-              <X size={18} />
-            </button>
+      <motion.div
+        ref={panelRef}
+        {...dialogProps}
+        initial={{ opacity: 0, scale: 0.9, y: 15 }}
+        animate={{ opacity: 1, scale: 1, y: 0 }}
+        exit={{ opacity: 0, scale: 0.9, y: 15 }}
+        className="relative w-full max-w-md bg-white rounded-3xl overflow-hidden shadow-2xl border border-mocha-100 z-10 p-6 flex flex-col items-center outline-none"
+      >
+        {/* Close Button */}
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label={t('Close')}
+          className="absolute top-4 right-4 p-2 text-gray-400 hover:text-gray-600 hover:bg-gray-100 rounded-full transition-colors"
+        >
+          <X size={18} aria-hidden="true" />
+        </button>
 
-            {/* Title */}
-            <div className="flex items-center gap-2 mb-1 mt-2 text-mocha-700">
-              <QrCode className="w-6 h-6 text-caramel" />
-              <h2 className="text-xl font-bold text-gray-900">{t('QR Code Menu')}</h2>
-            </div>
-            <p className="text-xs text-gray-500 text-center mb-6 px-4">
-              {t('Show or print this code so customers can scan it to browse the menu, pricing, and availability directly on their phones.')}
-            </p>
-
-            {/* QR Card Poster Preview */}
-            <div className="bg-mocha-50 border border-mocha-100 p-5 rounded-2xl flex flex-col items-center shadow-inner w-full max-w-[280px] mb-6 text-gray-900">
-              <span className="font-extrabold text-mocha-800 text-lg tracking-wide mb-1">BrewMaster</span>
-              <span className="text-[9px] text-mocha-400 font-semibold tracking-widest uppercase mb-4">✦ Menu Stand ✦</span>
-              
-              {/* QR Image Frame */}
-              <div className="bg-white p-3 rounded-xl shadow-md border border-mocha-100/50">
-                <img
-                  src={qrCodeImageUrl}
-                  alt="Customer Menu QR Code"
-                  className="w-40 h-40 object-contain"
-                />
-              </div>
-              
-              <div className="mt-4 text-center">
-                <p className="text-xs font-bold text-mocha-700 mb-0.5">{t('Scan QR Code to view menu')}</p>
-                <p className="text-[10px] text-mocha-400 font-medium">{t('Scan to view menu')}</p>
-              </div>
-            </div>
-
-            {/* URL Display */}
-            <div className="w-full flex items-center bg-gray-50 border border-gray-200 rounded-xl p-2.5 mb-6 text-xs text-gray-600">
-              <span className="flex-1 truncate mr-2 font-mono select-all text-left">{publicMenuUrl}</span>
-              <button
-                onClick={handleCopyLink}
-                className="shrink-0 p-2 rounded-lg bg-white border border-gray-200 text-gray-500 hover:text-mocha-700 hover:bg-mocha-50 transition-colors shadow-sm flex items-center justify-center"
-                title="Copy Link"
-              >
-                {copied ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}
-              </button>
-            </div>
-
-            {/* Action buttons */}
-            <div className="grid grid-cols-2 gap-3 w-full">
-              <button
-                onClick={handlePrint}
-                className="flex items-center justify-center gap-2 py-3 px-4 bg-mocha-700 hover:bg-mocha-800 text-white rounded-xl font-semibold shadow-md shadow-mocha-700/20 transition-all active:scale-[0.98] text-sm"
-              >
-                <Printer size={16} />
-                <span>{t('Print Code')}</span>
-              </button>
-              
-              <button
-                onClick={handleDownload}
-                className="flex items-center justify-center gap-2 py-3 px-4 bg-mocha-100 hover:bg-mocha-200 text-mocha-800 rounded-xl font-semibold border border-mocha-200 transition-all active:scale-[0.98] text-sm"
-              >
-                <Download size={16} />
-                <span>{t('Download Image')}</span>
-              </button>
-            </div>
-          </motion.div>
+        {/* Title */}
+        <div className="flex items-center gap-2 mb-1 mt-2 text-mocha-700">
+          <QrCode className="w-6 h-6 text-caramel" />
+          <h2 id={titleId} className="text-xl font-bold text-gray-900">{t('QR Code Menu')}</h2>
         </div>
-      )}
-    </AnimatePresence>
+        <p className="text-xs text-gray-500 text-center mb-6 px-4">
+          {t('Show or print this code so customers can scan it to browse the menu, pricing, and availability directly on their phones.')}
+        </p>
+
+        {/* QR Card Poster Preview */}
+        <div className="bg-mocha-50 border border-mocha-100 p-5 rounded-2xl flex flex-col items-center shadow-inner w-full max-w-[280px] mb-6 text-gray-900">
+          <span className="font-extrabold text-mocha-800 text-lg mb-1 text-center">{storeName}</span>
+          {subtitle && (
+            <span className="text-[10px] text-mocha-400 font-semibold mb-4 text-center">{subtitle}</span>
+          )}
+          {/* QR Image Frame */}
+          <div className="bg-white p-3 rounded-xl shadow-md border border-mocha-100/50">
+            <img
+              src={qrCodeImageUrl}
+              alt="Customer Menu QR Code"
+              className="w-40 h-40 object-contain"
+            />
+          </div>
+          
+          <div className="mt-4 text-center">
+            <p className="text-xs font-bold text-mocha-700 mb-0.5">{t('Scan QR Code to view menu')}</p>
+            <p className="text-[10px] text-mocha-400 font-medium">{t('Scan to view menu')}</p>
+          </div>
+        </div>
+
+        {/* Cloudflare Domain / Subdomain Input */}
+        <div className="w-full mb-3 text-right">
+          <label className="text-[11px] font-bold text-gray-700 block mb-1">
+            رابط أو ساب دومين المنيو (Cloudflare):
+          </label>
+          <input
+            type="text"
+            value={domainInput}
+            onChange={(e) => handleDomainChange(e.target.value)}
+            placeholder="https://menu.engaz.tech"
+            dir="ltr"
+            className="w-full px-3 py-2 bg-gray-50 border border-gray-200 rounded-xl text-xs font-mono focus:outline-none focus:ring-1 focus:ring-caramel"
+          />
+        </div>
+
+        {/* URL Display */}
+        <div className="w-full flex items-center bg-gray-50 border border-gray-200 rounded-xl p-2.5 mb-6 text-xs text-gray-600">
+          <span className="flex-1 truncate me-2 font-mono select-all text-start">{publicMenuUrl}</span>
+          <button
+            onClick={handleCopyLink}
+            className="shrink-0 p-2 rounded-lg bg-white border border-gray-200 text-gray-500 hover:text-mocha-700 hover:bg-mocha-50 transition-colors shadow-sm flex items-center justify-center"
+            title="نسخ الرابط"
+          >
+            {copied ? <Check size={14} className="text-green-600" /> : <Copy size={14} />}
+          </button>
+        </div>
+
+        {/* Action buttons */}
+        <div className="grid grid-cols-2 gap-3 w-full">
+          <button
+            onClick={handlePrint}
+            className="flex items-center justify-center gap-2 py-3 px-4 bg-mocha-700 hover:bg-mocha-800 text-white rounded-xl font-semibold shadow-md shadow-mocha-700/20 transition-all active:scale-[0.98] text-sm"
+          >
+            <Printer size={16} />
+            <span>{t('Print Code')}</span>
+          </button>
+          
+          <button
+            onClick={handleDownload}
+            className="flex items-center justify-center gap-2 py-3 px-4 bg-mocha-100 hover:bg-mocha-200 text-mocha-800 rounded-xl font-semibold border border-mocha-200 transition-all active:scale-[0.98] text-sm"
+          >
+            <Download size={16} />
+            <span>{t('Download Image')}</span>
+          </button>
+        </div>
+      </motion.div>
+    </div>
   );
 }

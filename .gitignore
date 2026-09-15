@@ -96,12 +96,39 @@ public/
 Thumbs.db
 
 /dist
+/dist-menu
 /git-install.exe
 /mingit/
 /scratch/
 /dist-electron
 
-# Local Netlify folder
-.netlify
+# Build archives. dist-deploy.zip was committed three separate times before this rule
+# existed, so the pattern is what keeps it out rather than a one-off deletion.
+*.zip
 
-.vercel
+# Wrangler deploy scratch directory
+.wrangler/
+
+# Reports portal (reporting.engaz.tech) — build artifacts and deps
+reports-site/node_modules/
+reports-site/dist/
+reports-site/.env
+
+# Host deploy scratch directories (login state, project links — never commit)
+.netlify/
+.vercel/
+
+# Assistant session state. Never commit: the workspace copy holds a production database
+# export under .workbuddy-ai/backups/, alongside transcripts that mention live endpoints.
+.workbuddy-ai/
+.zcode/
+
+# Audit and diagnostic scratch. One `git add .` used to be enough to commit hundreds of
+# kilobytes of captured live bundles, database dumps and generated dossiers — some of which
+# contained a production credential that was captured precisely because it had leaked.
+/outputs/
+/.postman/
+/postman/
+
+# Legacy static-host state from before the Cloudflare migration.
+.turbo/

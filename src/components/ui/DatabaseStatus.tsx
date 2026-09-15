@@ -1,82 +1,58 @@
-import React, { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Database, Wifi, WifiOff, RefreshCw } from 'lucide-react';
 import { menuService } from '../../services/menuService';
+import { checkWorkerHealth } from '../../services/workerClient';
 import { motion } from 'framer-motion';
 import { useLanguage } from '../../context/LanguageContext';
 
 type ConnectionStatus = 'checking' | 'connected' | 'error';
 
 export function DatabaseStatus() {
-  const { t, language } = useLanguage();
+  const { t } = useLanguage();
   const [status, setStatus] = useState<ConnectionStatus>('checking');
   const [lastChecked, setLastChecked] = useState<Date | null>(null);
 
   const isElectron = typeof window !== 'undefined' && !!window.electronAPI;
 
-  const checkConnection = async () => {
+  const checkConnection = useCallback(async () => {
     setStatus('checking');
-    if (isElectron) {
-      try {
-        // Perform a lightweight check against local SQLite db
+    try {
+      if (isElectron) {
+        // Lightweight round trip against the local database.
         await menuService.getAll();
-        setStatus('connected');
-        setLastChecked(new Date());
-      } catch (error) {
-        console.error('SQLite connection error:', error);
-        setStatus('error');
-        setLastChecked(new Date());
+      } else {
+        // The worker's own liveness endpoint, which needs no key and no query.
+        const healthy = await checkWorkerHealth();
+        if (!healthy) throw new Error('فشل فحص حياة الخدمة السحابية');
       }
-    } else {
-      // Running on Web: Check Cloudflare D1 Cloud Database connection
-      try {
-        const workerUrl = import.meta.env.VITE_CF_WORKER_URL || 'https://api.engaz.tech';
-        const workerApiKey = import.meta.env.VITE_CF_WORKER_API_KEY || '';
-        const response = await fetch(workerUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(workerApiKey ? { 'X-API-Key': workerApiKey } : {})
-          },
-          body: JSON.stringify({
-            sql: 'SELECT 1'
-          })
-        });
-        if (!response.ok) {
-          throw new Error(`Cloud database returned status ${response.status}`);
-        }
-        const data = await response.json();
-        if (!data.success) {
-          throw new Error(data.error || 'D1 query failed');
-        }
-        setStatus('connected');
-        setLastChecked(new Date());
-      } catch (error) {
-        console.error('D1 connection error:', error);
-        setStatus('error');
-        setLastChecked(new Date());
-      }
+      setStatus('connected');
+    } catch (error) {
+      console.error('[DatabaseStatus] Connection check failed:', error);
+      setStatus('error');
+    } finally {
+      setLastChecked(new Date());
     }
-  };
+  }, [isElectron]);
 
   useEffect(() => {
     checkConnection();
     // Auto-check every 60 seconds
     const interval = setInterval(checkConnection, 60000);
     return () => clearInterval(interval);
-  }, []);
+  }, [checkConnection]);
 
   const getStatusConfig = () => {
     switch (status) {
       case 'checking':
         return {
           icon: RefreshCw,
-          color: 'text-blue-605',
+          color: 'text-blue-600',
           bgColor: 'bg-blue-50',
           borderColor: 'border-blue-200',
-          label: language === 'ar' ? 'جاري التحقق...' : 'Checking...',
-          description: isElectron 
-            ? (language === 'ar' ? 'يتم الآن فحص الاتصال بقاعدة بيانات SQLite المحلية' : 'Verifying local database connection')
-            : (language === 'ar' ? 'يتم الآن فحص الاتصال بقاعدة بيانات Cloudflare D1 السحابية' : 'Verifying Cloudflare D1 cloud database connection'),
+          label: 'جاري التحقق...',
+          description: isElectron
+            ? 'يتم الآن فحص الاتصال بقاعدة البيانات المحلية'
+            : 'يتم الآن فحص الاتصال بقاعدة البيانات السحابية',
         };
       case 'connected':
         return {
@@ -84,25 +60,21 @@ export function DatabaseStatus() {
           color: 'text-green-600',
           bgColor: 'bg-green-50',
           borderColor: 'border-green-200',
-          label: isElectron 
-            ? (language === 'ar' ? 'قاعدة البيانات المحلية متصلة' : 'Local SQLite Connected')
-            : (language === 'ar' ? 'قاعدة البيانات السحابية متصلة' : 'Cloudflare D1 Connected'),
+          label: isElectron ? 'قاعدة البيانات المحلية متصلة' : 'قاعدة البيانات السحابية متصلة',
           description: isElectron
-            ? (language === 'ar' ? 'قاعدة البيانات المحلية متصلة وتعمل بكفاءة تامة' : 'Local SQLite database is connected and fully operational')
-            : (language === 'ar' ? 'قاعدة بيانات Cloudflare D1 متصلة وتعمل بكفاءة تامة أونلاين' : 'Cloudflare D1 cloud database is connected and fully operational online'),
+            ? 'قاعدة البيانات المحلية متصلة وتعمل بكفاءة تامة'
+            : 'قاعدة البيانات السحابية متصلة وتعمل بكفاءة تامة',
         };
       case 'error':
         return {
           icon: WifiOff,
-          color: 'text-red-650',
+          color: 'text-red-600',
           bgColor: 'bg-red-50',
           borderColor: 'border-red-200',
-          label: isElectron
-            ? (language === 'ar' ? 'خطأ في قاعدة البيانات' : 'Database Error')
-            : (language === 'ar' ? 'خطأ في الاتصال بالسحاب' : 'Cloud Connection Error'),
+          label: isElectron ? 'خطأ في قاعدة البيانات' : 'خطأ في الاتصال بالسحاب',
           description: isElectron
-            ? (language === 'ar' ? 'فشل الاتصال بقاعدة بيانات SQLite المحلية' : 'Failed to access local SQLite database')
-            : (language === 'ar' ? 'تعذر الاتصال بـ Cloudflare D1. يرجى التحقق من إعدادات الـ Worker' : 'Failed to connect to Cloudflare D1. Please check Worker settings.'),
+            ? 'فشل الاتصال بقاعدة البيانات المحلية'
+            : 'تعذر الاتصال بقاعدة البيانات السحابية، يرجى التحقق من الإعدادات',
         };
     }
   };
@@ -127,11 +99,11 @@ export function DatabaseStatus() {
           </div>
 
           {/* Content */}
-          <div className="flex-1 min-w-0 text-left">
+          <div className="flex-1 min-w-0 text-start">
             <div className="flex items-center gap-2 mb-1">
               <Database size={16} className="text-gray-400 flex-shrink-0" />
               <h3 className={`font-semibold ${config.color} text-sm md:text-base`}>
-                {language === 'ar' ? 'حالة قاعدة البيانات:' : 'Database Status:'} {config.label}
+                حالة قاعدة البيانات: {config.label}
               </h3>
             </div>
             <p className="text-xs md:text-sm text-gray-600 mb-2">
@@ -140,17 +112,17 @@ export function DatabaseStatus() {
             
             <div className="space-y-1 text-xs text-gray-500">
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-semibold text-gray-700">{language === 'ar' ? 'النوع:' : 'Type:'}</span>
-                <span>{isElectron ? t('SQLite (Offline Standalone)') : (language === 'ar' ? 'سحابي (Cloudflare D1)' : 'Cloudflare D1 Database')}</span>
+                <span className="font-semibold text-gray-700">النوع:</span>
+                <span>{isElectron ? t('SQLite (Offline Standalone)') : 'قاعدة بيانات سحابية'}</span>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-semibold text-gray-700">{isElectron ? (language === 'ar' ? 'مسار التخزين:' : 'File Storage:') : (language === 'ar' ? 'رابط الاتصال:' : 'Endpoint:')}</span>
-                <span className="font-mono">{isElectron ? 'brewmaster.db' : 'Cloudflare D1'}</span>
+                <span className="font-semibold text-gray-700">{isElectron ? 'مسار التخزين:' : 'رابط الاتصال:'}</span>
+                <span className="font-mono">{isElectron ? 'engaz.db' : 'Cloudflare D1'}</span>
               </div>
               {lastChecked && (
                 <div className="flex items-center gap-2">
-                  <span className="font-semibold text-gray-700">{language === 'ar' ? 'آخر فحص:' : 'Last checked:'}</span>
-                  <span>{lastChecked.toLocaleTimeString()}</span>
+                  <span className="font-semibold text-gray-700">آخر فحص:</span>
+                  <span>{lastChecked.toLocaleTimeString('ar-EG')}</span>
                 </div>
               )}
             </div>
@@ -162,7 +134,8 @@ export function DatabaseStatus() {
           onClick={checkConnection}
           disabled={status === 'checking'}
           className={`mobile-touch-target p-2 rounded-lg ${config.bgColor} ${config.color} hover:opacity-80 transition-opacity disabled:opacity-50 flex-shrink-0 tap-highlight-none`}
-          title="Refresh connection status"
+          aria-label={t('Refresh')}
+          title={t('Refresh')}
         >
           <RefreshCw 
             size={18} 

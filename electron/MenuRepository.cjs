@@ -1,5 +1,13 @@
 const database = require('./database.cjs');
 const { randomUUID } = require('crypto');
+const { MAX_SYNC_ATTEMPTS } = database;
+
+// Monotonic per-row version: a second edit in the same millisecond still gets a newer
+// updated_at, which the sync version guards compare on.
+// The monotonic-step rule lives in database.cjs: five copies of it meant a fix
+// had to be made five times, and missing one silently reintroduces a timestamp tie —
+// which is a lost write under last-writer-wins.
+const { nextUpdatedAt } = database;
 
 class MenuRepository {
   getDb() {
@@ -28,15 +36,71 @@ class MenuRepository {
 
   getMenu() {
     const sqlite = this.getDb();
-    const rows = sqlite.prepare('SELECT * FROM menu_items WHERE deleted_at IS NULL').all();
+    const branchId = this.getBranchId();
+    // Same scoping as orders: this till sees its own items plus explicitly shared ones
+    // (NULL branch). A menu pull from the cloud can carry another branch's item, so
+    // filtering here — not only in the pull filter — is what keeps it off this till.
+    const rows = sqlite.prepare(`
+      SELECT * FROM menu_items
+      WHERE deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
+    `).all(branchId);
     return rows.map(row => this.mapRow(row));
+  }
+
+  /**
+   * Applies rows pulled from the cloud. A pulled row carries its deleted_at, so a deletion
+   * made on another branch disappears here too. Only overwrites a local row that is already
+   * synced or older, so an un-pushed local edit is never clobbered by a stale cloud copy.
+   */
+  upsertPulledMenuItems(rows) {
+    if (!rows || rows.length === 0) return;
+    const sqlite = this.getDb();
+    const insert = sqlite.prepare(`
+      INSERT INTO menu_items (id, name, description, price, category, image, available, branch_id, is_synced, created_at, updated_at, deleted_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?)
+      ON CONFLICT(id) DO UPDATE SET
+        name = excluded.name,
+        description = excluded.description,
+        price = excluded.price,
+        category = excluded.category,
+        image = excluded.image,
+        available = excluded.available,
+        branch_id = excluded.branch_id,
+        updated_at = excluded.updated_at,
+        deleted_at = excluded.deleted_at,
+        is_synced = 1
+      WHERE menu_items.is_synced = 1
+        AND (menu_items.updated_at IS NULL OR excluded.updated_at IS NULL OR excluded.updated_at >= menu_items.updated_at)
+    `);
+    const runTx = sqlite.transaction((items) => {
+      for (const row of items) {
+        insert.run(
+          row.id,
+          row.name || '',
+          row.description || '',
+          Number(row.price) || 0,
+          row.category || '',
+          row.image || '',
+          row.available ? 1 : 0,
+          row.branch_id || null,
+          row.created_at || row.updated_at,
+          row.updated_at || null,
+          row.deleted_at || null
+        );
+      }
+    });
+    runTx(rows);
   }
 
   createMenuItem(item) {
     const sqlite = this.getDb();
     const id = item.id || `menu-${randomUUID()}`;
     const now = new Date().toISOString();
-    const branchId = item.branchId || this.getBranchId();
+    // A branchId from the caller only sticks when it names this branch. The IPC surface is
+    // untrusted: accepting any value let the renderer file an item under another branch, or
+    // under a shared (NULL) scope this till has no business writing to.
+    const activeBranch = this.getBranchId();
+    const branchId = (item.branchId && item.branchId === activeBranch) ? item.branchId : activeBranch;
 
     sqlite.prepare(`
       INSERT INTO menu_items (id, name, description, price, category, image, available, branch_id, is_synced, created_at, updated_at)
@@ -58,6 +122,8 @@ class MenuRepository {
 
   updateMenuItem(id, data) {
     const sqlite = this.getDb();
+    const current = this.getMenuItem(id);
+    if (!current) return null;
     const fields = [];
     const values = [];
 
@@ -67,18 +133,24 @@ class MenuRepository {
     if (data.category !== undefined) { fields.push('category = ?'); values.push(data.category); }
     if (data.image !== undefined) { fields.push('image = ?'); values.push(data.image); }
     if (data.available !== undefined) { fields.push('available = ?'); values.push(data.available ? 1 : 0); }
-    if (data.branchId !== undefined) { fields.push('branch_id = ?'); values.push(data.branchId); }
+    // branch_id is not editable here: an update carrying a foreign branch id used to
+    // silently re-scope the row to another branch.
 
-    // Always mark as unsynced and update timestamp on mutation
-    const now = new Date().toISOString();
+    // Always mark as unsynced and update timestamp on mutation. A local edit also
+    // re-enables retry of a previously parked row.
+    const now = nextUpdatedAt(current.updatedAt);
     fields.push('updated_at = ?'); values.push(now);
     fields.push('is_synced = 0');
+    fields.push('sync_attempts = 0');
+    fields.push('last_error = NULL');
 
-    if (fields.length === 0) return this.getMenuItem(id);
-
+    // Scope the write to this branch: an id alone is not authority to edit another
+    // branch's row.
     values.push(id);
+    values.push(this.getBranchId());
     sqlite.prepare(`
-      UPDATE menu_items SET ${fields.join(', ')} WHERE id = ?
+      UPDATE menu_items SET ${fields.join(', ')}
+      WHERE id = ? AND deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
     `).run(...values);
 
     return this.getMenuItem(id);
@@ -86,7 +158,10 @@ class MenuRepository {
 
   getMenuItem(id) {
     const sqlite = this.getDb();
-    const row = sqlite.prepare('SELECT * FROM menu_items WHERE id = ? AND deleted_at IS NULL').get(id);
+    const row = sqlite.prepare(
+      `SELECT * FROM menu_items
+       WHERE id = ? AND deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)`
+    ).get(id, this.getBranchId());
     if (!row) return null;
     return this.mapRow(row);
   }
@@ -96,7 +171,10 @@ class MenuRepository {
     // Soft delete: keep the tombstone locally so the sync engine can push the
     // deletion to the cloud, even while offline (Issue 20)
     const now = new Date().toISOString();
-    sqlite.prepare('UPDATE menu_items SET deleted_at = ?, updated_at = ?, is_synced = 0 WHERE id = ?').run(now, now, id);
+    sqlite.prepare(`
+      UPDATE menu_items SET deleted_at = ?, updated_at = ?, is_synced = 0, sync_attempts = 0
+      WHERE id = ? AND deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
+    `).run(now, now, id, this.getBranchId());
   }
 
   resetMenu(defaults) {
@@ -105,8 +183,15 @@ class MenuRepository {
     const branchId = this.getBranchId();
 
     const runTransaction = sqlite.transaction((items) => {
-      // Soft-delete existing items so deletions propagate to the cloud (Issue 20+28)
-      sqlite.prepare('UPDATE menu_items SET deleted_at = ?, updated_at = ?, is_synced = 0 WHERE deleted_at IS NULL').run(now, now);
+      // Soft-delete existing items so deletions propagate to the cloud (Issue 20+28).
+      //
+      // Scoped to this branch and shared rows, and the retry budget is cleared: a parked row
+      // was excluded from every push, so without this the tombstone never left the device.
+      sqlite.prepare(`
+        UPDATE menu_items
+        SET deleted_at = ?, updated_at = ?, is_synced = 0, sync_attempts = 0, last_error = NULL
+        WHERE deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
+      `).run(now, now, branchId);
       const insert = sqlite.prepare(`
         INSERT INTO menu_items (id, name, description, price, category, image, available, branch_id, is_synced, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
@@ -147,20 +232,35 @@ class MenuRepository {
 
   getUnsyncedMenu() {
     const sqlite = this.getDb();
-    const rows = sqlite.prepare('SELECT * FROM menu_items WHERE is_synced = 0').all();
+    const branchId = this.getBranchId();
+    // Scoped like orders: this till pushes only its own rows and shared ones. Without the
+    // filter, a row pulled from another branch would be re-pushed by this till with its own
+    // sync state, adopting another branch's data.
+    const rows = sqlite.prepare(`
+      SELECT * FROM menu_items
+      WHERE is_synced = 0 AND sync_attempts < ? AND (branch_id = ? OR branch_id IS NULL)
+    `).all(MAX_SYNC_ATTEMPTS, branchId);
     return rows.map(row => ({
       ...this.mapRow(row),
       deletedAt: row.deleted_at || undefined
     }));
   }
 
-  markMenuSynced(ids) {
+  markMenuSynced(ids, snapshots) {
     if (!ids || ids.length === 0) return;
     const sqlite = this.getDb();
-    const stmt = sqlite.prepare('UPDATE menu_items SET is_synced = 1, sync_attempts = 0, last_error = NULL WHERE id = ?');
+    const branchId = this.getBranchId();
+    // Version-guarded like orders: an edit made while the push was in flight keeps the row
+    // unsynced so the edit itself is pushed next cycle.
+    const versions = snapshots === undefined ? null : new Map((snapshots || []).map(row => [row.id, row.updatedAt ?? row.updated_at ?? null]));
+    const stmt = sqlite.prepare(`
+      UPDATE menu_items SET is_synced = 1, sync_attempts = 0, last_error = NULL
+      WHERE id = ? AND (branch_id = ? OR branch_id IS NULL)${versions ? ' AND (updated_at IS ? OR updated_at IS NULL)' : ''}
+    `);
     const runTx = sqlite.transaction((idList) => {
       for (const id of idList) {
-        stmt.run(id);
+        if (versions && !versions.has(id)) continue;
+        stmt.run(id, branchId, ...(versions ? [versions.get(id)] : []));
       }
     });
     runTx(ids);

@@ -1,85 +1,99 @@
-import React, { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Order } from '../../types/order';
-import { X, CheckCircle2, Receipt, Printer, CreditCard, Banknote } from 'lucide-react';
+import { X, CheckCircle2, Printer, CreditCard, Banknote } from 'lucide-react';
 import { clsx } from 'clsx';
 import { useLanguage } from '../../context/LanguageContext';
-import { getTaxRate } from '../../utils/settingsConfig';
+import { orderTotals } from '../../utils/orderTotals';
+import { getStoreConfig } from '../../utils/settingsConfig';
 import { printCustomerReceipt } from '../../utils/printReceipts';
+import { playPaymentSuccessChime } from '../../utils/soundEffects';
 
 interface PaymentModalProps {
   order: Order | null;
   isOpen: boolean;
   onClose: () => void;
-  onPaymentComplete: (orderId: string, method: 'Cash' | 'Card') => void;
+  onPaymentComplete: (orderId: string, method: 'Cash' | 'Card') => Promise<Order>;
 }
 
 export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: PaymentModalProps) {
-  const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Card'>('Cash');
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [showReceipt, setShowReceipt] = useState(false);
-  const { t, language } = useLanguage();
-  // Track whether onPaymentComplete has already been called for this session.
-  // Prevents double-firing if the user clicks Done twice or if any stale timer fires.
-  const paymentFiredRef = useRef(false);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Reset all state when the modal opens on a fresh order
-  useEffect(() => {
-    if (isOpen && order) {
-      if (order.paymentStatus === 'Paid') {
-        setPaymentMethod(order.paymentMethod || 'Cash');
-        setIsProcessing(false);
-        setShowReceipt(true);
-      } else {
-        setPaymentMethod('Cash');
-        setIsProcessing(false);
-        setShowReceipt(false);
-      }
-      paymentFiredRef.current = false;
+  // Retain pending writes across close/reopen and order switches, without allowing a
+  // second database write for the same invoice while the first is still unresolved.
+  const pending = useRef(new Map<string, Promise<Order>>());
+  const completePayment = async (id: string, method: 'Cash' | 'Card') => {
+    const existing = pending.current.get(id);
+    if (existing) return existing;
+    const request = Promise.resolve().then(() => onPaymentComplete(id, method));
+    pending.current.set(id, request);
+    try {
+      return await request;
+    } finally {
+      pending.current.delete(id);
     }
-    // Cleanup: cancel any pending timer if the modal is closed externally (e.g. backdrop)
-    return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
-    };
-  }, [isOpen, order?.id]); // re-run only when a different order opens
+  };
 
-  if (!isOpen || !order) return null;
+  return isOpen && order ? (
+    <PaymentSession key={order.id} order={order} onClose={onClose} onPaymentComplete={completePayment} />
+  ) : null;
+}
 
-  const subtotal = order.totalAmount;
-  const taxRate = getTaxRate();
-  const tax = subtotal * taxRate;
-  const total = subtotal + tax;
+function PaymentSession({ order, onClose, onPaymentComplete }: Omit<PaymentModalProps, 'order' | 'isOpen'> & { order: Order }) {
+  const [paymentMethod, setPaymentMethod] = useState<'Cash' | 'Card'>(order.paymentMethod || 'Cash');
+  const [isProcessing, setIsProcessing] = useState(false);
+  const [receiptOrder, setReceiptOrder] = useState<Order | null>(order.paymentStatus === 'Paid' ? order : null);
+  const [error, setError] = useState('');
+  const { t, language } = useLanguage();
+  const activeRef = useRef(true);
+  const submittingRef = useRef(false);
 
-  const handleProcessPayment = () => {
+  useEffect(() => {
+    activeRef.current = true;
+    return () => { activeRef.current = false; };
+  }, []);
+
+  const showReceipt = receiptOrder !== null;
+  const displayOrder = receiptOrder || order;
+  const storeConfig = getStoreConfig();
+  const { subtotal, taxRate, taxAmount: tax, grandTotal: total } = orderTotals(displayOrder);
+
+  const handleProcessPayment = async () => {
+    if (submittingRef.current || showReceipt || !activeRef.current) return;
+    submittingRef.current = true;
     setIsProcessing(true);
-    timerRef.current = setTimeout(() => {
-      // Fire the DB write immediately when payment "succeeds" — not on modal dismiss.
-      // Capture orderId/method in closure so stale state can never target the wrong order.
-      const orderId = order.id;
-      const method  = paymentMethod;
-      if (!paymentFiredRef.current) {
-        paymentFiredRef.current = true;
-        onPaymentComplete(orderId, method);
+    setError('');
+    try {
+      const updatedOrder = await onPaymentComplete(order.id, paymentMethod);
+      if (!activeRef.current) return;
+      if (!updatedOrder || updatedOrder.id !== order.id || updatedOrder.paymentStatus !== 'Paid') {
+        throw new Error(t('Payment was not confirmed. Please try again.'));
       }
-      setIsProcessing(false);
-      setShowReceipt(true);
-    }, 100);
+      setReceiptOrder(updatedOrder);
+      playPaymentSuccessChime();
+    } catch (err) {
+      if (!activeRef.current) return;
+      console.error('[PaymentModal] Payment failed:', err);
+      setError(t('Payment failed. Please try again.'));
+    } finally {
+      submittingRef.current = false;
+      if (activeRef.current) setIsProcessing(false);
+    }
   };
 
   const handleClose = () => {
-    // Cancel any in-flight timer to prevent the stale-receipt bug
-    if (timerRef.current) {
-      clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    setIsProcessing(false);
-    setShowReceipt(false);
+    // A committed write cannot be cancelled, but its old session must not show UI or play sounds.
+    activeRef.current = false;
     onClose();
   };
 
-  const handlePrintReceipt = () => {
-    printCustomerReceipt(order, language);
+  const handlePrintReceipt = async () => {
+    if (!receiptOrder) return;
+    setError('');
+    try {
+      await printCustomerReceipt(receiptOrder);
+    } catch (err) {
+      console.error('[PaymentModal] Print failed:', err);
+      if (activeRef.current) setError(t('Receipt printing failed. Please try again.'));
+    }
   };
 
   return (
@@ -105,12 +119,13 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
               <CreditCard className="text-mocha-700" />
               {showReceipt ? t('Payment Successful') : t('Process Payment')}
             </h2>
-            <button onClick={handleClose} className="p-2 hover:bg-gray-200 rounded-full transition-colors text-gray-500">
+            <button aria-label={t('Close')} onClick={handleClose} className="p-2 hover:bg-gray-200 rounded-full transition-colors text-gray-500">
               <X size={20} />
             </button>
           </div>
 
           <div className="p-6 overflow-y-auto flex-1">
+            {error && <p role="alert" className="mb-4 rounded-xl bg-red-50 p-3 text-sm text-red-700">{error}</p>}
             {!showReceipt ? (
               <div className="space-y-6">
                  {/* Order Summary */}
@@ -148,7 +163,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                         <span className="font-mono">{subtotal.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
                       </div>
                       <div className="flex justify-between items-center text-gray-500 mb-2">
-                        <span>{language === 'ar' ? `الضريبة (${taxRate * 100}%)` : `Tax (${taxRate * 100}%)`}</span>
+                        <span>{language === 'ar' ? `الضريبة (${Math.round(taxRate * 100)}%)` : `Tax (${Math.round(taxRate * 100)}%)`}</span>
                         <span className="font-mono">{tax.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
                       </div>
                     </div>
@@ -165,6 +180,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                     <label className="block text-sm font-medium text-gray-700 mb-3">{t('Select Payment Method')}</label>
                     <div className="grid grid-cols-2 gap-4">
                        <button
+                          disabled={isProcessing}
                           onClick={() => setPaymentMethod('Cash')}
                           className={clsx(
                              "flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all",
@@ -175,6 +191,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                           <span className="font-medium">{t('Cash')}</span>
                        </button>
                        <button
+                          disabled={isProcessing}
                           onClick={() => setPaymentMethod('Card')}
                           className={clsx(
                              "flex flex-col items-center gap-2 p-4 rounded-xl border-2 transition-all",
@@ -204,47 +221,55 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                  <div>
                     <h3 className="text-2xl font-bold text-gray-900 mb-1">{t('Payment Received!')}</h3>
                     <p className="text-gray-500">{t('Transaction completed successfully.')}</p>
-                 </div>
-
-                 {/* Mock Receipt Preview */}
-                 <div className="bg-gray-50 p-6 rounded-xl border border-gray-100 text-left font-mono text-sm shadow-inner relative overflow-hidden text-gray-900">
-                    {/* Jaggered edge effect */}
-                    <div className="absolute top-0 left-0 w-full h-2 bg-gradient-to-r from-transparent to-white bg-[length:10px_100%]" />
                     
-                    <div className="text-center border-b border-gray-200 pb-4 mb-4">
-                       <p className="font-bold text-lg">{t('BREWMASTER')}</p>
-                       <p className="text-xs text-gray-400">{t('42 Roast Street, Coffee District')}</p>
-                    </div>
+                    {/* Mock Realistic Thermal Receipt Preview */}
+                    <motion.div 
+                      initial={{ y: -24, opacity: 0 }}
+                      animate={{ y: 0, opacity: 1 }}
+                      transition={{ type: 'spring', damping: 20 }}
+                      className="bg-amber-50/20 p-6 rounded-2xl border-2 border-dashed border-gray-300 text-left font-mono text-sm shadow-md relative overflow-hidden text-gray-900 mx-auto max-w-md mt-6"
+                    >
+                       <div className="text-center border-b border-dashed border-gray-300 pb-3 mb-3">
+                          <p className="font-black text-xl tracking-tight text-mocha-900">☕ {storeConfig.storeName || 'Engaz POS'}</p>
+                          <p className="text-[11px] text-gray-500 font-sans">{t('نظام الكاشير الذكي للكافيهات والمطاعم')}</p>
+                          <p className="text-[10px] text-gray-400 mt-1 font-mono">INV #{displayOrder.orderNumber} • {t(displayOrder.tableId)}</p>
+                       </div>
 
-                    <div className="space-y-2 mb-4">
-                       {order.items.map((item, i) => (
-                          <div key={i} className="flex justify-between">
-                             <span>{item.quantity}x {t(item.name)}</span>
-                             <span>{(item.price * item.quantity).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                       <div className="space-y-1.5 mb-3 border-b border-dashed border-gray-300 pb-3">
+                          {displayOrder.items.map((item, i) => (
+                             <div key={i} className="flex justify-between text-xs">
+                                <span>{item.quantity}× {t(item.name)}</span>
+                                <span className="tabular-nums font-bold">{(item.price * item.quantity).toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                             </div>
+                          ))}
+                       </div>
+
+                       <div className="space-y-1 text-xs">
+                          <div className="flex justify-between text-gray-600">
+                             <span>{t('Subtotal')}</span>
+                             <span className="tabular-nums">{subtotal.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
                           </div>
-                       ))}
-                    </div>
-
-                    <div className="border-t border-gray-200 pt-4 space-y-1">
-                       <div className="flex justify-between">
-                          <span>{t('Subtotal')}</span>
-                          <span>{subtotal.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                          <div className="flex justify-between text-gray-600">
+                             <span>{language === 'ar' ? `الضريبة (${Math.round(taxRate * 100)}%)` : `Tax (${Math.round(taxRate * 100)}%)`}</span>
+                             <span className="tabular-nums">{tax.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                          </div>
+                          <div className="flex justify-between font-black text-base pt-2 border-t border-dashed border-gray-300 text-mocha-800">
+                             <span>{t('TOTAL')}</span>
+                             <span className="tabular-nums">{total.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                          </div>
                        </div>
-                       <div className="flex justify-between items-center text-sm font-bold text-gray-700">
-                          <span>{language === 'ar' ? `الضريبة (${taxRate * 100}%)` : `Tax (${taxRate * 100}%)`}</span>
-                          <span>{tax.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
+                       
+                       {/* Simulated Thermal Barcode */}
+                       <div className="mt-4 pt-3 border-t border-dashed border-gray-300 text-center flex flex-col items-center">
+                          <div className="flex gap-[2px] h-8 items-center justify-center opacity-75 mb-1">
+                            {[3, 1, 2, 4, 1, 3, 2, 1, 4, 2, 3, 1, 2, 4, 3, 1, 2].map((w, i) => (
+                              <div key={i} className="bg-gray-800 h-full" style={{ width: `${w * 1.5}px` }} />
+                            ))}
+                          </div>
+                          <p className="text-[9px] text-gray-400 font-mono tracking-widest">{displayOrder.id.slice(0, 16).toUpperCase()}</p>
+                          <p className="text-[10px] text-gray-400 mt-1 font-sans">{t('Thank you for choosing Engaz POS! ☕')}</p>
                        </div>
-                       <div className="flex justify-between font-bold text-base pt-2">
-                          <span>{t('TOTAL')}</span>
-                          <span>{total.toFixed(2)} {language === 'ar' ? 'ج.م' : 'EGP'}</span>
-                       </div>
-                    </div>
-                    
-                    <div className="text-center mt-6 text-xs text-gray-400">
-                       <p>{t('Paid via')} {t(paymentMethod)}</p>
-                       <p>{new Date().toLocaleString()}</p>
-                       <p>{t('Thank you for choosing BrewMaster! ☕')}</p>
-                    </div>
+                    </motion.div>
                  </div>
 
                  <div className="flex gap-4">
@@ -254,7 +279,7 @@ export function PaymentModal({ order, isOpen, onClose, onPaymentComplete }: Paym
                     >
                        <Printer size={18} /> {t('Print Receipt')}
                     </button>
-                    <button onClick={handleClose} className="flex-1 py-3 bg-mocha-700 text-white rounded-xl font-medium hover:bg-mocha-800 shadow-lg shadow-mocha-500/20">
+                    <button aria-label={t('Close')} onClick={handleClose} className="flex-1 py-3 bg-mocha-700 text-white rounded-xl font-medium hover:bg-mocha-800 shadow-lg shadow-mocha-500/20">
                        {t('Done')}
                     </button>
                  </div>

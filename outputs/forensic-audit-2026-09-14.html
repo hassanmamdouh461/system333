@@ -1,0 +1,725 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Engaz / system333 — تقرير التدقيق التشريحي الشامل</title>
+<style>
+  :root{
+    --bg:#0b0f17; --panel:#121826; --panel2:#161d2e; --line:#243049;
+    --tx:#e6ecf7; --tx2:#9fb0cc; --tx3:#6b7d9c;
+    --crit:#ff4d6d; --high:#ff8a3d; --med:#ffd166; --low:#5ec8f2; --ok:#3ddc97;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--tx);
+       font-family:"Segoe UI",Tahoma,"Noto Naskh Arabic",Arial,sans-serif;
+       line-height:1.85;font-size:15px}
+  .wrap{max-width:1080px;margin:0 auto;padding:32px 22px 80px}
+  h1{font-size:30px;margin:0 0 6px;letter-spacing:.2px}
+  .sub{color:var(--tx3);font-size:13px;margin-bottom:28px}
+  h2{font-size:21px;margin:44px 0 14px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+  h3{font-size:16px;margin:26px 0 8px}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px 20px;margin:14px 0}
+  .score{display:flex;align-items:center;gap:18px;flex-wrap:wrap}
+  .score .num{font-size:52px;font-weight:700;color:var(--med);line-height:1}
+  .score .why{color:var(--tx2);font-size:14px;max-width:640px}
+  table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13.5px}
+  th,td{border:1px solid var(--line);padding:9px 11px;text-align:right;vertical-align:top}
+  th{background:var(--panel2);color:var(--tx2);font-weight:600}
+  code,dirc,.f{font-family:"Cascadia Mono",Consolas,monospace;font-size:12.5px;direction:ltr;display:inline-block}
+  .f{background:#0d1422;border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:#8fd0ff}
+  pre{background:#080c14;border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;
+      direction:ltr;text-align:left;font-family:"Cascadia Mono",Consolas,monospace;font-size:12.5px;line-height:1.6}
+  pre .cm{color:#5f7593}
+  pre .add{color:#3ddc97}
+  pre .del{color:#ff6b81}
+  pre .kw{color:#c792ea}
+  pre .st{color:#ffd166}
+  .tag{display:inline-block;padding:2px 10px;border-radius:20px;font-size:11.5px;font-weight:700;margin-left:6px}
+  .t-crit{background:rgba(255,77,109,.15);color:var(--crit);border:1px solid rgba(255,77,109,.4)}
+  .t-high{background:rgba(255,138,61,.15);color:var(--high);border:1px solid rgba(255,138,61,.4)}
+  .t-med{background:rgba(255,209,102,.13);color:var(--med);border:1px solid rgba(255,209,102,.35)}
+  .t-low{background:rgba(94,200,242,.13);color:var(--low);border:1px solid rgba(94,200,242,.35)}
+  .t-ok{background:rgba(61,220,151,.13);color:var(--ok);border:1px solid rgba(61,220,151,.35)}
+  ul{margin:8px 0;padding-right:20px}
+  li{margin:5px 0}
+  .impact{background:#1a1120;border-right:3px solid var(--crit);padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0;font-size:14px}
+  .good{background:#0f1e19;border-right:3px solid var(--ok);padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0;font-size:14px}
+  .muted{color:var(--tx3);font-size:13px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .kv{display:flex;gap:8px;flex-wrap:wrap;margin:6px 0}
+  .kv b{color:var(--tx2);font-weight:600;min-width:90px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>تقرير التدقيق التشريحي الشامل — Engaz / system333</h1>
+<div class="sub">
+  نطاق الفحص: تطبيق الديسكتوب (React 18 + Electron 29 + better-sqlite3) · بوابة التقارير <dirc>reports-site</dirc> ·
+  عُمّال Cloudflare (POS + Reports + D1) · شريان المزامنة. <br>
+  تاريخ الفحص: 14 سبتمبر 2026 · الفرع: <dirc>fix/comprehensive-audit-remediation</dirc> · كل استنتاج below مستند إلى كود/log فعلي في هذا الـ checkout.
+</div>
+
+<!-- ══════════════ 1 ══════════════ -->
+<h2>1. ملخص تنفيذي وحالة الجاهزية</h2>
+
+<div class="card score">
+  <div class="num">6.0<span style="font-size:20px;color:var(--tx3)">/10</span></div>
+  <div class="why">
+    <b>مؤشر الجاهزية للإنتاج.</b> الهندسةُ الأمنيةُ والهيكليةُ أفضل بكثير من المتوسط في هذا النوع من المشاريع
+    (لا RCE، لا SQL injection، لا تسريب مفاتيح، ACID حقيقي، 254 اختبارًا ناجحًا، lint/typecheck نظيفان).
+    لكن النظام <b>لا يؤدي وظيفته من الطرف إلى الطرف اليوم</b>: مسار السحب (pull) يفشل بنسبة 100% ضد العامل المنشور،
+    ومرآة التقارير معطّلة كليًا على هذا الجهاز. الخلل ليس في التصميم بل في "التوصيل" (wiring) بين الأجزاء.
+  </div>
+</div>
+
+<div class="grid2">
+  <div class="card">
+    <h3 style="margin-top:0">نقاط القوة المعمارية (مُتحقَّق منها)</h3>
+    <ul>
+      <li><b>Electron hardening مكتمل:</b> <span class="f">sandbox:true</span>، <span class="f">contextIsolation:true</span>،
+          <span class="f">nodeIntegration:false</span>، لا <span class="f">remote</span>، منع التنقل وفتح النوافذ
+          — <span class="f">electron/main.cjs:43-82</span>.</li>
+      <li><b>صفر SQL injection:</b> كل استعلام في العُمّال مُهيَّأ بـ <span class="f">?</span> مرتبط، وكل مُعرّف جدول/عمود
+          يأتي من خرائط ثابتة في الكود لا من المدخلات.</li>
+      <li><b>صفر تسريب أسرار في حزم البناء:</b> تم البحث عن القيمة الحقيقية لـ <span class="f">VITE_CF_WORKER_API_KEY</span>
+          (19 محرفًا) في <span class="f">dist/</span> و<span class="f">reports-site/dist/</span> → <b>صفر تطابق</b>.
+          بوابة التقارير تمرّ أيضًا بفحص "sentinel" إجباري أثناء البناء
+          (<span class="f">scripts/build-reports.mjs:46-55</span>).</li>
+      <li><b>ACID حقيقي:</b> إنشاء الطلب يغلّف (إدراج الطلب + العدّاد اليومي + دفتر نقاط الولاء + خصم المخزون)
+          في معاملة واحدة <span class="f">OrderRepository.cjs:108-159</span>، مع WAL و<span class="f">busy_timeout=5000</span>.</li>
+      <li><b>التحقق عند كل قناة IPC:</b> طبقة <span class="f">electron/validate.cjs</span> تُطبَّق على كل
+          <span class="f">ipcMain.handle</span>، مع قائمة سماح للإعدادات ومفاتيح "write-only" لا تُقرأ أبدًا
+          (<span class="f">main.cjs:191-224</span>).</li>
+      <li><b>كلمة مرور الجهاز:</b> PBKDF2-SHA256، 210,000 تكرار، ملح عشوائي لكل سجل
+          (<span class="f">src/utils/password.ts:13</span>)، ومقارنة ثابتة الزمن.</li>
+      <li><b>جودة الكود:</b> <span class="f">eslint --max-warnings 0</span> نظيف،
+          <span class="f">tsc --noEmit</span> نظيف للجذر وللبوابة، <b>254 اختبارًا ناجحًا من 254</b>.</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3 style="margin-top:0">أهم ما يمنع الإطلاق</h3>
+    <ul>
+      <li><span class="tag t-crit">حرج</span> مرآة التقارير معطّلة صمتًا: لا يوجد
+          <span class="f">VITE_REPORTS_API_KEY</span> في <span class="f">.env</span>.</li>
+      <li><span class="tag t-crit">حرج</span> العامل المنشور يرفض كل طلبات السحب:
+          <span class="f">400 {"success":false,"error":"Missing sql or batch"}</span>.</li>
+      <li><span class="tag t-high">عالي</span> دمجُ <span class="f">stock</span> و<span class="f">points</span>
+          بنظام Last-Write-Wins → ضياع تحديثات وإنفاق مزدوج.</li>
+      <li><span class="tag t-high">عالي</span> مفتاح API واحد مشترك يمنح قراءة/كتابة كل الفروع.</li>
+      <li><span class="tag t-high">عالي</span> الحذف الناعم "طريق باتجاه واحد" في السحابة.</li>
+      <li><span class="tag t-med">متوسط</span> سجلات التطبيق بلا تدوير → نمو غير محدود على أجهزة الكاشير.</li>
+    </ul>
+  </div>
+</div>
+
+<!-- ══════════════ 2 ══════════════ -->
+<h2>2. جدول الثغرات والمشاكل المكتشفة (Findings Matrix)</h2>
+
+<table>
+  <tr><th>#</th><th>المستوى</th><th>المحور</th><th>الموقع الدقيق</th><th>الوصف المختصر</th></tr>
+  <tr><td>F1</td><td><span class="tag t-crit">حرج</span></td><td>المزامنة</td><td class="f">electron/mockApiService.cjs:79, 229, 278</td><td>مرآة التقارير معطّلة كليًا لغياب مفتاحها</td></tr>
+  <tr><td>F2</td><td><span class="tag t-crit">حرج</span></td><td>المزامنة</td><td class="f">logs/electron.err.log</td><td>كل طلبات <span class="f">/pull/*</span> ترجع 400 ضد العامل المنشور</td></tr>
+  <tr><td>F3</td><td><span class="tag t-high">عالي</span></td><td>النزاهة المالية/المخزون</td><td class="f">d1-proxy-worker.js:288-300, 265-275</td><td>LWW على <span class="f">stock</span> و<span class="f">points</span> → ضياع تحديثات</td></tr>
+  <tr><td>F4</td><td><span class="tag t-high">عالي</span></td><td>الأمان</td><td class="f">d1-proxy-worker.js:645, 701-717</td><td>مفتاح واحد مشترك = وصول كامل لكل الفروع</td></tr>
+  <tr><td>F5</td><td><span class="tag t-high">عالي</span></td><td>المزامنة</td><td class="f">d1-proxy-worker.js:190,232؛ d1-reports-worker.js:313,353</td><td>الحذف الناعم لا يُرجَع: انحراف دائم بين المحلي والسحابة</td></tr>
+  <tr><td>F6</td><td><span class="tag t-med">متوسط</span></td><td>التدفق</td><td class="f">validate.cjs:225 × d1-proxy-worker.js:126</td><td>تعاضد حدود طول <span class="f">branchId</span> (60 محليًا / 40 سحابيًا)</td></tr>
+  <tr><td>F7</td><td><span class="tag t-med">متوسط</span></td><td>التدفق</td><td class="f">mockApiService.cjs:129-139, 529-545</td><td><span class="f">https</span> مُثبَّت في الكود رغم السماح بـ http محليًا</td></tr>
+  <tr><td>F8</td><td><span class="tag t-med">متوسط</span></td><td>الاستقرار</td><td class="f">printManager.cjs:89, 105-110</td><td>سلسلة "إلغاء الطباعة" غير مطابقة + مؤقّت لا يُلغى</td></tr>
+  <tr><td>F9</td><td><span class="tag t-med">متوسط</span></td><td>المزامنة</td><td class="f">database.cjs:747</td><td>حارس إصدار <span class="f">reports_outbox</span> يُجمّد حمولة قديمة</td></tr>
+  <tr><td>F10</td><td><span class="tag t-med">متوسط</span></td><td>الاستقرار</td><td class="f">launcher/launch.ps1:38-39</td><td>سجلات بلا تدوير ولا سقف حجم</td></tr>
+  <tr><td>F11</td><td><span class="tag t-low">منخفض</span></td><td>المزامنة</td><td class="f">OrderRepository.cjs:258</td><td><span class="f">updateOrderStatus</span> لا يُصفّر <span class="f">sync_attempts</span></td></tr>
+  <tr><td>F12</td><td><span class="tag t-low">منخفض</span></td><td>المزامنة</td><td class="f">syncEngine.cjs:247,275,289,306</td><td><span class="f">markSyncFailure</span> بلا snapshots لمعظم الجداول</td></tr>
+  <tr><td>F13</td><td><span class="tag t-low">منخفض</span></td><td>الأداء</td><td class="f">TopNav.tsx:30؛ MobileHeader.tsx:15</td><td>مؤقّت 1 ثانية → 86,400 إعادة رسم يوميًا</td></tr>
+  <tr><td>F14</td><td><span class="tag t-low">منخفض</span></td><td>جودة الكود</td><td class="f">package.json؛ src/components/auth/</td><td><span class="f">tailwind-merge</span> تابع غير مستخدم + مجلد فارغ</td></tr>
+  <tr><td>F15</td><td><span class="tag t-low">منخفض</span></td><td>الأمان</td><td class="f">d1-reports-worker.js:916</td><td>كل أخطاء <span class="f">/sync/*</span> تُرجع 500 بدل 400</td></tr>
+</table>
+
+<!-- F1 -->
+<h3>F1 <span class="tag t-crit">حرج</span> — مرآة التقارير معطّلة صمتًا: بوابة المدير لا تتلقى أي بيانات</h3>
+<div class="card">
+  <div class="kv"><b>الموقع:</b> <span class="f">electron/mockApiService.cjs:79</span> و<span class="f">:229</span> و<span class="f">:277-278</span></div>
+  <p><b>التحليل:</b> <span class="f">.env</span> في هذا الـ checkout يحتوي على متغيّرين فقط:
+  <span class="f">VITE_CF_WORKER_URL</span> و<span class="f">VITE_CF_WORKER_API_KEY</span>.
+  ولا يوجد <span class="f">VITE_REPORTS_API_KEY</span>، ولا متغيّر بيئة
+  <span class="f">ENGAZ_REPORTS_API_KEY</span>. بالتالي:</p>
+<pre><span class="cm">// mockApiService.cjs:79</span>
+REPORTS_WORKER_KEY = process.env.ENGAZ_REPORTS_API_KEY || fromEnv.reportsKey || '';  <span class="del">// → ''</span>
+
+<span class="cm">// :277-278 — البوابة الوحيدة نحو قاعدة التقارير</span>
+<span class="kw">async function</span> mirrorToReports(endpoint, body, shouldThrow = <span class="kw">false</span>) {
+  <span class="kw">if</span> (!REPORTS_WORKER_KEY) <span class="kw">return</span>;          <span class="del">// يخرج صامتًا — بلا تحذير، بلا سجل</span>
+
+<span class="cm">// :229</span>
+<span class="kw">if</span> (!REPORTS_WORKER_KEY || outboxFlushInProgress) <span class="kw">return</span> { success: <span class="kw">true</span>, sent: 0 }; <span class="del">// نجاح زائف</span>
+</pre>
+  <p><b>دليل من التشغيل الفعلي:</b> البحث عن <span class="f">Reports mirror</span> / <span class="f">reports_outbox</span>
+  في <span class="f">logs/electron.out.log</span> (82 ك.ب، 1251 سطرًا) → <b>صفر تطابق</b>.
+  لا سجل، لا خطأ، لا مؤشر في الواجهة.</p>
+  <div class="impact"><b>السيناريو الأسوأ:</b> يبيع الفرع طوال اليوم وكل شيء يبدو "مزامنًا"
+  (<span class="f">Sync cycle completed successfully</span>)، بينما بوابة <span class="f">reporting.engaz.tech</span>
+  تعرض صفر مبيعات. المدير يتخذ قرارات مالية على بيانات فارغة وهو يظنها كاملة.</div>
+  <h3>الإصلاح (Before → After)</h3>
+<pre><span class="cm">// BEFORE — mockApiService.cjs:79</span>
+<span class="del">REPORTS_WORKER_KEY = process.env.ENGAZ_REPORTS_API_KEY || fromEnv.reportsKey || '';</span>
+
+<span class="cm">// AFTER — فضح الحالة بدل الصمت</span>
+<span class="add">REPORTS_WORKER_KEY = process.env.ENGAZ_REPORTS_API_KEY || fromEnv.reportsKey || '';
+if (!REPORTS_WORKER_KEY) {
+  console.warn('[D1 Sync API] No reports write key (ENGAZ_REPORTS_API_KEY / VITE_REPORTS_API_KEY); '
+             + 'the manager portal will not receive this till\'s data.');
+}</span>
+
+<span class="cm">// BEFORE — :278</span>
+<span class="del">if (!REPORTS_WORKER_KEY) return;</span>
+
+<span class="cm">// AFTER — إبلاغ الحالة للمستدعِي بدل إرجاع undefined صامت</span>
+<span class="add">if (!REPORTS_WORKER_KEY) return { skipped: true, reason: 'no-reports-key' };</span>
+
+<span class="cm">// BEFORE — :229</span>
+<span class="del">if (!REPORTS_WORKER_KEY || outboxFlushInProgress) return { success: true, sent: 0 };</span>
+
+<span class="cm">// AFTER — لا تُعلن نجاحًا على عمل لم يحدث</span>
+<span class="add">if (!REPORTS_WORKER_KEY) return { success: false, sent: 0, error: 'reports key not configured' };
+if (outboxFlushInProgress) return { success: true, sent: 0, skipped: 'in-progress' };</span>
+</pre>
+  <p class="muted">وأضف فحصًا عند الإقلاع في <span class="f">main.cjs</span> يرفع حالة المزامنة إلى
+  <span class="f">error</span> إذا كان مفتاح التقارير غائبًا، حتى يظهر في بطاقة الحالة بالواجهة.</p>
+</div>
+
+<!-- F2 -->
+<h3>F2 <span class="tag t-crit">حرج</span> — مسار السحب (pull) مكسور بنسبة 100% ضد العامل المنشور</h3>
+<div class="card">
+  <div class="kv"><b>الموقع:</b> <span class="f">electron/syncEngine.cjs:172, 204</span> ← <span class="f">mockApiService.cjs:412-431, 474-497</span> — والدليل في <span class="f">logs/electron.err.log</span></div>
+  <p><b>التحليل:</b> هذا الـ checkout يرسل حمولة "named-endpoint" حديثة
+  <span class="f">{since, cursor, branchId}</span> إلى <span class="f">/pull/orders</span>،
+  <span class="f">/pull/menu-items</span>، <span class="f">/pull/customers</span>، <span class="f">/pull/inventory</span>،
+  <span class="f">/pull/cashiers</span>. العامل المنشور فعليًا يرد:</p>
+<pre><span class="del">[syncEngine] Sync cycle completed with 5 error(s): Failed to pull orders: HTTP Error 400:
+{"success":false,"error":"Missing sql or batch"}; Failed to pull menu-items: HTTP Error 400: ...;
+Failed to pull customers: ...; Failed to pull inventory: ...; Failed to pull cashiers: ...</span>
+</pre>
+  <p>أي أن العامل الحي ما زال وكيل SQL القديم (يطلب حقلي <span class="f">sql</span> أو <span class="f">batch</span>)،
+  لا العامل المُسمّى الموجود في <span class="f">cloudflare/d1-proxy-worker.js</span> بهذا الفرع.
+  النتيجة: <b>كل دورة مزامنة تفشل في كل مرحلة سحب</b>، و<span class="f">consecutiveFailures</span> يتضخّم،
+  فيتضاعف التأخير حتى 30 دقيقة (الحد الأقصى في <span class="f">syncEngine.cjs:38-42</span>).</p>
+  <div class="impact"><b>السيناريو الأسوأ:</b> حذفُ صنف أو تعديلُ سعر على فرع آخر لا يصل أبدًا.
+  والأسوأ: الفشل يُسجَّل <span class="f">state:'error'</span> في كل دورة، فيبقى الجهاز في حالة تراجع مستمر
+  ولا يستفيد من نافذة الـ 30 ثانية حتى مع شبكة سليمة.</div>
+  <h3>الإصلاح</h3>
+<pre><span class="cm">// لا إصلاح كوديًا في العميل — المسار في الكود صحيح. المطلوب نشر العامل المطابق،
+// ثم حماية العميل من دوّامة التراجع عند فشل السحب وحده (syncEngine.cjs:360-364):</span>
+
+<span class="cm">// BEFORE</span>
+<span class="del">if (phaseErrors.length > 0) {
+  this.status.state = 'error';
+  this.status.lastError = phaseErrors.join('; ');
+  this.consecutiveFailures += 1;
+}</span>
+
+<span class="cm">// AFTER — لا تُعاقب دورة الدفع على فشل السحب</span>
+<span class="add">const pushFailed = phaseErrors.some((e) =&gt; /push failed|transactions push failed/i.test(e));
+if (phaseErrors.length &gt; 0) {
+  this.status.state = 'error';
+  this.status.lastError = phaseErrors.join('; ');
+  // التراجع الأُسّي يعاقب على فشل الإرسال فقط. فشل السحب المتكرر هو عطل في
+  // الخادم: البقاء على النبض الأساسي يكشف عودته بأسرع وقت.
+  if (pushFailed) this.consecutiveFailures += 1;
+}</span>
+</pre>
+  <p class="muted">ثم انشر <span class="f">cloudflare/d1-proxy-worker.js</span> على نفس المضيف الذي يشير إليه
+  <span class="f">engaz_d1_worker_url</span>، وتحقق بـ <span class="f">POST /pull/orders</span> قبل اعتبار المسار مُصلحًا.</p>
+</div>
+
+<!-- F3 -->
+<h3>F3 <span class="tag t-high">عالي</span> — دمج Last-Write-Wins على عدّادات قابلة للتغيير (<span class="f">stock</span>، <span class="f">points</span>)</h3>
+<div class="card">
+  <div class="kv"><b>الموقع:</b> <span class="f">cloudflare/d1-proxy-worker.js:288-300</span> (inventory) و<span class="f">:265-275</span> (customers) — ويُعاد محليًا عبر <span class="f">syncEngine.cjs:194-199</span> ← <span class="f">InventoryRepository.upsertPulledInventory:64-100</span></div>
+  <p><b>التحليل:</b> <span class="f">stock</span> و<span class="f">points</span> ليسا "حالة نهائية" بل <b>مجموع تراكمي</b>،
+  لكنهما يُكتبان كقيمة مطلقة بقاعدة "الأحدث يفوز":</p>
+<pre><span class="del">-- d1-proxy-worker.js:288-300 (inventory)
+ON CONFLICT(id) DO UPDATE SET
+  stock = excluded.stock,                 <span class="del">-- قيمة مطلقة، لا فرق!</span>
+  updated_at = excluded.updated_at
+WHERE excluded.updated_at &gt; inventory.updated_at OR inventory.updated_at IS NULL</span>
+
+<span class="del">-- d1-proxy-worker.js:265-275 (customers)
+ON CONFLICT(id) DO UPDATE SET points = excluded.points, ...</span>
+</pre>
+  <p>دفتر الحركات (<span class="f">inventory_transactions</span>) صحيح لأنه append-only بـ
+  <span class="f">INSERT OR IGNORE</span> (<span class="f">:334-335</span>) — لكن <b>لا أحد يقرأ منه لإعادة حساب الرصيد</b>؛
+  <span class="f">reports-site/src/analytics.ts:184-203</span> يستخدمه للتكلفة فقط، بينما شاشة المخزون تقرأ
+  <span class="f">inventory.stock</span> مباشرة.</p>
+  <div class="impact"><b>السيناريو الأسوأ (إنفاق مزدوج للولاء):</b> رصيد العميل 100 نقطة.
+  الفرع (أ) يستبدل 50 والفرع (ب) يستبدل 50 في نفس الدقيقة وكلاهما offline.
+  كلٌّ يرسل <span class="f">points = 50</span>. الأحدث يفوز → الرصيد 50،
+  والعميل استردّ 100 نقطة من رصيد 100 مرتين في فاتورتين مختلفتين.
+  نفس المنطق على المخزون: بيعتان متزامنتان لصنف مشترك (<span class="f">branch_id IS NULL</span>)
+  تُسجَّلان خصمًا واحدًا → <b>inventory drift</b> دائم لا يُكتشف.</div>
+  <h3>الإصلاح — تحويل العدّادات إلى مشتقّة (derived) من دفتر الحركات</h3>
+<pre><span class="cm">// BEFORE — d1-proxy-worker.js:288 : كتابة القيمة المطلقة</span>
+<span class="del">ON CONFLICT(id) DO UPDATE SET
+  stock = excluded.stock,
+  updated_at = excluded.updated_at
+WHERE excluded.updated_at &gt; inventory.updated_at OR inventory.updated_at IS NULL</span>
+
+<span class="cm">// AFTER — لا تُزامَن القيمة المطلقة أبدًا؛ الرصيد يُشتق من الدفتر</span>
+<span class="add">ON CONFLICT(id) DO UPDATE SET
+  name = excluded.name,
+  unit = excluded.unit,
+  minStock = excluded.minStock,
+  costPerUnit = excluded.costPerUnit,
+  branch_id = excluded.branch_id,
+  updated_at = excluded.updated_at
+  -- stock محذوف عمدًا: هو SUM(quantity) من inventory_transactions
+WHERE excluded.updated_at &gt; inventory.updated_at OR inventory.updated_at IS NULL</span>
+
+<span class="cm">// AFTER — رصيد المخزون يُقرأ مشتقًا (worker، readManagerSnapshot):</span>
+<span class="add">SELECT i.*, COALESCE((
+  SELECT SUM(CASE WHEN t.type = 'OUT' THEN -t.quantity ELSE t.quantity END)
+  FROM inventory_transactions t WHERE t.itemId = i.id
+), 0) AS computed_stock
+FROM inventory i WHERE i.deleted_at IS NULL</span>
+
+<span class="cm">// AFTER — رصيد النقاط يُشتق من points_transactions بدل عمود customers.points</span>
+<span class="add">SELECT c.*, COALESCE((
+  SELECT SUM(p.points) FROM points_transactions p WHERE p.customerId = c.id
+), 0) AS computed_points
+FROM customers c WHERE c.deleted_at IS NULL</span>
+</pre>
+  <p class="muted">وبما أن <span class="f">inventory_transactions</span> و<span class="f">points_transactions</span>
+  append-only ومفتاحها <span class="f">id</span> (UUID)، فإعادة الإرسال آمنة تمامًا (idempotent) —
+  وهذا يحقق شرط "لا خصم مزدوج" بصورة صحيحة بدل الاعتماد على ترتيب وصول الرسائل.</p>
+</div>
+
+<!-- F4 -->
+<h3>F4 <span class="tag t-high">عالي</span> — مفتاح API واحد مشترك يمنح كل حاملِه كل الفروع</h3>
+<div class="card">
+  <div class="kv"><b>الموقع:</b> <span class="f">cloudflare/d1-proxy-worker.js:617-618, 645, 701-717, 456-459</span></div>
+  <p><b>التحليل:</b> المصادقة بوابة واحدة: <span class="f">timingSafeEqual(apiKey, env.WORKER_API_KEY)</span>.
+  لا يوجد أي ربط بين المفتاح والفرع. وحيث أن <span class="f">branchId</span> يأتي من جسم الطلب
+  (<span class="f">pullTableWithCursor:456</span>) أو من السجل نفسه (<span class="f">branchIdOf:128</span>) فإن:</p>
+  <ul>
+    <li><span class="f">POST /pull/orders</span> بـ <span class="f">branchId: null</span> → يُرجع <b>طلبات كل الفروع</b>
+        (الشرط <span class="f">branch_id = ? OR branch_id IS NULL</span> يُحذف entirely عند غياب المعامل).</li>
+    <li>أي جهاز يستطيع دفع سجلات بـ <span class="f">branchId</span> لأي فرع آخر.</li>
+    <li>المفتاح مخزّن في جدول <span class="f">settings</span> المحلي (<span class="f">engaz_d1_worker_api_key</span>)
+        وفي <span class="f">.env</span> بجانب التطبيق — ولا توجد آلية إبطال.</li>
+  </ul>
+  <div class="impact"><b>السيناريو الأسوأ:</b> موظف سابق يحتفظ بنسخة من <span class="f">.env</span> يستطيع
+  قراءة مبيعات وعملاء ومخزون <b>كل</b> الفروع، و<em>كتابة</em> طلبات مزوّرة منسوبة لأي فرع،
+  ولا توجد طريقة لإبطاله سوى تغيير المفتاح على كل جهاز.</div>
+  <h3>الإصلاح — مفتاح لكل فرع + فرض النطاق سحابيًا</h3>
+<pre><span class="cm">// BEFORE — d1-proxy-worker.js:617</span>
+<span class="del">const authenticated = Boolean(env.WORKER_API_KEY) &amp;&amp; timingSafeEqual(apiKey, env.WORKER_API_KEY);</span>
+
+<span class="cm">// AFTER — المفتاح يحدّد الفرع، لا العميل</span>
+<span class="add">const keyBranch = await resolveKeyBranch(env, request);   // D1: api_keys(key_hash, branch_id, revoked_at)
+if (!keyBranch) return json({ success: false, error: 'Unauthorized' }, 401, origin, env);
+// ومن هنا: تجاهل أي branchId قادم من العميل على مسارات القراءة
+const effectiveBranch = keyBranch.branchId;   // 'manager' = يرى الكل</span>
+
+<span class="cm">// AFTER — pullTableWithCursor يفرض النطاق ولا يقبل null إلّا للمدير</span>
+<span class="add">if (branchScope &amp;&amp; branchScope !== 'manager') {
+  conditions.push('(branch_id = ? OR branch_id IS NULL)');
+  bindings.push(branchScope);
+} else if (!branchScope) {
+  throw rejected('branchId is required');   // لم يعد يُسمح بالسحب الشامل
+}</span>
+</pre>
+</div>
+
+<!-- F5 -->
+<h3>F5 <span class="tag t-high">عالي</span> — الحذف الناعم طريقٌ باتجاه واحد: انحراف دائم بين المحلي والسحابة</h3>
+<div class="card">
+  <div class="kv"><b>الموقع:</b> <span class="f">d1-proxy-worker.js:190</span> و<span class="f">:232</span> · <span class="f">d1-reports-worker.js:313, 353, 381, 404, 425</span></div>
+  <p><b>التحليل:</b> كل upsert يحمي الشاهد بـ:</p>
+<pre><span class="del">deleted_at = COALESCE(orders.deleted_at, excluded.deleted_at)</span>
+</pre>
+  <p>أي أن <span class="f">deleted_at</span> في السحابة <b>لا يمكن أن يعود إلى NULL أبدًا</b>.
+  يقابله محليًا <span class="f">OrderRepository.resetOrders:331-351</span> الذي يُSoft-delete كل الصفوف
+  ثم يُعيد إدراج البذور بـ <span class="f">deleted_at = NULL</span> — فتصبح الصفوف <b>حيّة محليًا ومحذوفة في السحابة للأبد</b>.
+  ولا يوجد أي مسار يرسل "إلغاء حذف" صريحًا: شرط <span class="f">buildSyncStatements</span>
+  (<span class="f">d1-proxy-worker.js:377</span>) يتفرّع على <em>وجود</em> <span class="f">deletedAt</span> فقط.</p>
+  <div class="impact"><b>السيناريو الأسوأ:</b> كاشير يحذف طلبًا بالخطأ ثم يستعيده محليًا.
+  الطلب يظهر في تقارير الجهاز ولا يظهر أبدًا في بوابة المدير. فرقٌ بين دفتر الكاشير ودفتر المحاسبة
+  لا يُكتشف إلا بالجرد اليدوي.</div>
+  <h3>الإصلاح — جعل <span class="f">deleted_at</span> حقلًا قابلًا للكتابة في كلا الاتجاهين</h3>
+<pre><span class="cm">// BEFORE — d1-proxy-worker.js:232</span>
+<span class="del">deleted_at = COALESCE(orders.deleted_at, excluded.deleted_at)</span>
+
+<span class="cm">// AFTER — الشاهد قيمةٌ عادية تحكمها قاعدة LWW نفسها</span>
+<span class="add">deleted_at = excluded.deleted_at</span>
+
+<span class="cm">// AFTER — buildSyncStatements: يعالج إلغاء الحذف صراحةً (d1-proxy-worker.js:377)</span>
+<span class="add">if (!spec.appendOnly &amp;&amp; record.deletedAt === null &amp;&amp; 'deletedAt' in record) {
+  const effectiveAt = str(record.updatedAt ?? record.updated_at, nowIso());
+  statements.push(db.prepare(
+    `UPDATE ${spec.table} SET deleted_at = NULL, updated_at = ? WHERE id = ? AND (updated_at IS NULL OR ? &gt; updated_at)`
+  ).bind(effectiveAt, str(record.id), effectiveAt));
+  continue;
+}</span>
+
+<span class="cm">// AFTER — العميل يرسل deletedAt: null صراحةً عند الاستعادة (OrderRepository.mapRow / resetOrders)</span>
+<span class="add">// في getOrdersPendingSync: بدل `deletedAt: row.deleted_at || undefined`
+deletedAt: 'deleted_at' in row ? row.deleted_at : undefined,   // null يُرسَل، لا يُحذف</span>
+</pre>
+</div>
+
+<!-- F6 -->
+<h3>F6 <span class="tag t-med">متوسط</span> — تعارض حدود طول <span class="f">branchId</span>: 60 محليًا مقابل 40 سحابيًا</h3>
+<div class="card">
+  <div class="kv"><b>الموقع:</b> <span class="f">electron/validate.cjs:225</span> × <span class="f">cloudflare/d1-proxy-worker.js:126-135</span></div>
+<pre><span class="del">// validate.cjs:225  — local accepts 60
+branchId: optionalString(order.branchId ?? order.branch_id, 'branchId', { max: 60 }),</span>
+<span class="del">// d1-proxy-worker.js:126 — cloud rejects &gt; 40
+const BRANCH_ID_MAX = 40;
+if (id.length &gt; BRANCH_ID_MAX) throw rejected(`branchId must be at most ${BRANCH_ID_MAX} characters`);</span>
+</pre>
+  <p><b>السيناريو الأسوأ:</b> معرّف فرع من 41–60 محرفًا يُقبل محليًا ويُخزَّن،
+  ثم يرفضه العامل في كل مرة → بعد 5 محاولات يُركن الصف (<span class="f">MAX_SYNC_ATTEMPTS</span>)
+  ويخرج من كل دفعة دفع للأبد (<span class="f">database.cjs:566-571</span> يستثني المركنة).
+  وهذا بالضبط ما حدث فعليًا مع جدول <span class="f">cashiers</span> في السجلات:</p>
+<pre><span class="del">[database] 1 row(s) in cashiers parked after 5 failed attempts; they need manual attention.</span>
+</pre>
+  <h3>الإصلاح</h3>
+<pre><span class="cm">// AFTER — ثابت واحد يتقاسمه الطرفان (أنشئ cloudflare/shared/limits.js)</span>
+<span class="add">export const BRANCH_ID_MAX = 40;</span>
+
+<span class="cm">// validate.cjs</span>
+<span class="add">const { BRANCH_ID_MAX } = require('../cloudflare/shared/limits.cjs');
+branchId: optionalString(order.branchId ?? order.branch_id, 'branchId', { max: BRANCH_ID_MAX }),</span>
+
+<span class="cm">// d1-proxy-worker.js</span>
+<span class="add">import { BRANCH_ID_MAX } from './shared/limits.js';</span>
+</pre>
+</div>
+
+<!-- F7 -->
+<h3>F7 <span class="tag t-med">متوسط</span> — <span class="f">https</span> مُثبَّت في الكود بينما السياسة تسمح بـ http محليًا</h3>
+<div class="card">
+  <div class="kv"><b>الموقع:</b> <span class="f">electron/mockApiService.cjs:129-139</span> و<span class="f">:531-545</span> × <span class="f">workerHostPolicy.cjs:76-84</span></div>
+<pre><span class="del">// mockApiService.cjs:129 — https دائمًا
+const req = https.request({
+  hostname: parsed.hostname,
+  port: parsed.port || 443,        // المنفذ مُحترم ...
+  ...                              // ... لكن البروتوكول لا
+});</span>
+</pre>
+  <p><b>التحليل:</b> <span class="f">workerHostPolicy.assertWorkerHostAllowed</span> يسمح صراحةً بـ
+  <span class="f">http://localhost</span> في وضع التطوير (<span class="f">ENGAZ_DEV=1</span>)،
+  لكن <span class="f">postJson</span> يستخدم <span class="f">https.request</span> حرفيًا،
+  فتُجرى مصافحة TLS ضد منفذ نصّي صريح. المنفذ يُقرأ <span class="f">parsed.port || 443</span>،
+  لذا <span class="f">http://localhost:8787</span> يصل إلى المنفذ الصحيح بالبروتوكول الخطأ.</p>
+  <div class="impact"><b>السيناريو الأسوأ:</b> المطوّر يضبط عامل wrangler محلي ويقضي وقتًا في تتبّع
+  "المزامنة لا تعمل" بينما السبب بروتوكول مُثبَّت. ونفس الخطأ في <span class="f">checkWorkerHealth</span>
+  يجعل الجهاز يُبلّغ "offline" دائمًا محليًا.</div>
+  <h3>الإصلاح</h3>
+<pre><span class="cm">// BEFORE</span>
+<span class="del">const req = https.request({ hostname: parsed.hostname, port: parsed.port || 443, ... });</span>
+
+<span class="cm">// AFTER — اختر الوحدة من البروتوكول الفعلي</span>
+<span class="add">const transport = parsed.protocol === 'http:' ? http : https;
+const req = transport.request({
+  hostname: parsed.hostname,
+  port: parsed.port || (parsed.protocol === 'http:' ? 80 : 443),
+  path: endpointPath(parsed, endpoint),
+  method: 'POST',
+  headers: { ... },
+  timeout,
+});</span>
+</pre>
+</div>
+
+<!-- F8 -->
+<h3>F8 <span class="tag t-med">متوسط</span> — الطباعة: سلسلة "الإلغاء" غير مطابقة + مؤقّت لا يُلغى</h3>
+<div class="card">
+  <div class="kv"><b>الموقع:</b> <span class="f">electron/printManager.cjs:89</span> و<span class="f">:105-110</span> — موثّق في <span class="f">logs/electron.err.log</span></div>
+<pre><span class="del">// :89 — Electron يبلّغ "Print job canceled" (بـ l واحدة)
+if (failureReason === 'cancelled' || failureReason === 'Print job cancelled') {
+  resolve();                                  // لا يتطابق أبدًا
+} else {
+  reject(new Error(failureReason || 'Printing failed'));
+}</span>
+
+<span class="del">// :105 — مؤقّت 30 ثانية لا يُلغى عند النجاح
+setTimeout(() => { if (!finished) { cleanup(); reject(...); } }, 30000);</span>
+</pre>
+  <p><b>دليل من التشغيل الفعلي:</b></p>
+<pre><span class="del">[ipc] app:print-receipt failed: Error: Print job canceled
+    at Function.&lt;anonymous&gt; (...\electron\printManager.cjs:92:22)
+Error occurred in handler for 'app:print-receipt'</span>
+</pre>
+  <div class="impact"><b>السيناريو الأسوأ:</b> كل مرة يضغط فيها الكاشير "إلغاء" في نافذة الطباعة
+  تظهر له رسالة خطأ حمراء بدل العودة الصامتة — فيُبلّغ عن "عطل في النظام"، ويتكرر ذلك عشرات المرات يوميًا.</div>
+  <h3>الإصلاح</h3>
+<pre><span class="cm">// AFTER :82-95</span>
+<span class="add">const reason = String(failureReason || '').toLowerCase();
+if (success || reason.includes('cancel')) {   // يغطي canceled / cancelled / أي صيغة
+  resolve();
+} else {
+  reject(new Error(failureReason || 'Printing failed'));
+}</span>
+
+<span class="cm">// AFTER :105 — احفظ المعرّف وألغِه</span>
+<span class="add">const timeoutId = setTimeout(() => { if (!finished) { cleanup(); reject(new Error('Print operation timed out')); } }, 30000);
+// وفي cleanup():
+const cleanup = () => {
+  clearTimeout(timeoutId);
+  if (printWindow &amp;&amp; !printWindow.isDestroyed()) { try { printWindow.destroy(); } catch {} }
+  printWindow = null;
+};</span>
+</pre>
+</div>
+
+<!-- F9 -->
+<h3>F9 <span class="tag t-med">متوسط</span> — حارس إصدار <span class="f">reports_outbox</span> يُجمّد حمولة قديمة</h3>
+<div class="card">
+  <div class="kv"><b>الموقع:</b> <span class="f">electron/database.cjs:734-752</span> و<span class="f">:771-788</span></div>
+<pre><span class="del">-- :747
+ON CONFLICT(target, record_id) DO UPDATE SET payload = excluded.payload, ...
+WHERE excluded.version &gt;= reports_outbox.version OR reports_outbox.version IS NULL</span>
+
+<span class="cm">// mockApiService.cjs:212 — الإصدار مشتق بهذا الترتيب</span>
+<span class="del">const version = item.updated_at || item.updatedAt || item.createdAt || new Date().toISOString();</span>
+</pre>
+  <p><b>التحليل:</b> إن وصل سجل بلا <span class="f">updated_at</span> فالإصدار = <span class="f">createdAt</span>،
+  وهو <b>ثابت لا يتغيّر</b>. عندها أي تعديل لاحق يرفضه الشرط <span class="f">&gt;=</span> بالمساواة،
+  فتُرسَل الحمولة القديمة إلى قاعدة التقارير بدل الجديدة. كذلك
+  <span class="f">deleteReportOutbox</span> يستخدم <span class="f">version &lt;= ?</span>،
+  فيحذف صفًا لو كان إصداره مساويًا — صحيح هنا، لكنّ الاثنين يعتمدان مقارنة نصّية لتواريخ ISO
+  تفشل إن خُلطت صيغ (مثلاً <span class="f">2026-09-14</span> مقابل طابع زمني كامل).</p>
+  <h3>الإصلاح</h3>
+<pre><span class="cm">// AFTER — دائمًا إصدار متزايد من جانب العميل</span>
+<span class="add">const version = item.updated_at || item.updatedAt || new Date().toISOString();
+// لا تسقط إلى createdAt مطلقًا: createdAt ثابت، فتجمّد الصف إلى الأبد</span>
+
+<span class="cm">// AFTER — database.cjs:747 : استبدل &gt;= بـ &gt; واسمح بتجاوز صريح</span>
+<span class="add">WHERE excluded.version &gt; reports_outbox.version OR reports_outbox.version IS NULL</span>
+</pre>
+</div>
+
+<!-- F10 -->
+<h3>F10 <span class="tag t-med">متوسط</span> — سجلات التطبيق بلا تدوير ولا سقف حجم</h3>
+<div class="card">
+  <div class="kv"><b>الموقع:</b> <span class="f">launcher/launch.ps1:38-39</span></div>
+  <p><b>التحليل:</b> المُشغّل يُلحق (append) مخرجات Electron في ملفين ثابتين بلا تدوير ولا سقف.
+  قياس فعلي على هذا الجهاز: <span class="f">logs/electron.out.log</span> = <b>1251 سطرًا / 82 ك.ب</b>
+  في يوم واحد. دورة المزامنة تكتب ~6 أسطر كل 30 ثانية (≈390 بايت)، ومع حالة F2
+  (5 أخطاء × سطرين لكل دورة) يصل <span class="f">electron.err.log</span> وحده إلى ≈3 م.ب/يوم.</p>
+  <div class="impact"><b>السيناريو الأسوأ:</b> جهاز كاشير يعمل أسابيع بلا إعادة تشغيل
+  (وهو الاستخدام الطبيعي) → <b>~90 م.ب/شهر</b>، وعلى قرص SSD صغير ممتلئ يفشل SQLite في الكتابة
+  (<span class="f">SQLITE_FULL</span>) فتتعطل المبيعات وقت الذروة.</div>
+  <h3>الإصلاح</h3>
+<pre><span class="cm"># AFTER — launch.ps1: قبل بدء Electron، اقطع السجلات المتضخمة</span>
+<span class="add">$MaxLogBytes = 5MB
+foreach ($Log in @($ElecOutLog, $ElecErrLog)) {
+  if (Test-Path $Log) {
+    $item = Get-Item $Log
+    if ($item.Length -gt $MaxLogBytes) {
+      # احتفظ بآخر 1 م.ب فقط بدل الحذف: التشخيص الحديث هو المفيد
+      $tail = Get-Content $Log -Tail 8000
+      Set-Content -Path $Log -Value $tail -Encoding UTF8
+    }
+  }
+}</span>
+</pre>
+</div>
+
+<!-- F11/F12 -->
+<h3>F11 &amp; F12 <span class="tag t-low">منخفض</span> — تفاوت في إدارة عدّاد المحاولات</h3>
+<div class="card">
+<pre><span class="del">// F11 — OrderRepository.cjs:258 : لا يُصفّر sync_attempts خلافًا لكل المسارات الأخرى
+sqlite.prepare('UPDATE orders SET status = ?, updated_at = ?, is_synced = 0 WHERE id = ?').run(status, now, id);</span>
+<span class="add">// AFTER
+sqlite.prepare(`UPDATE orders SET status = ?, updated_at = ?, is_synced = 0,
+                sync_attempts = 0, last_error = NULL WHERE id = ?`).run(status, now, id);</span>
+
+<span class="del">// F12 — syncEngine.cjs:247,275,289,306 : markSyncFailure بلا snapshots
+this.db.markSyncFailure('orders', ids, e.message);          // بلا حارس إصدار</span>
+<span class="add">// AFTER — مرّر snapshots دائمًا حتى لا يُعاقب صف عُدِّل بعد الفشل
+this.db.markSyncFailure('orders', ids, e.message, unsyncedOrders);</span>
+</pre>
+  <p class="muted">بدون الـ snapshot يتجاوز <span class="f">database.cjs:635</span> شرط
+  <span class="f">updated_at IS ?</span>، فيُزاد عدّاد صفٍّ عُدِّل بعد الإرسال الفاشل —
+  فيُركن خطأً وهو سليم.</p>
+</div>
+
+<!-- F13/F14/F15 -->
+<h3>F13–F15 <span class="tag t-low">منخفض</span> — أداء وجودة</h3>
+<div class="card">
+<pre><span class="cm">// F13 — TopNav.tsx:30 و MobileHeader.tsx:15 : مؤقّت 1ث → 86,400 رسم/يوم لكل مكوّن</span>
+<span class="add">// AFTER — دقّة كافية للساعة المعروضة
+const timer = setInterval(() =&gt; setCurrentTime(new Date()), 30_000);</span>
+
+<span class="cm">// F14 — تابع غير مستخدم</span>
+<span class="del">"tailwind-merge": "^2.2.0"   // صفر إشارة في src/ أو electron/</span>
+<span class="add">// إزالته من dependencies + حذف المجلد الفارغ src/components/auth/</span>
+
+<span class="cm">// F15 — d1-reports-worker.js:916 : كل شيء 500</span>
+<span class="del">} catch (err) { return json({ success: false, error: String(err.message || err) }, 500, origin); }</span>
+<span class="add">} catch (err) {
+  const status = err &amp;&amp; err.isRejection ? 400 : 500;   // نفس منطق عامل POS (:740)
+  return json({ success: false, error: String(err.message || err) }, status, origin);
+}</span>
+</pre>
+  <p class="muted">F15 مهم تشغيليًا: العميل لا يستطيع التمييز بين "حمولتك خاطئة" و"قاعدة البيانات ساقطة"،
+  فيعيد محاولة حمولة مرفوضة حتى تُركن.</p>
+</div>
+
+<!-- ══════════════ 3 ══════════════ -->
+<h2>3. خريطة الترابط وفجوات المزامنة</h2>
+
+<h3>3.1 رحلة العملية المالية (كما هي في الكود)</h3>
+<table>
+  <tr><th>#</th><th>المرحلة</th><th>الملف/الدالة</th><th>الحالة</th></tr>
+  <tr><td>1</td><td>نقرة إضافة صنف → سلة</td><td class="f">POSView.tsx (invoiceItems)</td><td><span class="tag t-ok">سليم</span> حارس <span class="f">savingRef</span> يمنع الإرسال المزدوج (:493)</td></tr>
+  <tr><td>2</td><td>حساب الإجمالي والضريبة</td><td class="f">orderTotals.ts:59 buildOrderTotals</td><td><span class="tag t-ok">سليم</span> تقريب لكل سطر ثم للمجموع ثم للضريبة</td></tr>
+  <tr><td>3</td><td>لقطة مالية عند الإنشاء</td><td class="f">Orders.tsx:26-46</td><td><span class="tag t-ok">سليم</span> <span class="f">totalAmount = grandTotal</span> (لا ازدواج ضريبي)</td></tr>
+  <tr><td>4</td><td>IPC → main</td><td class="f">preload.cjs:11 → main.cjs:143</td><td><span class="tag t-ok">سليم</span> تحقق كامل + تسجيل الأخطاء</td></tr>
+  <tr><td>5</td><td>معاملة SQLite واحدة</td><td class="f">OrderRepository.cjs:108-159</td><td><span class="tag t-ok">سليم</span> ACID: طلب + عدّاد + ولاء + مخزون</td></tr>
+  <tr><td>6</td><td>خصم المخزون</td><td class="f">InventoryRepository.cjs:386</td><td><span class="tag t-med">ملاحظة</span> لا مفتاح idempotency على الخصم نفسه (انظر F3)</td></tr>
+  <tr><td>7</td><td>دفع → D1</td><td class="f">syncEngine.cjs:280 → mockApiService.syncRecords</td><td><span class="tag t-ok">سليم</span> تقسيم 200/دفعة، LWW، upsert</td></tr>
+  <tr><td>8</td><td>مرآة التقارير</td><td class="f">mockApiService.cjs:205-218</td><td><span class="tag t-crit">مكسور</span> F1 — لا مفتاح</td></tr>
+  <tr><td>9</td><td>سحب التغييرات</td><td class="f">syncEngine.cjs:172, 204</td><td><span class="tag t-crit">مكسور</span> F2 — 400 من العامل</td></tr>
+  <tr><td>10</td><td>عرض التقارير</td><td class="f">reports-site/src/analytics.ts</td><td><span class="tag t-ok">سليم</span> منطقيًا — لكن بلا بيانات (F1)</td></tr>
+</table>
+
+<h3>3.2 الفجوات البنيوية في المزامنة</h3>
+<div class="card">
+<ul>
+  <li><b>لا يوجد توجّه بالعمليات (operation log) للحالة القابلة للتغيير.</b>
+      المخزون والنقاط تُزامَن كقيم مطلقة (F3). الدفاتر (<span class="f">inventory_transactions</span>،
+      <span class="f">points_transactions</span>) صحيحة append-only لكنها <b>لا تُستخدم لإعادة بناء الرصيد</b>.</li>
+  <li><b>Single high-watermark per table مشترك بين الأفرع.</b>
+      <span class="f">last_pulled_orders_at</span> (<span class="f">syncEngine.cjs:170</span>) قيمة واحدة لكل جهاز؛
+      إن فشل سحب جدول فإن العلامة لا تتقدّم (صحيح)، لكن لا توجد علامة <em>لكل فرع</em>،
+      فجهاز يغيّر <span class="f">branch_id</span> يعيد سحب كل شيء أو يفوّت صفوفًا.</li>
+  <li><b>السحب لا يغطي <span class="f">inventory_transactions</span> ولا <span class="f">points_transactions</span>.</b>
+      <span class="f">sharedPulls</span> (<span class="f">syncEngine.cjs:194-199</span>) يضم 4 جداول فقط،
+      بينما العامل يعرض <span class="f">/pull/inventory-transactions</span> و<span class="f">/pull/points-transactions</span>
+      (<span class="f">d1-proxy-worker.js:720-728</span>) — أي أن حركات المخزون <b>تُدفع ولا تُسحب أبدًا</b>:
+      جهاز آخر لن يرى استهلاك المخزون الذي أجراه هذا الجهاز.</li>
+  <li><b>المرآة (mirror) ليست جزءًا من المعاملة ولا من الحالة.</b>
+      <span class="f">mirrorToReports(...).catch(...)</span> (<span class="f">mockApiService.cjs:207</span>)
+      غير منتظَر؛ إن أُغلق التطبيق قبل اكتمال الـ <span class="f">catch</span> فالتسجيل في
+      <span class="f">reports_outbox</span> لا يحدث — رغم أن الجدول وُجد خصيصًا لهذا الغرض.</li>
+  <li><b>غياب مفتاح idempotency للطلبات.</b> <span class="f">createOrder</span> يولّد UUID في
+      <span class="f">main process</span> (<span class="f">:82</span>)؛ إعادة المحاولة على مستوى أعلى
+      (مثلاً إعادة تشغيل IPC أو استيراد نسخة احتياطية) تُنشئ طلبًا جديدًا بخصم مخزون جديد.
+      Upsert السحابي يحمي من التكرار <em>بنفس المعرّف</em> فقط.</li>
+  <li><b>وضع "التقارير فقط" يعطّل السحب صمتًا.</b>
+      <span class="f">mockApiService.cjs:183</span>: إن لم يكن مفتاح POS مضبوطًا فكل مسار سحب
+      يرجع <span class="f">{ success: true, orders: [] }</span> — نجاحٌ زائف بلا بيانات.</li>
+</ul>
+</div>
+
+<!-- ══════════════ 4 ══════════════ -->
+<h2>4. خطة العمل التصحيحية (حسب الأولوية)</h2>
+
+<table>
+  <tr><th>الأولوية</th><th>الإجراء</th><th>الملفات</th><th>معايير القبول</th></tr>
+  <tr>
+    <td><b>P0 · اليوم</b></td>
+    <td>توفير <span class="f">VITE_REPORTS_API_KEY</span> (أو <span class="f">ENGAZ_REPORTS_API_KEY</span>)
+        وإظهار تحذير صريح عند غيابه</td>
+    <td class="f">.env · mockApiService.cjs:79,229,278 · main.cjs</td>
+    <td>يظهر سطر <span class="f">[D1 Sync API] Reports mirror</span> في السجل، وتستقبل البوابة أول طلب خلال دورة واحدة</td>
+  </tr>
+  <tr>
+    <td><b>P0 · اليوم</b></td>
+    <td>نشر <span class="f">d1-proxy-worker.js</span> المطابق، أو تحويل العميل إلى صيغة العامل القديم — لا تُبقِ الاثنين مختلفين</td>
+    <td class="f">cloudflare/d1-proxy-worker.js · engaz_d1_worker_url</td>
+    <td><span class="f">POST /pull/orders</span> يرجع 200؛ لا 400 في <span class="f">electron.err.log</span></td>
+  </tr>
+  <tr>
+    <td><b>P0</b></td>
+    <td>فصل التراجع الأُسّي عن فشل السحب (F2)</td>
+    <td class="f">syncEngine.cjs:360-364</td>
+    <td>فشل السحب وحده لا يرفع <span class="f">consecutiveFailures</span></td>
+  </tr>
+  <tr>
+    <td><b>P1 · هذا الأسبوع</b></td>
+    <td>جعل <span class="f">stock</span> و<span class="f">points</span> مشتقّين من الدفاتر (F3)</td>
+    <td class="f">d1-proxy-worker.js:288,265 · InventoryRepository · CustomerRepository · analytics.ts</td>
+    <td>اختبار: بيعتان متزامنتان على صنف مشترك تُنتجان خصمين، لا خصمًا واحدًا</td>
+  </tr>
+  <tr>
+    <td><b>P1</b></td>
+    <td>السماح بإلغاء الحذف في السحابة (F5)</td>
+    <td class="f">d1-proxy-worker.js:190,232,377 · d1-reports-worker.js:313,353,381,404,425 · OrderRepository.resetOrders</td>
+    <td>طلب محذوف ثم مستعاد محليًا يعود ظاهرًا في البوابة</td>
+  </tr>
+  <tr>
+    <td><b>P1</b></td>
+    <td>توحيد <span class="f">BRANCH_ID_MAX</span> في ملف مشترك (F6)</td>
+    <td class="f">validate.cjs:225 · d1-proxy-worker.js:126</td>
+    <td>اختبار وحدة يربط الثابتين؛ لا صفوف مركنة جديدة في السجل</td>
+  </tr>
+  <tr>
+    <td><b>P1</b></td>
+    <td>مفتاح API لكل فرع + فرض النطاق سحابيًا (F4)</td>
+    <td class="f">d1-proxy-worker.js:617,645,701 · جدول api_keys جديد</td>
+    <td><span class="f">/pull/orders</span> بلا <span class="f">branchId</span> يُرجع 400؛ مفتاح فرع لا يقرأ فرعًا آخر</td>
+  </tr>
+  <tr>
+    <td><b>P2</b></td>
+    <td>إصلاح بروتوكول النقل + سلسلة إلغاء الطباعة + تدوير السجلات (F7, F8, F10)</td>
+    <td class="f">mockApiService.cjs:129 · printManager.cjs:89,105 · launch.ps1</td>
+    <td>عامل محلي على <span class="f">http://localhost:8787</span> يعمل؛ إلغاء الطباعة لا يُنتج خطأ؛ السجل &lt; 5 م.ب</td>
+  </tr>
+  <tr>
+    <td><b>P2</b></td>
+    <td>إصلاح حارس إصدار <span class="f">reports_outbox</span>، وسحب دفاتر الحركات، وانتظار المرآة قبل الإغلاق (F9)</td>
+    <td class="f">database.cjs:747 · syncEngine.cjs:194 · mockApiService.cjs:207</td>
+    <td>تعديل متتالٍ على نفس السجل يصل محدَّثًا إلى قاعدة التقارير</td>
+  </tr>
+  <tr>
+    <td><b>P3</b></td>
+    <td>تنظيف: <span class="f">tailwind-merge</span>، مجلد <span class="f">auth/</span>، مؤقّت الساعة،
+        <span class="f">sync_attempts</span>، تمييز 400/500 في عامل التقارير (F11–F15)</td>
+    <td class="f">package.json · TopNav · MobileHeader · OrderRepository:258 · d1-reports-worker.js:916</td>
+    <td>CI أخضر، لا توابع غير مستخدمة</td>
+  </tr>
+</table>
+
+<div class="card">
+  <h3 style="margin-top:0">ما تم التحقق منه ولا يحتاج عملًا</h3>
+  <div class="good">
+    <b>صفر تسريب أسرار في حزم البناء.</b> القيمة الحقيقية لـ <span class="f">VITE_CF_WORKER_API_KEY</span>
+    (19 محرفًا، مأخوذة من <span class="f">.env</span>) تظهر <b>0 مرة</b> في
+    <span class="f">dist/</span> و<span class="f">reports-site/dist/</span>.
+    بوابة التقارير تُبنى بـ <span class="f">envPrefix: ['VITE_REPORTS_WORKER_URL']</span>
+    فلا يمكن لأي متغيّر آخر أن يُضمَّن، ثم يمرّ إخراجها بفحص sentinel إجباري
+    (<span class="f">scripts/build-reports.mjs:46-55</span>) يفشل البناء عند أي تطابق.
+  </div>
+  <div class="good">
+    <b>صفر SQL injection.</b> كل استعلام في العاملين يستخدم معاملات مرتبطة
+    (<span class="f">.bind(...)</span>)، وكل اسم جدول/عمود داخل
+    <span class="f">SELECT * FROM ${table}</span> مصدره خريطة ثابتة
+    (<span class="f">SYNC_TABLES</span>) أو قائمة حرفية في الموجّه — لا يصل إليه أي حقل من جسم الطلب.
+  </div>
+  <div class="good">
+    <b>صحة التقريب المالي.</b> الدالة <span class="f">roundMoney</span> بصيغتها الحالية
+    (معامل epsilon مضروب في القيمة) صُحّحت تجريبيًا على القيم الحرجة:
+    1.005→1.01، 8.575→8.58، 2.675→2.68، 0.145→0.15، 10.235→10.24. لا خلل تقريب قائم.
+  </div>
+  <div class="good">
+    <b>حالة CI.</b> <span class="f">vitest run</span>: 254/254 ناجح ·
+    <span class="f">eslint --max-warnings 0</span>: نظيف ·
+    <span class="f">tsc --noEmit</span> للجذر وللبوابة: نظيف.
+  </div>
+</div>
+
+<p class="muted" style="margin-top:34px;border-top:1px solid var(--line);padding-top:14px">
+  كل مرجع ملف/سطر في هذا التقرير مأخوذ من الفرع <span class="f">fix/comprehensive-audit-remediation</span>
+  بتاريخ 14 سبتمبر 2026. الاستنتاجات المتعلقة بالعامل المنشور (F2) وغياب مفتاح التقارير (F1)
+  مبنية على <span class="f">logs/electron.err.log</span> و<span class="f">logs/electron.out.log</span>
+  الفعليين، لا على افتراض. لم يُجرَ أي تعديل على الكود أو على أي قاعدة بيانات أو أي إعداد منشور أثناء هذا التدقيق.
+</p>
+
+</div>
+</body>
+</html>

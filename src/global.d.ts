@@ -1,59 +1,25 @@
-export interface MenuItem {
+/// <reference types="vite/client" />
+
+// The domain types live in src/types/. They are re-exported here so the three
+// modules that import from '../global' keep working, and so the IPC surface below
+// describes the same types the app actually uses. Duplicating them here is what
+// caused the Order/MenuItem split-brain: two structurally different `Order` types
+// on either side of window.electronAPI.
+import type { MenuItem } from './types/menu';
+import type { Order, OrderItem, OrderStatus, PaymentStatus } from './types/order';
+import type { Customer } from './types/customer';
+import type { PublicMenuConfig } from './types/menuBranding';
+
+export type { MenuItem, Order, OrderItem, OrderStatus, PaymentStatus, Customer };
+
+export interface Cashier {
   id: string;
   name: string;
-  description?: string;
-  price: number;
-  category: string;
-  image?: string;
-  available: boolean;
+  /** Small base64 data URL photo, shown on the till button and printed on receipts. */
+  avatar?: string;
+  branchId?: string;
   createdAt?: string;
   updatedAt?: string;
-  branchId?: string;
-  isSynced?: boolean;
-}
-
-export interface OrderItem {
-  id: string;
-  menuItemId: string;
-  name: string;
-  price: number;
-  quantity: number;
-  notes?: string;
-}
-
-export interface Order {
-  id: string;
-  orderNumber: string;
-  tableId: string;
-  items: OrderItem[];
-  status: 'New' | 'Preparing' | 'Ready' | 'Delivered' | 'Cancelled';
-  paymentStatus: 'Unpaid' | 'Paid';
-  paymentMethod?: 'Cash' | 'Card';
-  totalAmount: number;
-  subtotal?: number;
-  taxRate?: number;
-  taxAmount?: number;
-  grandTotal?: number;
-  createdAt: string;
-  updatedAt?: string;
-  paidAt?: string;
-  customerPhone?: string;
-  customerName?: string;
-  pointsEarned?: number;
-  pointsRedeemed?: number;
-  branchId?: string;
-  isSynced?: boolean;
-}
-
-export interface Customer {
-  id: string;
-  name: string;
-  phone: string;
-  points: number;
-  createdAt: string;
-  updatedAt?: string;
-  branchId?: string;
-  isSynced?: boolean;
 }
 
 export interface InventoryItem {
@@ -94,7 +60,8 @@ export interface RecipeIngredient {
 
 declare global {
   interface Window {
-    electronAPI: {
+    /** Absent in the web build; every caller must guard before use. */
+    electronAPI?: {
       getMenu: () => Promise<MenuItem[]>;
       createMenuItem: (item: Omit<MenuItem, 'id'>) => Promise<MenuItem>;
       updateMenuItem: (id: string, data: Partial<Omit<MenuItem, 'id'>>) => Promise<MenuItem>;
@@ -114,6 +81,12 @@ declare global {
       saveCustomer: (customer: Partial<Customer> & { phone: string }) => Promise<Customer>;
       deleteCustomer: (id: string) => Promise<void>;
 
+      getCashiers: (branchId?: string) => Promise<Cashier[]>;
+      createCashier: (name: string, avatar?: string) => Promise<Cashier>;
+      deleteCashier: (id: string) => Promise<void>;
+      renameCashier: (id: string, name: string) => Promise<Cashier>;
+      setCashierAvatar: (id: string, avatar?: string) => Promise<Cashier>;
+
       getSettings: () => Promise<Record<string, string>>;
       saveSetting: (key: string, value: string) => Promise<void>;
       deleteSetting: (key: string) => Promise<void>;
@@ -129,6 +102,12 @@ declare global {
       getMenuItemRecipe: (menuItemId: string) => Promise<RecipeIngredient[]>;
       saveMenuRecipe: (menuItemId: string, ingredients: RecipeIngredient[]) => Promise<RecipeIngredient[]>;
       getRecipeCost: (menuItemId: string) => Promise<number>;
+
+      /**
+       * Publishes the public menu configuration through the main process, which holds the
+       * reports write key. Absent in the web build, where there is no key to hold.
+       */
+      publishMenuConfig: (config: PublicMenuConfig) => Promise<{ success: boolean; error?: string }>;
 
       getSyncStatus: () => Promise<{
         state: 'idle' | 'syncing' | 'synced' | 'offline' | 'error';
@@ -148,9 +127,30 @@ declare global {
         pendingCount: number;
         lastError: string | null;
       }) => void) => () => void;
-      
-      getManagerOrders: () => Promise<any[]>;
-      getManagerCustomers: () => Promise<any[]>;
+
+      /**
+       * Today's local-day sales summary. `totalRevenue` reads paidAmount so a bill settled
+       * partly with loyalty points is not reported at its full value.
+       */
+      getDailyReportStats: () => Promise<{
+        date: string;
+        totalOrders: number;
+        totalRevenue: number;
+        totalUnpaid: number;
+        cashRevenue: number;
+        cardRevenue: number;
+        itemsSold: Array<{ name: string; quantity: number }>;
+      }>;
+      sendDailyReportToTelegram: () => Promise<{ success: boolean; error?: string }>;
+
+      getParkedSyncRows: () => Promise<Array<{
+        table: string;
+        id: string;
+        sync_attempts: number;
+        last_error: string | null;
+      }>>;
+      retryParkedSyncRows: (table: string, ids?: string[] | null) => Promise<number>;
+      printReceipt?: (html: string) => Promise<void>;
     };
   }
 }
