@@ -40,6 +40,12 @@ export function AnalyticsTab({
   const ranked = useMemo(() => bestSellers(orders), [orders]);
   const branches = useMemo(() => revenueByBranch(orders), [orders]);
 
+  // An order paid before the tax snapshot existed carries no tax, so the tax subtracted from
+  // revenue is short by however much those orders really paid. Profit is therefore too high,
+  // not merely imprecise. Marking the figure where it is read beats explaining it in a
+  // tooltip on a different row — a manager reads the headline number, not the footnote.
+  const profitIsEstimated = sales.unknownTaxCount > 0;
+
   return (
     <>
       <section className="stat-grid">
@@ -87,9 +93,13 @@ export function AnalyticsTab({
         <StatCard
           tone="emerald"
           icon="profit"
-          label="صافي الربح الفعلي"
-          badge="صافي الربح بعد الخامات والضريبة"
-          value={formatMoney(sales.netProfit)}
+          label={profitIsEstimated ? 'صافي الربح الفعلي (تقديري)' : 'صافي الربح الفعلي'}
+          badge={
+            profitIsEstimated
+              ? `بعض الطلبات بلا ضريبة محفوظة (${formatCount(sales.unknownTaxCount)})؛ الرقم أعلى من الحقيقي`
+              : 'صافي الربح بعد الخامات والضريبة'
+          }
+          value={`${profitIsEstimated ? '≈ ' : ''}${formatMoney(sales.netProfit)}`}
           unit="ج.م"
           negative={sales.netProfit < 0}
         />
