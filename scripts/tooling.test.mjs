@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import test from 'node:test';
 import { fingerprint } from './build-freshness.mjs';
 import { scanBundle } from './build-reports.mjs';
+import { branchKeyHash, branchKeySql } from './branch-key.mjs';
 
 test('build freshness changes with source/config/env content, not timestamps', () => {
   const root = mkdtempSync(join(tmpdir(), 'engaz-freshness-'));
@@ -49,6 +50,25 @@ test('bundle scan rejects sentinel values and key headers, accepts public URL', 
       assert.throws(() => scanBundle(dir, ['unique-canary']), /secret scan failed/);
     }
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('branch key hashing matches what the worker computes', () => {
+  // resolveKeyBranch stores SHA-256(key) as lowercase hex via WebCrypto. If this ever
+  // disagrees, every registered key stops matching and every scoped till is locked out —
+  // silently, because an unmatched key just means "not a branch key".
+  assert.equal(
+    branchKeyHash('abc'),
+    'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad'
+  );
+
+  const sql = branchKeySql({ branch: 'branch-1', key: 'a'.repeat(32), label: "O'Brien" });
+  assert.match(sql, /VALUES \('[0-9a-f]{64}', 'branch-1', 'O''Brien'/);
+  // Idempotent, and re-issuing must clear a previous revocation.
+  assert.match(sql, /ON CONFLICT\(key_hash\) DO UPDATE/);
+  assert.match(sql, /revoked_at = NULL/);
+
+  assert.throws(() => branchKeySql({ branch: 'Not A Slug', key: 'a'.repeat(32) }), /branch id/);
+  assert.throws(() => branchKeySql({ branch: 'branch-1', key: 'short' }), /at least 16/);
 });
 
 test('bundle scan covers a bundle whose entry is not index.html', () => {

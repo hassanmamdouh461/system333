@@ -183,8 +183,15 @@ class MenuRepository {
     const branchId = this.getBranchId();
 
     const runTransaction = sqlite.transaction((items) => {
-      // Soft-delete existing items so deletions propagate to the cloud (Issue 20+28)
-      sqlite.prepare('UPDATE menu_items SET deleted_at = ?, updated_at = ?, is_synced = 0 WHERE deleted_at IS NULL').run(now, now);
+      // Soft-delete existing items so deletions propagate to the cloud (Issue 20+28).
+      //
+      // Scoped to this branch and shared rows, and the retry budget is cleared: a parked row
+      // was excluded from every push, so without this the tombstone never left the device.
+      sqlite.prepare(`
+        UPDATE menu_items
+        SET deleted_at = ?, updated_at = ?, is_synced = 0, sync_attempts = 0, last_error = NULL
+        WHERE deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
+      `).run(now, now, branchId);
       const insert = sqlite.prepare(`
         INSERT INTO menu_items (id, name, description, price, category, image, available, branch_id, is_synced, created_at, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)

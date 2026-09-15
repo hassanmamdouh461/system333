@@ -352,8 +352,19 @@ class OrderRepository {
     const branchId = this.getBranchId();
 
     const runTransaction = sqlite.transaction((orders) => {
-      // Soft-delete existing orders so deletions propagate (Issue 20)
-      sqlite.prepare('UPDATE orders SET deleted_at = ?, updated_at = ?, is_synced = 0 WHERE deleted_at IS NULL').run(now, now);
+      // Soft-delete existing orders so deletions propagate (Issue 20).
+      //
+      // Scoped to this branch and shared rows, like every other write here: unscoped, a reset
+      // on one till also stamped another branch's local rows as deleted.
+      //
+      // The retry budget is cleared too. A row that had exhausted its attempts was parked and
+      // excluded from every push, so without this the tombstone never left the device — the
+      // reset looked like it worked while the cloud kept the old rows.
+      sqlite.prepare(`
+        UPDATE orders
+        SET deleted_at = ?, updated_at = ?, is_synced = 0, sync_attempts = 0, last_error = NULL
+        WHERE deleted_at IS NULL AND (branch_id = ? OR branch_id IS NULL)
+      `).run(now, now, branchId);
       const insert = sqlite.prepare(`
         INSERT INTO orders (id, orderNumber, tableId, items, status, paymentStatus, paymentMethod, totalAmount, subtotal, taxRate, taxAmount, grandTotal, paidAmount, createdAt, paidAt, customerPhone, pointsEarned, pointsRedeemed, branch_id, cashierName, cashierAvatar, is_synced, updated_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)

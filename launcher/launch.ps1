@@ -86,6 +86,13 @@ function Write-Log {
     $line = '{0} [{1}] {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Level, $Message
     Add-Content -LiteralPath $LogFile -Value $line -Encoding UTF8
     Write-Host $line
+
+    # Capping only at startup bounded the size *between* runs, not *during* one: a till left
+    # open for a whole shift kept appending with nothing to stop it, so the file it left
+    # behind was as large as the session was long. Checked here, where the growth happens.
+    # The comparison is cheap and the trim is rare - it can only run once per 2MB written.
+    $item = Get-Item -LiteralPath $LogFile -ErrorAction SilentlyContinue
+    if ($null -ne $item -and $item.Length -ge $MaxLogBytes) { Limit-LogFile $LogFile }
 }
 
 function Show-Problem {
