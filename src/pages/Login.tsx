@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Coffee, ArrowRight, Lock, Eye, EyeOff, Building2, Delete, ExternalLink, Info } from 'lucide-react';
@@ -22,10 +22,22 @@ export default function Login() {
 
   const isFirstTimeSetup = needsPasswordSetup(account.email);
 
+  // The shake timer is held and cleared, because the screen it belongs to can unmount before
+  // it fires: a successful login straight after a failed attempt navigates away, and a state
+  // update scheduled on a screen that is gone is a leak the user never sees but the app pays.
+  const shakeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => {
+    if (shakeTimer.current) clearTimeout(shakeTimer.current);
+  }, []);
+
   const triggerShake = () => {
     setShake(true);
     playWarningSound();
-    setTimeout(() => setShake(false), 500);
+    if (shakeTimer.current) clearTimeout(shakeTimer.current);
+    shakeTimer.current = setTimeout(() => {
+      shakeTimer.current = null;
+      setShake(false);
+    }, 500);
   };
 
   const handleKeypadPress = (action: string) => {
