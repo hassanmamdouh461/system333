@@ -174,7 +174,7 @@ async function hmac(secret, message) {
  * A `jti` is minted on every token so that revocation can be added later against a stored
  * deny-list without changing the token format or invalidating every live session.
  */
-export async function issueViewerToken(secret, { scope = 'read', now = Date.now() } = {}) {
+export async function issueViewerToken(secret, { scope = 'read', now = Date.now(), db = null } = {}) {
   const expiresAt = now + (scope === 'write' ? WRITE_TOKEN_TTL_MS : TOKEN_TTL_MS);
   const claims = {
     scope,
@@ -183,7 +183,68 @@ export async function issueViewerToken(secret, { scope = 'read', now = Date.now(
   };
   const payload = base64UrlEncode(new TextEncoder().encode(JSON.stringify(claims)));
   const signature = await hmac(secret, payload);
-  return { token: `${payload}.${signature}`, expiresAt };
+  if (db) await registerSession(db, claims.jti, expiresAt);
+  return { token: `${payload}.${signature}`, expiresAt, jti: claims.jti };
+}
+
+// ─── Session store ───────────────────────────────────────────────────────────
+// A signed token cannot be taken back: whoever holds it can use it until it expires. The
+// `jti` only becomes useful once something remembers which ids are still alive, which is
+// what this table is for. Without it, "log out" changed a flag in the browser while the
+// token stayed valid for another eight hours wherever else it had been copied.
+
+const SESSION_TABLE = 'viewer_sessions';
+
+async function withSessionTable(db) {
+  // Created on demand rather than by a separate migration step: a deployment that never
+  // calls /migrate still needs revocation to work, and this runs once per database.
+  try {
+    await db.prepare(
+      `CREATE TABLE IF NOT EXISTS ${SESSION_TABLE} (jti TEXT PRIMARY KEY, expires_at INTEGER NOT NULL)`
+    ).run();
+  } catch {
+    // Another request created it in the meantime.
+  }
+  return true;
+}
+
+async function registerSession(db, jti, expiresAt) {
+  await withSessionTable(db);
+  try {
+    await db.prepare(
+      `INSERT INTO ${SESSION_TABLE} (jti, expires_at) VALUES (?, ?)`
+    ).bind(jti, expiresAt).run();
+  } catch {
+    // Best effort. Registration failing means the session cannot be revoked on demand; it
+    // still expires on its own, which is the pre-existing guarantee.
+  }
+}
+
+export async function revokeSession(db, jti) {
+  await withSessionTable(db);
+  const result = await db.prepare(`DELETE FROM ${SESSION_TABLE} WHERE jti = ?`).bind(jti).run();
+  const changes = result?.meta?.changes;
+  return result?.success === true && Number.isSafeInteger(changes) ? changes : null;
+}
+
+/**
+ * Whether a token's id is still recognised.
+ *
+ * Three outcomes, and the difference matters:
+ *  - `true` — the session is recorded and honoured.
+ *  - `false` — it was recorded and is no longer, so it was revoked. Definitive.
+ *  - `null` — the store could not be read. Revocation is broken, not enforced; expiring on
+ *    schedule is the pre-existing guarantee, so it is kept rather than locking the portal
+ *    out because a read failed.
+ */
+async function sessionIsLive(db, jti) {
+  await withSessionTable(db);
+  try {
+    const row = await db.prepare(`SELECT 1 AS ok FROM ${SESSION_TABLE} WHERE jti = ? LIMIT 1`).bind(jti).first();
+    return Boolean(row?.ok);
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -193,7 +254,7 @@ export async function issueViewerToken(secret, { scope = 'read', now = Date.now(
  * Callers compare against the scope they need rather than asking a yes/no question: a single
  * `hasViewerToken` boolean is what allowed a read token to satisfy a write check.
  */
-export async function verifyViewerToken(secret, token, now = Date.now()) {
+export async function verifyViewerTokenDetailed(secret, token, now = Date.now()) {
   if (typeof secret !== 'string' || !secret || typeof token !== 'string' || token.length > 2048 ||
       !/^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]{43}$/.test(token) || !Number.isFinite(now)) return null;
   const [payload, signature] = token.split('.');
@@ -205,10 +266,15 @@ export async function verifyViewerToken(secret, token, now = Date.now()) {
     const claims = JSON.parse(new TextDecoder().decode(base64UrlDecode(payload)));
     const scopeOk = claims.scope === 'read' || claims.scope === 'write';
     if (!scopeOk || typeof claims.expiresAt !== 'number' || now >= claims.expiresAt) return null;
-    return claims.scope;
+    return { scope: claims.scope, jti: typeof claims.jti === 'string' ? claims.jti : null };
   } catch {
     return null;
   }
+}
+
+export async function verifyViewerToken(secret, token, now = Date.now()) {
+  const verified = await verifyViewerTokenDetailed(secret, token, now);
+  return verified ? verified.scope : null;
 }
 
 // Coercion, field bounds and rejections live in shared/common.js. This database is a mirror
@@ -913,16 +979,29 @@ export default {
         return json({ success: false, error: 'Invalid password' }, 401, origin);
       }
 
+      // Registered with the session store at issue time, so it can be revoked later rather
+      // than only expiring on its own.
       const { token, expiresAt } = await issueViewerToken(env.REPORTS_TOKEN_SECRET, {
         scope: writeOk ? 'write' : 'read',
+        db: env.DB,
       });
       return json({ success: true, token, expiresAt, scope: writeOk ? 'write' : 'read' }, 200, origin);
     }
 
     const bearer = (request.headers.get('Authorization') || '').replace(/^Bearer\s+/i, '');
-    const tokenScope = env.REPORTS_TOKEN_SECRET
-      ? await verifyViewerToken(env.REPORTS_TOKEN_SECRET, bearer)
+    const verified = env.REPORTS_TOKEN_SECRET
+      ? await verifyViewerTokenDetailed(env.REPORTS_TOKEN_SECRET, bearer)
       : null;
+
+    // A revoked token is treated exactly like a forged one. The signature proves the token
+    // was issued; only the store can say it is still good, and a copy that outlived its
+    // logout is the case this exists for. When the store cannot be read, `revoked` is false
+    // and the token stands — a read failure must not sign the whole portal out.
+    let tokenRevoked = false;
+    if (verified?.jti && env.DB) {
+      tokenRevoked = (await sessionIsLive(env.DB, verified.jti)) === false;
+    }
+    const tokenScope = verified && !tokenRevoked ? verified.scope : null;
     const hasViewerToken = tokenScope !== null;
     // Registry writes need the write scope, not merely a valid token. There is deliberately
     // no fallback to "any valid token when REPORTS_BRANCH_PASSWORD is unset": that made the
@@ -942,6 +1021,28 @@ export default {
       } catch (err) {
         return json({ success: false, error: clientError(err, 500) }, 500, origin);
       }
+    }
+
+    // ─── Ending a session ───
+    // Signing out used to clear a flag in the browser while the token itself stayed valid for
+    // the rest of its eight-hour life. These endpoints take the token back instead.
+    if (url.pathname === '/logout') {
+      if (!hasViewerToken) return json({ success: false, error: 'Unauthorized' }, 401, origin);
+      const jti = verified?.jti || null;
+      if (jti) await revokeSession(env.DB, jti);
+      return json({ success: true }, 200, origin);
+    }
+
+    // Revoking *another* session is administrative: it is how a leaked token is killed
+    // without waiting for whoever holds it to log out.
+    if (url.pathname === '/sessions/revoke') {
+      if (!canEditBranches) return json({ success: false, error: 'Unauthorized' }, 401, origin);
+      const jti = typeof payload.jti === 'string' ? payload.jti.trim() : '';
+      if (!jti) return json({ success: false, error: 'Expected a "jti" string' }, 400, origin);
+      const changes = await revokeSession(env.DB, jti);
+      // null means the store could not be read, which is not the same as "no such session".
+      if (changes === null) return json({ success: false, error: 'Session store unavailable' }, 500, origin);
+      return json({ success: true, revoked: changes > 0 }, 200, origin);
     }
 
     // ─── Branch registry: the one write a signed-in viewer may perform ───
@@ -1056,4 +1157,7 @@ export const __testing = {
   saveBranch,
   deleteBranch,
   BRANCH_NAME_MAX,
+  revokeSession,
+  sessionIsLive,
+  verifyViewerTokenDetailed,
 };

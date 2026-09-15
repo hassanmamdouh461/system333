@@ -7,6 +7,7 @@ import worker, {
   parseBranch,
   parseBranchId,
   DEFAULT_BRANCH,
+  revokeSession,
   __testing,
 } from '../d1-reports-worker.js';
 
@@ -887,6 +888,115 @@ describe('branch registry authorization', () => {
       { 'X-API-Key': 'write-key' }
     );
     expect(res.status).not.toBe(401);
+  });
+});
+
+describe('session revocation', () => {
+  // A signed token cannot be taken back by wishing. These tests prove the jti is honoured
+  // against a store, so "log out" actually ends the session rather than clearing a flag in
+  // one browser while the token stays valid elsewhere for the rest of its life.
+  const sessions = () => {
+    const rows = new Map<string, number>();
+    const db = {
+      prepare: (sql: string) => {
+        const statement = {
+          sql,
+          bindings: [] as unknown[],
+          bind: (...args: unknown[]) => { statement.bindings = args; return statement; },
+          run: async () => {
+            if (/CREATE TABLE/i.test(sql)) return { success: true, meta: { changes: 0 } };
+            if (/INSERT/i.test(sql)) {
+              rows.set(String(statement.bindings[0]), Number(statement.bindings[1]));
+              return { success: true, meta: { changes: 1 } };
+            }
+            if (/DELETE/i.test(sql)) {
+              const had = rows.delete(String(statement.bindings[0]));
+              return { success: true, meta: { changes: had ? 1 : 0 } };
+            }
+            return { success: true, meta: { changes: 0 } };
+          },
+          first: async () => {
+            if (/SELECT/i.test(sql)) {
+              const jti = String(statement.bindings[0]);
+              return rows.has(jti) ? { ok: 1 } : null;
+            }
+            return null;
+          },
+        };
+        return statement;
+      },
+    };
+    return { db, rows };
+  };
+
+  const readSnapshotWith = (token: string, db: unknown) =>
+    worker.fetch(
+      new Request('https://api-reports.engaz.tech/read/snapshot', {
+        method: 'POST',
+        body: '{}',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      }),
+      { REPORTS_API_KEY: 'write-key', REPORTS_TOKEN_SECRET: SECRET, DB: db } as never
+    );
+
+  it('a token works until it is revoked, and is refused afterwards', async () => {
+    const { db } = sessions();
+    const { token, jti } = await issueViewerToken(SECRET, { db: db as never });
+    expect(jti).toBeTruthy();
+
+    // Sanity: an unrevoked session is accepted, so the test below proves revocation and not
+    // some unrelated rejection.
+    expect((await readSnapshotWith(token as string, db)).status).not.toBe(401);
+
+    await revokeSession(db as never, jti as string);
+    // 401, not 500: a revoked token is answered like a forged one.
+    expect((await readSnapshotWith(token as string, db)).status).toBe(401);
+  });
+
+  it('revoking one session does not sign out another', async () => {
+    const { db } = sessions();
+    const a = await issueViewerToken(SECRET, { db: db as never });
+    const b = await issueViewerToken(SECRET, { db: db as never });
+
+    await revokeSession(db as never, a.jti as string);
+
+    expect((await readSnapshotWith(a.token, db)).status).toBe(401);
+    expect((await readSnapshotWith(b.token, db)).status).not.toBe(401);
+  });
+
+  it('logging out ends the session that called it', async () => {
+    const { db } = sessions();
+    const { token } = await issueViewerToken(SECRET, { db: db as never });
+
+    const res = await worker.fetch(
+      new Request('https://api-reports.engaz.tech/logout', {
+        method: 'POST',
+        body: '{}',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+      }),
+      { REPORTS_API_KEY: 'write-key', REPORTS_TOKEN_SECRET: SECRET, DB: db } as never
+    );
+    expect(res.status).toBe(200);
+
+    expect((await readSnapshotWith(token, db)).status).toBe(401);
+  });
+
+  it('does not lock everyone out when the store cannot be read', async () => {
+    // Fail-open here is deliberate and narrow: a broken session table must not sign the whole
+    // portal out. Tokens still expire on their own, which is the guarantee that existed
+    // before revocation was added.
+    const brokenDb = {
+      prepare: () => ({
+        bind: () => ({
+          run: async () => { throw new Error('no such table: viewer_sessions'); },
+          first: async () => { throw new Error('no such table: viewer_sessions'); },
+        }),
+        run: async () => { throw new Error('no such table: viewer_sessions'); },
+        first: async () => { throw new Error('no such table: viewer_sessions'); },
+      }),
+    };
+    const { token } = await issueViewerToken(SECRET, { db: brokenDb as never });
+    expect((await readSnapshotWith(token, brokenDb)).status).not.toBe(401);
   });
 });
 
