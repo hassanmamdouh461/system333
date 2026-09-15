@@ -12,15 +12,25 @@ compatibility_date = "2025-01-01"
 # It now answers on api-pos.engaz.tech only. api.engaz.tech is deliberately NOT used: that
 # hostname is already serving another service, and claiming its route would take it down.
 #
-# Order of operations — doing these out of order is an outage:
-#   1. Point every POS device at https://api-pos.engaz.tech (settings → worker URL).
-#      electron/workerHostPolicy.cjs already allows this host, so no desktop rebuild is
-#      needed and a device can be moved one at a time.
-#   2. Deploy. The worker stops answering on *.workers.dev the moment this config lands.
-#   3. Verify https://api-pos.engaz.tech/health and a real sync from one device.
+# Order of operations — doing these out of order is an outage.
 #
-# A device still carrying the old *.workers.dev URL after step 2 stops syncing entirely.
-# The host allowlist cannot rescue it, because the hostname itself ceases to exist.
+# The previous instruction was to point every device at the new host BEFORE deploying. That
+# is backwards: the hostname does not resolve until the route exists, so every device
+# repointed first would go offline at once and stay there until the deploy landed. Create and
+# verify the new destination first, then move devices onto it.
+#
+# Full procedure with rollback: docs/CUTOVER_RUNBOOK.md
+#
+#   1. Create the api-pos.engaz.tech DNS record (proxied).
+#   2. Deploy. Both hostnames answer; the database is the same one.
+#   3. Verify /health and one real sync on the new host.
+#   4. Move devices in small batches. ONLY binaries built with the current
+#      electron/workerHostPolicy.cjs allowlist can be moved — an older install refuses the
+#      new host, so a rebuild is required for those.
+#   5. When every device is migrated, remove LEGACY_WORKERS_DEV_URL from the allowlist and
+#      delete the old worker.
+#
+# Rollback is a per-device setting change, not a redeploy, which is why step 2 is safe.
 workers_dev = false
 
 routes = [
